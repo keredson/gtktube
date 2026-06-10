@@ -64,10 +64,22 @@ def ensure_mpv() -> bool:
     return True
 
 
+def dependency_checks_pass() -> bool:
+    return ensure_pygobject() and ensure_mpv()
+
+
+def launch_dependency_installer() -> None:
+    from .install_deps import main as install_deps_main
+
+    install_deps_main()
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv
-    if not ensure_pygobject() or not ensure_mpv():
-        return 2
+    if not dependency_checks_pass():
+        launch_dependency_installer()
+        if not dependency_checks_pass():
+            return 2
 
     paths = AppPaths.discover()
     paths.ensure()

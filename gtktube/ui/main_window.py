@@ -666,7 +666,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.unsubscribe_channel(channel)
 
     def on_about_clicked(self, _button: Gtk.Button) -> None:
-        icon_path = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
+        icon_path = Path(__file__).resolve().parent.parent / "assets" / "gtktube.png"
         dialog = Gtk.AboutDialog(
             transient_for=self,
             modal=True,
@@ -2613,8 +2613,8 @@ class MainWindow(Gtk.ApplicationWindow):
             import mpv
         except (ImportError, ModuleNotFoundError, OSError) as exc:
             self.set_status(
-                "Missing mpv dependencies. Run ./scripts/install-deps-gui.py and "
-                "install Python requirements."
+                "Missing mpv dependencies. Restart GTKTube to launch the dependency "
+                "installer, then install Python requirements."
             )
             self.log(f"mpv import failed: {exc}")
             return None

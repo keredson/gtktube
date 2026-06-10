@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Local-first GTK4 YouTube subscription browser and player"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "GPL-3.0-only"
 dependencies = [
     "yt-dlp>=2025.1.15",
     "python-mpv>=1.0.8",
@@ -20,4 +21,8 @@ gtktube = "gtktube.app:main"
 include = ["gtktube*"]
 
 [tool.setuptools.package-data]
-gtktube = ["assets/icon.png"]
+gtktube = ["assets/gtktube.png"]
+
+[tool.setuptools.data-files]
+"share/applications" = ["packaging/gtktube.desktop"]
+"share/icons/hicolor/256x256/apps" = ["gtktube/assets/gtktube.png"]
