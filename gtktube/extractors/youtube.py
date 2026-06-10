@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import urllib.parse
 from typing import Any
 
-from gtktube.models import Channel, PlayableVideo, Video
+from gtktube.models import Channel, PlayableVideo, SearchResults, Video
 
 
 class ExtractorError(RuntimeError):
@@ -152,10 +153,71 @@ class YoutubeExtractor:
             videos.append(video)
         return videos
 
-    def search(self, query: str, limit: int = 20) -> list[Video]:
+    def search(self, query: str, limit: int = 20) -> SearchResults:
+        return SearchResults(
+            videos=self.search_videos(query, limit=limit),
+            channels=self.search_channels(query, limit=10),
+        )
+
+    def search_videos(self, query: str, limit: int = 20) -> list[Video]:
         info = self._extract(f"ytsearch{limit}:{query}", flat=True, limit=limit)
         entries = info.get("entries") or []
         return [self._video_from_info(entry) for entry in entries if entry]
+
+    def search_channels(self, query: str, limit: int = 10) -> list[Channel]:
+        encoded = urllib.parse.quote_plus(query)
+        url = (
+            "https://www.youtube.com/results?"
+            f"search_query={encoded}&sp=EgIQAg%253D%253D"
+        )
+        info = self._extract(url, flat=True, limit=limit)
+        entries = info.get("entries") or []
+        channels: list[Channel] = []
+        for entry in entries:
+            if not entry:
+                continue
+            try:
+                channels.append(self._channel_from_info(entry))
+            except ExtractorError:
+                continue
+        return channels
+
+    def _channel_from_info(self, info: dict[str, Any]) -> Channel:
+        channel_id = (
+            info.get("channel_id")
+            or info.get("uploader_id")
+            or info.get("id")
+        )
+        channel_title = (
+            info.get("channel")
+            or info.get("uploader")
+            or info.get("title")
+            or channel_id
+        )
+        channel_url = (
+            info.get("channel_url")
+            or info.get("uploader_url")
+            or info.get("url")
+            or info.get("webpage_url")
+        )
+        if channel_url and not str(channel_url).startswith("http"):
+            channel_url = f"https://www.youtube.com/channel/{channel_id}"
+        if not channel_id or not channel_url:
+            raise ExtractorError("Could not resolve a channel result")
+        thumbnail_url = self._best_thumbnail(info)
+        if not thumbnail_url:
+            try:
+                return self.resolve_channel(str(channel_url))
+            except ExtractorError:
+                pass
+        return Channel(
+            id=str(channel_id),
+            title=str(channel_title),
+            url=str(channel_url),
+            handle=info.get("uploader_id") or info.get("channel"),
+            thumbnail_url=thumbnail_url,
+            is_subscribed=False,
+        )
 
     def _video_from_info(
         self, info: dict[str, Any], fallback_channel: Channel | None = None
@@ -198,21 +260,30 @@ class YoutubeExtractor:
             urls = [thumbnail.get("url") for thumbnail in thumbnails]
             for url in reversed(urls):
                 if url and ".webp" not in str(url).lower():
-                    return str(url)
+                    return self._absolute_url(str(url))
             if urls[-1]:
-                return str(urls[-1])
+                return self._absolute_url(str(urls[-1]))
         thumbnail = info.get("thumbnail")
-        return str(thumbnail) if thumbnail else None
+        return self._absolute_url(str(thumbnail)) if thumbnail else None
+
+    def _absolute_url(self, url: str) -> str:
+        if url.startswith("//"):
+            return f"https:{url}"
+        return url
 
     def _published_at(self, info: dict[str, Any]) -> str | None:
-        timestamp = info.get("timestamp")
-        if isinstance(timestamp, int):
+        timestamp = info.get("timestamp") or info.get("release_timestamp")
+        if isinstance(timestamp, (int, float)):
             from datetime import UTC, datetime
 
             return datetime.fromtimestamp(timestamp, UTC).date().isoformat()
-        upload_date = info.get("upload_date")
-        if isinstance(upload_date, str) and len(upload_date) == 8:
-            return f"{upload_date[0:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
+        for key in ("upload_date", "release_date", "modified_date"):
+            date = info.get(key)
+            if isinstance(date, str) and len(date) == 8:
+                return f"{date[0:4]}-{date[4:6]}-{date[6:8]}"
+        timestamp_text = info.get("timestamp")
+        if isinstance(timestamp_text, str) and len(timestamp_text) >= 10:
+            return timestamp_text[:10]
         return None
 
     def _optional_int(self, value: object) -> int | None:

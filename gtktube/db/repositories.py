@@ -30,9 +30,12 @@ class LibraryRepository:
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     url = excluded.url,
-                    handle = excluded.handle,
-                    thumbnail_url = excluded.thumbnail_url,
-                    is_subscribed = excluded.is_subscribed,
+                    handle = COALESCE(excluded.handle, channels.handle),
+                    thumbnail_url = COALESCE(excluded.thumbnail_url, channels.thumbnail_url),
+                    is_subscribed = CASE
+                        WHEN excluded.is_subscribed = 1 THEN 1
+                        ELSE channels.is_subscribed
+                    END,
                     subscribed_at = CASE
                         WHEN excluded.is_subscribed = 1
                         THEN COALESCE(channels.subscribed_at, excluded.subscribed_at)
@@ -80,6 +83,18 @@ class LibraryRepository:
                 """
             ).fetchall()
         return [self._channel_from_row(row) for row in rows]
+
+    def channel(self, channel_id: str) -> Channel | None:
+        with self._lock:
+            row = self.connection.execute(
+                """
+                SELECT id, title, url, handle, thumbnail_url, is_subscribed
+                FROM channels
+                WHERE id = ?
+                """,
+                (channel_id,),
+            ).fetchone()
+        return self._channel_from_row(row) if row else None
 
     def is_subscribed(self, channel_id: str | None) -> bool:
         if not channel_id:

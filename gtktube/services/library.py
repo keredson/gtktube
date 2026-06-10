@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from gtktube.db.repositories import LibraryRepository
 from gtktube.extractors.youtube import ExtractorError, YoutubeExtractor
-from gtktube.models import Channel, PlayableVideo, Video
+from gtktube.models import Channel, PlayableVideo, SearchResults, Video
 
 
 class LibraryService:
@@ -56,9 +56,10 @@ class LibraryService:
         self.repository.unsubscribe_channel(channel.id)
 
     def refresh_channel(self, channel: Channel, limit: int = 30) -> list[Video]:
+        was_subscribed = self.repository.is_subscribed(channel.id)
         try:
             channel = self.extractor.resolve_channel(channel.url)
-            self.repository.upsert_channel(channel, subscribed=True)
+            self.repository.upsert_channel(channel, subscribed=was_subscribed)
         except ExtractorError:
             pass
         videos = self.extractor.channel_uploads(channel, limit=limit)
@@ -74,9 +75,19 @@ class LibraryService:
                 self.repository.mark_channel_refresh(channel.id, success=False)
                 raise
 
-    def search(self, query: str, limit: int = 20) -> list[Video]:
+    def search(self, query: str, limit: int = 20) -> SearchResults:
         self.repository.add_search_history(query)
-        return self.extractor.search(query, limit=limit)
+        results = self.extractor.search(query, limit=limit)
+        channels: list[Channel] = []
+        for channel in results.channels:
+            if not channel.thumbnail_url:
+                try:
+                    channel = self.extractor.resolve_channel(channel.url)
+                except ExtractorError:
+                    pass
+            self.repository.upsert_channel(channel, subscribed=False)
+            channels.append(self.repository.channel(channel.id) or channel)
+        return SearchResults(videos=results.videos, channels=channels)
 
     def _store_video_and_channel(self, video: Video) -> None:
         if video.channel_id and video.channel_title:

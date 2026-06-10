@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import urllib.error
 import urllib.request
@@ -19,13 +20,42 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gst, Gtk, Pango  # noqa: E402
 
 from gtktube.extractors.youtube import ExtractorError, QUALITY_FORMATS
-from gtktube.models import Channel, PlayableVideo, Video
+from gtktube.models import Channel, PlayableVideo, SearchResults, Video
 from gtktube.paths import AppPaths
 from gtktube.services.library import LibraryService
 
 
 T = TypeVar("T")
 Gst.init(None)
+
+
+APP_CSS = """
+.sidebar {
+  background: alpha(currentColor, 0.04);
+  border-right: 1px solid alpha(currentColor, 0.14);
+}
+
+.sidebar-list {
+  background: transparent;
+  padding: 8px 6px;
+}
+
+.nav-row {
+  border-radius: 7px;
+  margin: 1px 0;
+  padding: 7px 8px;
+}
+
+.channel-nav-row {
+  border-radius: 6px;
+  margin: 0;
+  padding: 5px 8px 5px 28px;
+}
+
+.channel-nav-label {
+  font-size: 0.92em;
+}
+"""
 
 
 @dataclass(frozen=True)
@@ -73,8 +103,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.forward_stack: list[ViewState] = []
         self.current_view: ViewState | None = None
         self.suppress_nav_selection = False
+        self.updating_recent_searches = False
+        self.feed_limit = 100
+        self.channel_video_limits: dict[str, int] = {}
+        self.loading_more_videos = False
 
-        self.set_default_size(1100, 720)
+        self.restore_window_size()
+        self.install_css()
         self.connect("close-request", self.on_close_request)
         shortcuts = Gtk.EventControllerKey()
         shortcuts.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
@@ -100,17 +135,67 @@ class MainWindow(Gtk.ApplicationWindow):
         self.forward_button.set_sensitive(False)
         self.forward_button.connect("clicked", self.on_forward_clicked)
         header.pack_start(self.forward_button)
+
+        self.context_refresh_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("view-refresh-symbolic")
+        )
+        self.context_refresh_button.set_tooltip_text("Refresh")
+        self.context_refresh_button.set_visible(False)
+        self.context_refresh_button.connect("clicked", self.on_context_refresh_clicked)
+        header.pack_end(self.context_refresh_button)
+
+        self.context_share_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("edit-copy-symbolic")
+        )
+        self.context_share_button.set_tooltip_text("Copy video URL")
+        self.context_share_button.set_visible(False)
+        self.context_share_button.connect("clicked", self.on_context_share_clicked)
+        header.pack_end(self.context_share_button)
+
+        self.context_unsubscribe_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("edit-delete-symbolic")
+        )
+        self.context_unsubscribe_button.set_tooltip_text("Unsubscribe")
+        self.context_unsubscribe_button.set_visible(False)
+        self.context_unsubscribe_button.connect(
+            "clicked", self.on_context_unsubscribe_clicked
+        )
+        header.pack_end(self.context_unsubscribe_button)
+
+        title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        title_box.set_halign(Gtk.Align.CENTER)
+        title_box.set_valign(Gtk.Align.CENTER)
+        title = Gtk.Label(label="GTKTube")
+        title.add_css_class("title")
+        title.set_single_line_mode(True)
+        title_box.append(title)
+        self.header_subtitle = Gtk.Label(label="")
+        self.header_subtitle.add_css_class("caption")
+        self.header_subtitle.add_css_class("dim-label")
+        self.header_subtitle.set_ellipsize(Pango.EllipsizeMode.END)
+        self.header_subtitle.set_single_line_mode(True)
+        self.header_subtitle.set_max_width_chars(48)
+        title_box.append(self.header_subtitle)
+        header.set_title_widget(title_box)
         self.set_titlebar(header)
 
         body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0, vexpand=True)
         root.append(body)
 
+        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        sidebar.add_css_class("sidebar")
+        sidebar.set_size_request(210, -1)
+        body.append(sidebar)
+
         nav = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
-        nav.set_size_request(180, -1)
-        body.append(nav)
+        nav.add_css_class("sidebar-list")
+        sidebar.append(nav)
         self.nav = nav
         self.nav_pages: dict[Gtk.ListBoxRow, str] = {}
+        self.nav_channels: dict[Gtk.ListBoxRow, Channel] = {}
         self.page_rows: dict[str, Gtk.ListBoxRow] = {}
+        self.channel_rows: dict[str, Gtk.ListBoxRow] = {}
+        self.channel_nav_rows: list[Gtk.ListBoxRow] = []
 
         self.stack = Gtk.Stack(hexpand=True, vexpand=True)
         body.append(self.stack)
@@ -118,13 +203,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self.pages: dict[str, Gtk.Widget] = {}
         for key, title in [
             ("feed", "Feed"),
-            ("channels", "Channels"),
             ("search", "Search"),
             ("history", "History"),
-            ("player", "Player"),
+            ("channels", "Channels"),
         ]:
             row = Gtk.ListBoxRow()
-            row.set_child(Gtk.Label(label=title, xalign=0))
+            row.set_child(self.nav_page_widget(key, title))
             self.nav_pages[row] = key
             self.page_rows[key] = row
             nav.append(row)
@@ -142,18 +226,89 @@ class MainWindow(Gtk.ApplicationWindow):
         GLib.timeout_add_seconds(5, self.flush_watch_range)
         GLib.timeout_add_seconds(1, self.update_playback_controls)
 
+    def install_css(self) -> None:
+        display = Gdk.Display.get_default()
+        if display is None:
+            return
+        provider = Gtk.CssProvider()
+        provider.load_from_data(APP_CSS.encode("utf-8"))
+        Gtk.StyleContext.add_provider_for_display(
+            display,
+            provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+    def nav_page_widget(self, key: str, title: str) -> Gtk.Widget:
+        icons = {
+            "feed": "view-list-symbolic",
+            "search": "system-search-symbolic",
+            "history": "document-open-recent-symbolic",
+            "channels": "folder-symbolic",
+        }
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
+        box.add_css_class("nav-row")
+        icon = Gtk.Image.new_from_icon_name(icons[key])
+        box.append(icon)
+        label = Gtk.Label(label=title, xalign=0, hexpand=True)
+        box.append(label)
+        return box
+
     def on_close_request(self, *_args: object) -> bool:
+        self.save_window_size()
         self.flush_watch_range()
         self.stop_pipeline()
         self.executor.shutdown(wait=False, cancel_futures=True)
         return False
+
+    def restore_window_size(self) -> None:
+        size = self.read_window_size()
+        if size is None:
+            self.set_default_size(1100, 720)
+            return
+        width, height = size
+        self.set_default_size(width, height)
+
+    def read_window_size(self) -> tuple[int, int] | None:
+        try:
+            data = json.loads(self.window_state_path().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        try:
+            width = int(data["width"])
+            height = int(data["height"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if width < 640 or height < 480:
+            return None
+        return width, height
+
+    def save_window_size(self) -> None:
+        width = self.get_width()
+        height = self.get_height()
+        if width < 1 or height < 1:
+            return
+        data = {"width": width, "height": height}
+        try:
+            path = self.window_state_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+    def window_state_path(self) -> Path:
+        return self.paths.config_dir / "window-state.json"
 
     def on_nav_selected(self, _listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         if row is None:
             return
         if self.suppress_nav_selection:
             return
-        self.navigate_to(ViewState(self.nav_pages[row]))
+        if row in self.nav_pages:
+            self.navigate_to(ViewState(self.nav_pages[row]))
+            return
+        channel = self.nav_channels.get(row)
+        if channel is not None:
+            self.navigate_to(ViewState("feed", channel.id, channel.title))
 
     def on_back_clicked(self, _button: Gtk.Button) -> None:
         self.go_back()
@@ -192,12 +347,19 @@ class MainWindow(Gtk.ApplicationWindow):
         self.update_navigation_buttons()
 
     def apply_view_state(self, view: ViewState) -> None:
+        self.update_header_subtitle(view)
+        self.update_context_refresh_button(view)
+        self.update_context_share_button(view)
+        self.update_context_unsubscribe_button(view)
         if view.channel_id is not None:
             self.populate_video_grid(
                 self.feed_grid,
-                self.service.repository.channel_videos(view.channel_id),
+                self.service.repository.channel_videos(
+                    view.channel_id,
+                    self.channel_video_limits.get(view.channel_id, 30),
+                ),
             )
-            self.select_nav_page("feed")
+            self.select_nav_channel(view.channel_id)
             self.stack.set_visible_child_name("feed")
             return
 
@@ -211,17 +373,112 @@ class MainWindow(Gtk.ApplicationWindow):
         self.select_nav_page(view.page)
         self.stack.set_visible_child_name(view.page)
 
+    def update_header_subtitle(self, view: ViewState | None = None) -> None:
+        view = view or self.current_view
+        if view is None:
+            self.header_subtitle.set_text("")
+            return
+        if view.channel_id is not None:
+            self.header_subtitle.set_text(view.channel_title or "Channel")
+        elif view.page == "feed":
+            self.header_subtitle.set_text("Feed")
+        elif view.page == "search":
+            self.header_subtitle.set_text("Search")
+        elif view.page == "history":
+            self.header_subtitle.set_text("History")
+        elif view.page == "channels":
+            self.header_subtitle.set_text("Channels")
+        elif view.page == "player" and self.current_playable is not None:
+            self.header_subtitle.set_text(self.current_playable.video.title)
+        elif view.page == "player":
+            self.header_subtitle.set_text("Player")
+        else:
+            self.header_subtitle.set_text("")
+
     def select_nav_page(self, page: str) -> None:
         row = self.page_rows.get(page)
-        if row is None:
-            return
         self.suppress_nav_selection = True
-        self.nav.select_row(row)
+        if row is not None:
+            self.nav.select_row(row)
+        else:
+            self.nav.unselect_all()
+        self.suppress_nav_selection = False
+
+    def select_nav_channel(self, channel_id: str) -> None:
+        row = self.channel_rows.get(channel_id)
+        self.suppress_nav_selection = True
+        if row is not None:
+            self.nav.select_row(row)
+        else:
+            self.nav.select_row(self.page_rows["feed"])
         self.suppress_nav_selection = False
 
     def update_navigation_buttons(self) -> None:
         self.back_button.set_sensitive(bool(self.back_stack))
         self.forward_button.set_sensitive(bool(self.forward_stack))
+
+    def update_context_refresh_button(self, view: ViewState | None = None) -> None:
+        view = view or self.current_view
+        if view is None:
+            self.context_refresh_button.set_visible(False)
+        elif view.channel_id is not None:
+            self.context_refresh_button.set_tooltip_text("Refresh channel")
+            self.context_refresh_button.set_visible(True)
+        elif view.page in {"feed", "channels"}:
+            self.context_refresh_button.set_tooltip_text("Refresh subscriptions")
+            self.context_refresh_button.set_visible(True)
+        else:
+            self.context_refresh_button.set_visible(False)
+
+    def update_context_unsubscribe_button(self, view: ViewState | None = None) -> None:
+        view = view or self.current_view
+        visible = bool(
+            view
+            and view.channel_id is not None
+            and self.service.repository.is_subscribed(view.channel_id)
+        )
+        self.context_unsubscribe_button.set_visible(visible)
+
+    def update_context_share_button(self, view: ViewState | None = None) -> None:
+        view = view or self.current_view
+        visible = bool(
+            view
+            and view.page == "player"
+            and view.channel_id is None
+            and self.current_playable is not None
+        )
+        self.context_share_button.set_visible(visible)
+
+    def on_context_refresh_clicked(self, _button: Gtk.Button) -> None:
+        if self.current_view and self.current_view.channel_id is not None:
+            channel = self.current_channel()
+            if channel is not None:
+                self.refresh_one_channel(channel)
+            return
+        if self.current_view and self.current_view.page in {"feed", "channels"}:
+            self.on_refresh_subscriptions(self.context_refresh_button)
+
+    def on_context_unsubscribe_clicked(self, _button: Gtk.Button) -> None:
+        channel = self.current_channel()
+        if channel is not None:
+            self.unsubscribe_channel(channel)
+
+    def on_context_share_clicked(self, _button: Gtk.Button) -> None:
+        if self.current_playable is None:
+            return
+        display = Gdk.Display.get_default()
+        if display is None:
+            return
+        display.get_clipboard().set(self.current_playable.video.url)
+        self.set_status("Copied video URL")
+
+    def current_channel(self) -> Channel | None:
+        if self.current_view is None or self.current_view.channel_id is None:
+            return None
+        for channel in self.service.repository.subscribed_channels():
+            if channel.id == self.current_view.channel_id:
+                return channel
+        return None
 
     def set_status(self, text: str) -> None:
         self.status_text = text
@@ -267,17 +524,26 @@ class MainWindow(Gtk.ApplicationWindow):
         page.set_margin_start(12)
         page.set_margin_end(12)
 
-        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        page.append(toolbar)
-
-        refresh = Gtk.Button(label="Refresh subscriptions")
-        refresh.connect("clicked", self.on_refresh_subscriptions)
-        toolbar.append(refresh)
-
+        feed_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.feed_grid = self.create_video_grid()
+        feed_content.append(self.feed_grid)
+        self.feed_loading_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.feed_loading_box.set_halign(Gtk.Align.CENTER)
+        self.feed_loading_box.set_margin_top(8)
+        self.feed_loading_box.set_margin_bottom(8)
+        self.feed_loading_box.set_visible(False)
+        spinner = Gtk.Spinner()
+        spinner.start()
+        self.feed_loading_box.append(spinner)
+        label = Gtk.Label(label="Loading more...")
+        label.add_css_class("dim-label")
+        self.feed_loading_box.append(label)
+        feed_content.append(self.feed_loading_box)
+
         scroller = Gtk.ScrolledWindow(vexpand=True)
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_child(self.feed_grid)
+        scroller.set_child(feed_content)
+        scroller.get_vadjustment().connect("value-changed", self.on_feed_scroll)
         page.append(scroller)
 
         self.stack.add_named(page, "feed")
@@ -316,21 +582,40 @@ class MainWindow(Gtk.ApplicationWindow):
 
         search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         page.append(search_box)
-        self.search_entry = Gtk.Entry(hexpand=True)
-        self.search_entry.set_placeholder_text("Search YouTube")
-        self.search_entry.connect("activate", self.on_search_clicked)
-        search_box.append(self.search_entry)
+        self.search_combo = Gtk.ComboBoxText.new_with_entry()
+        self.search_combo.set_hexpand(True)
+        self.search_combo.connect("changed", self.on_recent_search_selected)
+        self.search_entry = self.search_combo.get_child()
+        if isinstance(self.search_entry, Gtk.Entry):
+            self.search_entry.set_placeholder_text("Search YouTube")
+            self.search_entry.connect("activate", self.on_search_clicked)
+        search_box.append(self.search_combo)
         search_button = Gtk.Button(label="Search")
         search_button.connect("clicked", self.on_search_clicked)
         search_box.append(search_button)
 
-        self.recent_searches = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE)
-        page.append(self.recent_searches)
+        search_results = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.search_channel_heading = Gtk.Label(label="Channels", xalign=0)
+        self.search_channel_heading.add_css_class("heading")
+        self.search_channel_heading.set_visible(False)
+        search_results.append(self.search_channel_heading)
+
+        self.search_channel_grid = self.create_channel_grid()
+        self.search_channel_grid.set_visible(False)
+        search_results.append(self.search_channel_grid)
+
+        self.search_video_heading = Gtk.Label(label="Videos", xalign=0)
+        self.search_video_heading.add_css_class("heading")
+        self.search_video_heading.set_visible(False)
+        search_results.append(self.search_video_heading)
 
         self.search_grid = self.create_video_grid()
+        self.search_grid.set_visible(False)
+        search_results.append(self.search_grid)
+
         scroller = Gtk.ScrolledWindow(vexpand=True)
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_child(self.search_grid)
+        scroller.set_child(search_results)
         page.append(scroller)
 
         self.stack.add_named(page, "search")
@@ -366,16 +651,6 @@ class MainWindow(Gtk.ApplicationWindow):
         page.set_margin_bottom(12)
         page.set_margin_start(12)
         page.set_margin_end(12)
-
-        url_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        page.append(url_box)
-        self.url_entry = Gtk.Entry(hexpand=True)
-        self.url_entry.set_placeholder_text("YouTube video URL")
-        self.url_entry.connect("activate", self.on_play_url_clicked)
-        url_box.append(self.url_entry)
-        play_button = Gtk.Button(label="Play URL")
-        play_button.connect("clicked", self.on_play_url_clicked)
-        url_box.append(play_button)
 
         self.video = Gtk.Picture(hexpand=True, vexpand=True)
         self.video.set_can_shrink(True)
@@ -473,10 +748,85 @@ class MainWindow(Gtk.ApplicationWindow):
         return grid
 
     def on_refresh_subscriptions(self, _button: Gtk.Button) -> None:
+        def done(_result: None) -> None:
+            self.reload_channels()
+            self.reload_feed()
+
         self.run_task(
             "Refreshing subscriptions...",
             self.service.refresh_subscriptions,
-            lambda _result: self.reload_feed(),
+            done,
+        )
+
+    def on_feed_scroll(self, adjustment: Gtk.Adjustment) -> None:
+        if self.loading_more_videos:
+            return
+        if self.current_view is None:
+            return
+        if self.current_view.page != "feed":
+            return
+        bottom = adjustment.get_upper() - adjustment.get_page_size()
+        if bottom <= 0:
+            return
+        if adjustment.get_value() >= bottom - 160:
+            self.load_more_videos()
+
+    def load_more_videos(self) -> None:
+        if self.current_view and self.current_view.channel_id is not None:
+            channel = self.current_channel()
+            if channel is not None:
+                self.load_more_channel_videos(channel)
+            return
+        self.loading_more_videos = True
+        self.feed_loading_box.set_visible(True)
+        previous_limit = self.feed_limit
+        self.feed_limit += 100
+        videos = self.service.repository.subscription_feed(self.feed_limit)
+        self.append_video_grid_batched(
+            self.feed_grid,
+            videos[previous_limit:self.feed_limit],
+            self.finish_local_feed_load,
+        )
+
+    def finish_local_feed_load(self) -> bool:
+        self.loading_more_videos = False
+        self.feed_loading_box.set_visible(False)
+        return False
+
+    def load_more_channel_videos(self, channel: Channel) -> None:
+        current_limit = self.channel_video_limits.get(channel.id, 30)
+        next_limit = current_limit + 30
+        self.channel_video_limits[channel.id] = next_limit
+        self.loading_more_videos = True
+        self.feed_loading_box.set_visible(True)
+
+        def done(_videos: list[Video]) -> None:
+            if self.current_view and self.current_view.channel_id == channel.id:
+                videos = self.service.repository.channel_videos(channel.id, next_limit)
+                self.append_video_grid_batched(
+                    self.feed_grid,
+                    videos[current_limit:next_limit],
+                    self.finish_local_feed_load,
+                )
+                return
+            self.finish_local_feed_load()
+
+        def failed_done() -> bool:
+            self.loading_more_videos = False
+            self.feed_loading_box.set_visible(False)
+            return False
+
+        def work() -> list[Video]:
+            try:
+                return self.service.refresh_channel(channel, limit=next_limit)
+            except Exception:
+                GLib.idle_add(failed_done)
+                raise
+
+        self.run_task(
+            f"Loading more from {channel.title}...",
+            work,
+            done,
         )
 
     def on_subscribe_clicked(self, _widget: Gtk.Widget) -> None:
@@ -496,26 +846,14 @@ class MainWindow(Gtk.ApplicationWindow):
         if not query:
             return
 
-        def done(videos: list[Video]) -> None:
-            self.populate_video_grid(self.search_grid, videos)
+        def done(results: SearchResults) -> None:
+            self.populate_search_results(results)
             self.reload_recent_searches()
 
         self.run_task("Searching...", lambda: self.service.search(query), done)
 
     def on_history_search_changed(self, _widget: Gtk.Widget) -> None:
         self.reload_history()
-
-    def on_play_url_clicked(self, _widget: Gtk.Widget) -> None:
-        url = self.url_entry.get_text().strip()
-        if not url:
-            return
-        self.navigate_to(ViewState("player"))
-        quality = self.selected_quality()
-        self.run_task(
-            "Resolving video...",
-            lambda: self.service.play_url(url, quality=quality),
-            self.load_playable,
-        )
 
     def on_player_subscribe_toggled(self, _button: Gtk.CheckButton) -> None:
         if self.updating_subscribe_check:
@@ -552,12 +890,71 @@ class MainWindow(Gtk.ApplicationWindow):
             )
 
     def reload_feed(self) -> None:
-        self.populate_video_grid(self.feed_grid, self.service.repository.subscription_feed())
+        self.populate_video_grid(
+            self.feed_grid,
+            self.service.repository.subscription_feed(self.feed_limit),
+        )
+
+    def populate_search_results(self, results: SearchResults) -> None:
+        self.clear_flowbox(self.search_channel_grid)
+        self.clear_flowbox(self.search_grid)
+
+        self.search_channel_heading.set_visible(bool(results.channels))
+        self.search_channel_grid.set_visible(bool(results.channels))
+        for channel in results.channels:
+            self.search_channel_grid.append(
+                self.channel_tile(channel)
+            )
+
+        self.search_video_heading.set_visible(bool(results.videos))
+        self.search_grid.set_visible(bool(results.videos))
+        for video in results.videos:
+            self.search_grid.append(self.video_tile(video))
 
     def reload_channels(self) -> None:
+        channels = self.service.repository.subscribed_channels()
         self.clear_flowbox(self.channel_grid)
-        for channel in self.service.repository.subscribed_channels():
+        for channel in channels:
             self.channel_grid.append(self.channel_tile(channel))
+        self.reload_channel_nav(channels)
+
+    def reload_channel_nav(self, channels: list[Channel]) -> None:
+        self.suppress_nav_selection = True
+        for row in self.channel_nav_rows:
+            self.nav.remove(row)
+        self.channel_nav_rows = []
+        self.nav_channels = {}
+        self.channel_rows = {}
+
+        for channel in channels:
+            row = Gtk.ListBoxRow()
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=7)
+            box.add_css_class("channel-nav-row")
+            if channel.thumbnail_url:
+                icon = Gtk.Picture()
+                icon.set_size_request(24, 24)
+                icon.set_can_shrink(False)
+                icon.set_content_fit(Gtk.ContentFit.COVER)
+                self.load_channel_nav_icon(channel, icon)
+                box.append(icon)
+            else:
+                fallback_icon = Gtk.Image.new_from_icon_name("video-display-symbolic")
+                fallback_icon.add_css_class("dim-label")
+                box.append(fallback_icon)
+            label = Gtk.Label(label=channel.title, xalign=0, hexpand=True)
+            label.add_css_class("channel-nav-label")
+            label.add_css_class("dim-label")
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            box.append(label)
+            row.set_child(box)
+            self.nav_channels[row] = channel
+            self.channel_rows[channel.id] = row
+            self.channel_nav_rows.append(row)
+            self.nav.append(row)
+
+        self.suppress_nav_selection = False
+        if self.current_view and self.current_view.channel_id is not None:
+            self.select_nav_channel(self.current_view.channel_id)
 
     def channel_tile(self, channel: Channel) -> Gtk.Widget:
         tile = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -568,7 +965,7 @@ class MainWindow(Gtk.ApplicationWindow):
         tile.set_margin_end(6)
 
         open_button = Gtk.Button()
-        open_button.connect("clicked", lambda _button: self.show_channel_videos(channel))
+        open_button.connect("clicked", lambda _button: self.open_search_channel(channel))
         tile.append(open_button)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -579,13 +976,26 @@ class MainWindow(Gtk.ApplicationWindow):
         content.set_margin_end(6)
         open_button.set_child(content)
 
-        thumbnail = Gtk.Picture()
-        thumbnail.set_size_request(112, 112)
-        thumbnail.set_can_shrink(False)
-        thumbnail.set_halign(Gtk.Align.CENTER)
-        thumbnail.set_content_fit(Gtk.ContentFit.CONTAIN)
-        self.load_channel_thumbnail(channel, thumbnail)
-        content.append(thumbnail)
+        thumbnail_area = Gtk.Overlay()
+        thumbnail_area.set_size_request(112, 112)
+        thumbnail_area.set_halign(Gtk.Align.CENTER)
+        thumbnail_placeholder = Gtk.Image.new_from_icon_name("avatar-default-symbolic")
+        thumbnail_placeholder.set_pixel_size(64)
+        thumbnail_placeholder.set_size_request(112, 112)
+        thumbnail_placeholder.set_halign(Gtk.Align.CENTER)
+        thumbnail_placeholder.set_valign(Gtk.Align.CENTER)
+        thumbnail_placeholder.add_css_class("dim-label")
+        thumbnail_area.set_child(thumbnail_placeholder)
+        if channel.thumbnail_url:
+            thumbnail = Gtk.Picture()
+            thumbnail.set_size_request(112, 112)
+            thumbnail.set_can_shrink(False)
+            thumbnail.set_halign(Gtk.Align.CENTER)
+            thumbnail.set_valign(Gtk.Align.CENTER)
+            thumbnail.set_content_fit(Gtk.ContentFit.CONTAIN)
+            self.load_channel_thumbnail(channel, thumbnail)
+            thumbnail_area.add_overlay(thumbnail)
+        content.append(thumbnail_area)
 
         title = Gtk.Label(label=channel.title, xalign=0.5)
         title.set_wrap(True)
@@ -604,23 +1014,11 @@ class MainWindow(Gtk.ApplicationWindow):
             handle.set_ellipsize(Pango.EllipsizeMode.END)
             content.append(handle)
 
-        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        actions.set_halign(Gtk.Align.CENTER)
-        tile.append(actions)
-
-        refresh_icon = Gtk.Image.new_from_icon_name("view-refresh-symbolic")
-        refresh = Gtk.Button(child=refresh_icon)
-        refresh.set_tooltip_text("Refresh channel")
-        refresh.connect("clicked", lambda _button: self.refresh_one_channel(channel))
-        actions.append(refresh)
-
-        unsubscribe_icon = Gtk.Image.new_from_icon_name("edit-delete-symbolic")
-        unsubscribe = Gtk.Button(child=unsubscribe_icon)
-        unsubscribe.set_tooltip_text("Unsubscribe")
-        unsubscribe.connect("clicked", lambda _button: self.unsubscribe_channel(channel))
-        actions.append(unsubscribe)
-
         return tile
+
+    def open_search_channel(self, channel: Channel) -> None:
+        self.service.repository.upsert_channel(channel, subscribed=False)
+        self.show_channel_videos(channel)
 
     def load_channel_thumbnail(self, channel: Channel, picture: Gtk.Picture) -> None:
         if not channel.thumbnail_url:
@@ -631,12 +1029,27 @@ class MainWindow(Gtk.ApplicationWindow):
             suffix=self.thumbnail_cache_suffix(channel.thumbnail_url),
             width=112,
             height=112,
+            log_label=f"channel thumbnail {channel.id}",
+        )
+
+    def load_channel_nav_icon(self, channel: Channel, picture: Gtk.Picture) -> None:
+        if not channel.thumbnail_url:
+            return
+        self.load_cached_image(
+            channel.thumbnail_url,
+            picture,
+            suffix=self.thumbnail_cache_suffix(channel.thumbnail_url),
+            width=24,
+            height=24,
+            log_label=f"channel nav icon {channel.id}",
         )
 
     def unsubscribe_channel(self, channel: Channel) -> None:
         def done(_result: None = None) -> None:
             self.reload_channels()
             self.reload_feed()
+            if self.current_view and self.current_view.channel_id == channel.id:
+                self.navigate_to(ViewState("feed"))
             if self.current_playable is not None:
                 self.update_subscribe_check(self.current_playable.video)
 
@@ -647,29 +1060,50 @@ class MainWindow(Gtk.ApplicationWindow):
         )
 
     def reload_recent_searches(self) -> None:
-        child = self.recent_searches.get_first_child()
-        while child is not None:
-            next_child = child.get_next_sibling()
-            self.recent_searches.remove(child)
-            child = next_child
+        self.updating_recent_searches = True
+        current_text = self.search_entry.get_text()
+        current_position = self.search_entry.get_position()
+        self.search_combo.remove_all()
         for query in self.service.repository.recent_searches():
-            button = Gtk.Button(label=query)
-            button.connect("clicked", lambda _b, q=query: self.run_recent_search(q))
-            self.recent_searches.append(button)
+            self.search_combo.append_text(query)
+        self.search_combo.set_active(-1)
+        self.search_entry.set_text(current_text)
+        self.search_entry.set_position(current_position)
+        self.updating_recent_searches = False
+
+    def on_recent_search_selected(self, combo: Gtk.ComboBoxText) -> None:
+        if self.updating_recent_searches:
+            return
+        if combo.get_active() < 0:
+            return
+        query = combo.get_active_text()
+        if query:
+            self.run_recent_search(query)
 
     def reload_history(self) -> None:
         query = self.history_entry.get_text().strip() if hasattr(self, "history_entry") else ""
         self.populate_video_grid(self.history_grid, self.service.repository.watch_history(query))
 
     def refresh_one_channel(self, channel: Channel) -> None:
+        def done(_videos: list[Video]) -> None:
+            self.reload_channels()
+            if self.current_view and self.current_view.channel_id == channel.id:
+                self.apply_view_state(self.current_view)
+
         self.run_task(
             f"Refreshing {channel.title}...",
-            lambda: self.service.refresh_channel(channel),
-            lambda _videos: self.show_channel_videos(channel),
+            lambda: self.service.refresh_channel(
+                channel,
+                limit=self.channel_video_limits.get(channel.id, 30),
+            ),
+            done,
         )
 
     def show_channel_videos(self, channel: Channel) -> None:
+        self.channel_video_limits.setdefault(channel.id, 30)
         self.navigate_to(ViewState("feed", channel.id, channel.title))
+        if not self.service.repository.channel_videos(channel.id, 1):
+            self.refresh_one_channel(channel)
 
     def run_recent_search(self, query: str) -> None:
         self.search_entry.set_text(query)
@@ -679,6 +1113,28 @@ class MainWindow(Gtk.ApplicationWindow):
         self.clear_flowbox(grid)
         for video in videos:
             grid.append(self.video_tile(video))
+
+    def append_video_grid_batched(
+        self,
+        grid: Gtk.FlowBox,
+        videos: list[Video],
+        done: Callable[[], bool] | None = None,
+    ) -> None:
+        index = 0
+
+        def append_batch() -> bool:
+            nonlocal index
+            end = min(index + 8, len(videos))
+            for video in videos[index:end]:
+                grid.append(self.video_tile(video))
+            index = end
+            if index < len(videos):
+                return True
+            if done is not None:
+                done()
+            return False
+
+        GLib.idle_add(append_batch)
 
     def video_tile(self, video: Video) -> Gtk.Widget:
         button = Gtk.Button()
@@ -741,17 +1197,22 @@ class MainWindow(Gtk.ApplicationWindow):
         suffix: str = ".img",
         width: int = 232,
         height: int = 174,
+        log_label: str | None = None,
     ) -> None:
+        url = self.absolute_media_url(url)
+        download_url = self.absolute_media_url(download_url or url)
         path = self.thumbnail_path(url, suffix)
         if path.exists():
             if self.set_thumbnail_file(picture, path, width, height):
                 return
+            if log_label:
+                self.log(f"{log_label} cached image decode failed path={path} url={url}")
             try:
                 path.unlink()
             except OSError:
                 pass
 
-        future = self.executor.submit(self.download_thumbnail, download_url or url, path)
+        future = self.executor.submit(self.download_thumbnail, download_url, path)
 
         def done() -> bool:
             try:
@@ -759,10 +1220,20 @@ class MainWindow(Gtk.ApplicationWindow):
             except Exception:
                 return False
             if downloaded.exists() and picture.get_parent() is not None:
-                self.set_thumbnail_file(picture, downloaded, width, height)
+                if not self.set_thumbnail_file(picture, downloaded, width, height):
+                    if log_label:
+                        self.log(
+                            f"{log_label} downloaded image decode failed "
+                            f"path={downloaded} url={download_url}"
+                        )
             return False
 
         future.add_done_callback(lambda _future: GLib.idle_add(done))
+
+    def absolute_media_url(self, url: str) -> str:
+        if url.startswith("//"):
+            return f"https:{url}"
+        return url
 
     def set_thumbnail_file(
         self, picture: Gtk.Picture, path: Path, width: int, height: int
@@ -829,7 +1300,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if video.channel_title:
             parts.append(video.channel_title)
         if video.published_at:
-            parts.append(video.published_at)
+            parts.append(f"Posted {video.published_at}")
         if video.duration_seconds:
             parts.append(self.format_time(video.duration_seconds))
         if video.view_count is not None:
@@ -855,12 +1326,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.flush_watch_range()
         self.stop_pipeline()
         self.current_playable = playable
+        self.update_header_subtitle(ViewState("player"))
         self.updating_quality = True
         self.quality_combo.set_active_id(playable.quality)
         self.updating_quality = False
         self.update_player_metadata(playable.video)
-        self.url_entry.set_text(playable.video.url)
         self.update_subscribe_check(playable.video)
+        self.update_context_share_button(ViewState("player"))
 
         pipeline = self.create_pipeline(playable)
         if pipeline is None:

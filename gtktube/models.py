@@ -30,6 +30,12 @@ class Channel:
 
 
 @dataclass(frozen=True)
+class SearchResults:
+    videos: list[Video]
+    channels: list[Channel]
+
+
+@dataclass(frozen=True)
 class PlayableVideo:
     video: Video
     stream_url: str
