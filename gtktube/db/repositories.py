@@ -170,6 +170,7 @@ class LibraryRepository:
                 v.thumbnail_url, v.description, v.duration_seconds,
                 v.published_at, v.view_count,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
+                wp.watch_range_string,
                 COALESCE(wh.completed, 0) AS completed
             FROM videos v
             JOIN channels c ON c.id = v.channel_id
@@ -192,6 +193,7 @@ class LibraryRepository:
                 v.thumbnail_url, v.description, v.duration_seconds,
                 v.published_at, v.view_count,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
+                wp.watch_range_string,
                 COALESCE(wh.completed, 0) AS completed
             FROM videos v
             LEFT JOIN channels c ON c.id = v.channel_id
@@ -231,6 +233,7 @@ class LibraryRepository:
                 v.thumbnail_url, v.description, v.duration_seconds,
                 v.published_at, v.view_count,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
+                wp.watch_range_string,
                 COALESCE(wh.completed, 0) AS completed
             FROM watch_history wh
             JOIN videos v ON v.id = wh.video_id
@@ -301,6 +304,7 @@ class LibraryRepository:
                 v.thumbnail_url, v.description, v.duration_seconds,
                 v.published_at, v.view_count,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
+                wp.watch_range_string,
                 COALESCE(wh.completed, 0) AS completed
             FROM watch_later wl
             JOIN videos v ON v.id = wl.video_id
@@ -390,6 +394,15 @@ class LibraryRepository:
         return [self._video_from_row(row) for row in rows]
 
     def _video_from_row(self, row: sqlite3.Row) -> Video:
+        ranges = []
+        if "watch_range_string" in row.keys() and row["watch_range_string"]:
+            for part in row["watch_range_string"].split(","):
+                try:
+                    start, end = part.split("-")
+                    ranges.append((int(start), int(end)))
+                except (ValueError, TypeError):
+                    continue
+
         return Video(
             id=row["id"],
             title=row["title"],
@@ -402,6 +415,7 @@ class LibraryRepository:
             published_at=row["published_at"],
             view_count=row["view_count"],
             percent_watched=row["percent_watched"],
+            watch_ranges=ranges or None,
             completed=bool(row["completed"]),
         )
 

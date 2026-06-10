@@ -800,12 +800,12 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def build_feed_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        page.set_margin_top(12)
-        page.set_margin_bottom(12)
-        page.set_margin_start(12)
-        page.set_margin_end(12)
 
         feed_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        feed_content.set_margin_top(12)
+        feed_content.set_margin_bottom(12)
+        feed_content.set_margin_start(12)
+        feed_content.set_margin_end(12)
         self.channel_header = self.build_channel_header()
         self.channel_header.set_visible(False)
         feed_content.append(self.channel_header)
@@ -883,12 +883,11 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def build_channels_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        page.set_margin_top(12)
-        page.set_margin_bottom(12)
-        page.set_margin_start(12)
-        page.set_margin_end(12)
 
         add_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        add_box.set_margin_top(12)
+        add_box.set_margin_start(12)
+        add_box.set_margin_end(12)
         page.append(add_box)
         self.subscribe_entry = Gtk.Entry(hexpand=True)
         self.subscribe_entry.set_placeholder_text("Channel URL, handle URL, or video URL")
@@ -899,6 +898,9 @@ class MainWindow(Gtk.ApplicationWindow):
         add_box.append(subscribe)
 
         self.channel_grid = self.create_channel_grid()
+        self.channel_grid.set_margin_bottom(12)
+        self.channel_grid.set_margin_start(12)
+        self.channel_grid.set_margin_end(12)
         scroller = Gtk.ScrolledWindow(vexpand=True)
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroller.set_child(self.channel_grid)
@@ -908,12 +910,11 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def build_search_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        page.set_margin_top(12)
-        page.set_margin_bottom(12)
-        page.set_margin_start(12)
-        page.set_margin_end(12)
 
         search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        search_box.set_margin_top(12)
+        search_box.set_margin_start(12)
+        search_box.set_margin_end(12)
         page.append(search_box)
         self.search_combo = Gtk.ComboBoxText.new_with_entry()
         self.search_combo.set_hexpand(True)
@@ -933,6 +934,9 @@ class MainWindow(Gtk.ApplicationWindow):
         search_box.append(self.search_button)
 
         search_results = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        search_results.set_margin_bottom(12)
+        search_results.set_margin_start(12)
+        search_results.set_margin_end(12)
         self.search_channel_heading = Gtk.Label(label="Channels", xalign=0)
         self.search_channel_heading.add_css_class("heading")
         self.search_channel_heading.set_visible(False)
@@ -960,12 +964,12 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def build_watch_later_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        page.set_margin_top(12)
-        page.set_margin_bottom(12)
-        page.set_margin_start(12)
-        page.set_margin_end(12)
 
         self.watch_later_grid = self.create_video_grid()
+        self.watch_later_grid.set_margin_top(12)
+        self.watch_later_grid.set_margin_bottom(12)
+        self.watch_later_grid.set_margin_start(12)
+        self.watch_later_grid.set_margin_end(12)
         self.watch_later_scroller = Gtk.ScrolledWindow(vexpand=True)
         self.watch_later_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.watch_later_scroller.set_child(self.watch_later_grid)
@@ -990,12 +994,11 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def build_history_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        page.set_margin_top(12)
-        page.set_margin_bottom(12)
-        page.set_margin_start(12)
-        page.set_margin_end(12)
 
         search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        search_box.set_margin_top(12)
+        search_box.set_margin_start(12)
+        search_box.set_margin_end(12)
         page.append(search_box)
         self.history_entry = Gtk.Entry(hexpand=True)
         self.history_entry.set_placeholder_text("Search watch history")
@@ -1006,6 +1009,9 @@ class MainWindow(Gtk.ApplicationWindow):
         search_box.append(history_button)
 
         self.history_grid = self.create_video_grid()
+        self.history_grid.set_margin_bottom(12)
+        self.history_grid.set_margin_start(12)
+        self.history_grid.set_margin_end(12)
         scroller = Gtk.ScrolledWindow(vexpand=True)
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroller.set_child(self.history_grid)
@@ -1047,6 +1053,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self.miniplayer_meta.set_single_line_mode(True)
         self.miniplayer_meta.set_ellipsize(Pango.EllipsizeMode.END)
         self.miniplayer_info.append(self.miniplayer_meta)
+        self.close_player_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("window-close-symbolic")
+        )
+        self.close_player_button.set_tooltip_text("Close player")
+        self.close_player_button.connect("clicked", self.on_close_player_clicked)
+        mini_header.append(self.close_player_button)
         self.restore_player_button = Gtk.Button(
             child=Gtk.Image.new_from_icon_name("go-up-symbolic")
         )
@@ -1139,13 +1151,6 @@ class MainWindow(Gtk.ApplicationWindow):
         self.fullscreen_button.set_tooltip_text("Fullscreen video")
         self.fullscreen_button.connect("clicked", self.on_fullscreen_clicked)
         self.player_controls.append(self.fullscreen_button)
-
-        self.close_player_button = Gtk.Button(
-            child=Gtk.Image.new_from_icon_name("window-close-symbolic")
-        )
-        self.close_player_button.set_tooltip_text("Close player")
-        self.close_player_button.connect("clicked", self.on_close_player_clicked)
-        self.player_controls.append(self.close_player_button)
 
         self.player_metadata = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.player_metadata.set_margin_top(4)
@@ -1730,11 +1735,14 @@ class MainWindow(Gtk.ApplicationWindow):
         thumb_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         thumb_container.append(thumbnail)
 
-        if video.percent_watched and video.percent_watched > 0:
-            progress = Gtk.ProgressBar()
-            progress.set_fraction(video.percent_watched)
-            progress.add_css_class("video-progress")
-            progress.set_valign(Gtk.Align.END)
+        if video.watch_ranges:
+            progress = Gtk.DrawingArea()
+            progress.set_size_request(-1, 3)
+            progress.set_draw_func(
+                lambda _area, cr, width, height, v=video: self.draw_video_progress(
+                    cr, width, height, v
+                )
+            )
             thumb_container.append(progress)
 
         box.append(thumb_container)
@@ -1758,6 +1766,27 @@ class MainWindow(Gtk.ApplicationWindow):
         box.append(subtitle)
 
         return button
+
+    def draw_video_progress(
+        self,
+        cr: Any,
+        width: int,
+        height: int,
+        video: Video,
+    ) -> None:
+        if not video.duration_seconds or not video.watch_ranges:
+            return
+
+        cr.set_source_rgba(1, 1, 1, 0.2)
+        cr.rectangle(0, 0, width, height)
+        cr.fill()
+
+        cr.set_source_rgb(1, 0, 0)
+        for start, end in video.watch_ranges:
+            x = (start / video.duration_seconds) * width
+            w = ((end - start) / video.duration_seconds) * width
+            cr.rectangle(x, 0, max(w, 1), height)
+            cr.fill()
 
     def create_queue_row(self, item: VideoObject) -> Gtk.Widget:
         video = item.video
@@ -2279,7 +2308,6 @@ class MainWindow(Gtk.ApplicationWindow):
         self.player_controls.set_margin_bottom(8)
         self.player_controls.set_margin_start(12)
         self.player_controls.set_margin_end(12)
-        self.close_player_button.set_visible(False)
         self.miniplayer.set_visible(True)
         self.video.queue_resize()
         self.video.queue_render()
@@ -2310,7 +2338,6 @@ class MainWindow(Gtk.ApplicationWindow):
         self.player_controls.set_margin_bottom(0)
         self.player_controls.set_margin_start(0)
         self.player_controls.set_margin_end(0)
-        self.close_player_button.set_visible(True)
         self.miniplayer.set_visible(True)
         self.video.queue_resize()
         self.video.queue_render()
