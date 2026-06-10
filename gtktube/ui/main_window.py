@@ -145,6 +145,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.updating_quality = False
         self.updating_speed = False
         self.playback_rate = 1.0
+        self.preferred_quality = "720p"
         self.description_link_generation = 0
         self.current_channel_url: str | None = None
         self.video_fullscreen = False
@@ -1104,7 +1105,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.quality_combo = Gtk.ComboBoxText()
         for quality in QUALITY_FORMATS:
             self.quality_combo.append(quality, quality)
-        self.quality_combo.set_active_id("720p")
+        self.quality_combo.set_active_id(self.preferred_quality)
         self.quality_combo.connect("changed", self.on_quality_changed)
         self.player_controls.append(self.quality_combo)
 
@@ -1135,18 +1136,26 @@ class MainWindow(Gtk.ApplicationWindow):
         self.player_metadata.set_margin_end(12)
         self.player_metadata.set_visible(False)
         self.miniplayer.append(self.player_metadata)
+
+        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.player_metadata.append(header_box)
+
+        text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        text_box.set_hexpand(True)
+        header_box.append(text_box)
+
         self.player_title = Gtk.Label(label="No video loaded", xalign=0, hexpand=True)
         self.player_title.set_wrap(True)
-        self.player_metadata.append(self.player_title)
+        text_box.append(self.player_title)
 
         self.player_meta = Gtk.Label(label="", xalign=0)
         self.player_meta.set_wrap(True)
         self.player_meta.add_css_class("dim-label")
-        self.player_metadata.append(self.player_meta)
+        text_box.append(self.player_meta)
 
         player_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         player_actions.set_valign(Gtk.Align.CENTER)
-        self.player_metadata.append(player_actions)
+        header_box.append(player_actions)
 
         self.player_subscribe = Gtk.CheckButton(label="Subscribed")
         self.player_subscribe.set_sensitive(False)
@@ -2241,6 +2250,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.player_controls.set_margin_bottom(8)
         self.player_controls.set_margin_start(12)
         self.player_controls.set_margin_end(12)
+        self.close_player_button.set_visible(False)
         self.miniplayer.set_visible(True)
         self.video.queue_resize()
         self.video.queue_render()
@@ -2271,6 +2281,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.player_controls.set_margin_bottom(0)
         self.player_controls.set_margin_start(0)
         self.player_controls.set_margin_end(0)
+        self.close_player_button.set_visible(True)
         self.miniplayer.set_visible(True)
         self.video.queue_resize()
         self.video.queue_render()
@@ -2657,11 +2668,15 @@ class MainWindow(Gtk.ApplicationWindow):
         return False
 
     def selected_quality(self) -> str:
-        return self.quality_combo.get_active_id() or "720p"
+        return self.preferred_quality
 
     def on_quality_changed(self, _combo: Gtk.ComboBoxText) -> None:
         if self.updating_quality:
             return
+        quality = self.quality_combo.get_active_id()
+        if quality:
+            self.preferred_quality = quality
+
         if self.current_playable is None:
             return
         position = self.current_position_seconds()
