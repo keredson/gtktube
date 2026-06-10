@@ -5,14 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gtktube"
 version = "0.1.0"
-description = "Local-first GTK4 YouTube subscription browser and player"
+description = "Local privacy-first Python/GTK4 YouTube player"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
 dependencies = [
+    "packaging>=24.0",
     "yt-dlp>=2025.1.15",
     "python-mpv>=1.0.8",
 ]
+
+[project.urls]
+Homepage = "https://github.com/keredson/gtktube"
+Source = "https://github.com/keredson/gtktube"
 
 [project.scripts]
 gtktube = "gtktube.app:main"

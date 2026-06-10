@@ -36,6 +36,7 @@ from gtktube.extractors.youtube import ExtractorError, QUALITY_FORMATS
 from gtktube.models import Channel, PlayableVideo, SearchResults, Video
 from gtktube.paths import AppPaths
 from gtktube.services.library import LibraryService
+from gtktube.update_check import UpdateInfo, check_for_update
 
 
 T = TypeVar("T")
@@ -339,6 +340,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.navigate_to(ViewState("feed"), record=False)
         GLib.timeout_add_seconds(5, self.flush_watch_range)
         GLib.timeout_add_seconds(1, self.update_playback_controls)
+        GLib.timeout_add_seconds(2, self.start_update_check)
 
     def install_css(self) -> None:
         display = Gdk.Display.get_default()
@@ -673,17 +675,13 @@ class MainWindow(Gtk.ApplicationWindow):
             program_name="GTKTube",
             version=__version__,
             comments=(
-                "A GPLv3 local-first GTK4 YouTube subscription browser and player."
+                "A GPLv3 local privacy-first Python/GTK4 YouTube player."
             ),
-            website="https://keredson.github.io/gtktube/",
+            website="https://github.com/keredson/gtktube",
             license_type=Gtk.License.GPL_3_0,
         )
         try:
-            dialog.set_logo(
-                GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                    str(icon_path), 128, 128, True
-                )
-            )
+            dialog.set_logo(Gdk.Texture.new_from_filename(str(icon_path)))
         except GLib.Error:
             pass
         dialog.present()
@@ -715,6 +713,70 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         display.get_clipboard().set(text)
         self.set_status(message)
+
+    def start_update_check(self) -> bool:
+        future = self.executor.submit(check_for_update, __version__)
+
+        def finish() -> bool:
+            try:
+                update = future.result()
+            except Exception as exc:
+                self.log(f"update check failed: {exc}")
+                return False
+            if update is not None and not self.cleaned_up:
+                self.show_update_dialog(update)
+            return False
+
+        future.add_done_callback(lambda _future: GLib.idle_add(finish))
+        return False
+
+    def show_update_dialog(self, update: UpdateInfo) -> None:
+        dialog = Gtk.Dialog(
+            title="GTKTube update available",
+            transient_for=self,
+            modal=True,
+        )
+        dialog.set_default_size(460, -1)
+        content = dialog.get_content_area()
+        content.set_spacing(10)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+
+        title = Gtk.Label(label="A newer GTKTube release is available", xalign=0)
+        title.add_css_class("heading")
+        content.append(title)
+
+        message = Gtk.Label(
+            label=(
+                f"Installed: {update.current_version}\n"
+                f"Latest on PyPI: {update.latest_version}"
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        content.append(message)
+
+        command = "python3 -m pip install --upgrade gtktube"
+        command_label = Gtk.Label(label=command, xalign=0)
+        command_label.add_css_class("dim-label")
+        command_label.set_selectable(True)
+        content.append(command_label)
+
+        dialog.add_button("Not now", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Open PyPI", Gtk.ResponseType.HELP)
+        dialog.add_button("Copy command", Gtk.ResponseType.ACCEPT)
+
+        def response(_dialog: Gtk.Dialog, response_id: int) -> None:
+            if response_id == Gtk.ResponseType.ACCEPT:
+                self.copy_to_clipboard(command, "Copied upgrade command")
+            elif response_id == Gtk.ResponseType.HELP:
+                Gtk.show_uri(self, update.project_url, Gdk.CURRENT_TIME)
+            dialog.destroy()
+
+        dialog.connect("response", response)
+        dialog.present()
 
     def on_channel_header_share_clicked(self, _button: Gtk.Button) -> None:
         if not self.current_channel_url:
