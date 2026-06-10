@@ -1,8 +1,8 @@
 # GTKTube
 
 GTKTube is a local-first Python/GTK4 YouTube player. It uses `yt-dlp` to resolve
-metadata and libmpv/mpv for playback, stores subscriptions and viewing state in SQLite, and
-does not use a Google account.
+metadata and libmpv/mpv for playback, stores subscriptions and viewing state in
+SQLite, and does not use a Google account.
 
 ## Run
 
@@ -68,3 +68,7 @@ The app stores data under the XDG data/cache/config directories, using
 - Browse and search local watch history.
 - Store watched time ranges in SQLite.
 - Compute percent watched through a SQLite view.
+
+## License
+
+GTKTube is licensed under the GNU General Public License v3.0. See `LICENSE`.
