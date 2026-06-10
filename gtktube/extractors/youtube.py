@@ -11,6 +11,15 @@ class ExtractorError(RuntimeError):
     pass
 
 
+def is_restricted_video_error(message: str) -> bool:
+    text = message.lower()
+    return (
+        "available to this channel's members" in text
+        or "members-only" in text
+        or "join this channel to get access" in text
+    )
+
+
 DEFAULT_PLAYBACK_FORMAT = (
     "bestvideo[height<=720]+bestaudio/"
     "best[height<=720]/"
@@ -57,13 +66,22 @@ class YoutubeExtractor:
             self._ydl_cls = YoutubeDL
         return self._ydl_cls
 
-    def _extract(self, target: str, *, flat: bool = False, limit: int | None = None) -> dict[str, Any]:
+    def _extract(
+        self,
+        target: str,
+        *,
+        flat: bool = False,
+        limit: int | None = None,
+        ignore_errors: bool = False,
+    ) -> dict[str, Any]:
         options: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
             "noplaylist": False,
         }
+        if ignore_errors:
+            options["ignoreerrors"] = True
         if flat:
             options["extract_flat"] = "in_playlist"
         if limit is not None:
@@ -90,6 +108,8 @@ class YoutubeExtractor:
             with self._youtube_dl()(options) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as exc:
+            if is_restricted_video_error(str(exc)):
+                raise ExtractorError("Video is members-only or otherwise restricted.") from exc
             raise ExtractorError(str(exc)) from exc
 
         stream_url, audio_url = self._stream_urls(info)
@@ -142,7 +162,7 @@ class YoutubeExtractor:
         target = channel.url.rstrip("/")
         if not target.endswith("/videos"):
             target = f"{target}/videos"
-        info = self._extract(target, flat=False, limit=limit)
+        info = self._extract(target, flat=False, limit=limit, ignore_errors=True)
         entries = info.get("entries") or []
         videos: list[Video] = []
         for entry in entries:
