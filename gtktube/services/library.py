@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from gtktube.db.repositories import LibraryRepository
-from gtktube.extractors.youtube import YoutubeExtractor
+from gtktube.extractors.youtube import ExtractorError, YoutubeExtractor
 from gtktube.models import Channel, PlayableVideo, Video
 
 
@@ -52,7 +52,15 @@ class LibraryService:
         if video.channel_id:
             self.repository.unsubscribe_channel(video.channel_id)
 
+    def unsubscribe_channel(self, channel: Channel) -> None:
+        self.repository.unsubscribe_channel(channel.id)
+
     def refresh_channel(self, channel: Channel, limit: int = 30) -> list[Video]:
+        try:
+            channel = self.extractor.resolve_channel(channel.url)
+            self.repository.upsert_channel(channel, subscribed=True)
+        except ExtractorError:
+            pass
         videos = self.extractor.channel_uploads(channel, limit=limit)
         self.repository.upsert_videos(videos)
         self.repository.mark_channel_refresh(channel.id, success=True)

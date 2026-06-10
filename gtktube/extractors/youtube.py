@@ -105,6 +105,15 @@ class YoutubeExtractor:
 
     def resolve_channel(self, url: str) -> Channel:
         info = self._extract(url, flat=True, limit=1)
+        thumbnail_url = self._best_thumbnail(info)
+
+        if not thumbnail_url:
+            try:
+                detailed_info = self._extract(url, flat=False, limit=1)
+            except ExtractorError:
+                detailed_info = {}
+            thumbnail_url = self._best_thumbnail(detailed_info)
+            info = {**detailed_info, **info}
 
         channel_id = (
             info.get("channel_id")
@@ -126,7 +135,7 @@ class YoutubeExtractor:
             title=str(channel_title),
             url=str(channel_url),
             handle=info.get("channel"),
-            thumbnail_url=self._best_thumbnail(info),
+            thumbnail_url=thumbnail_url,
         )
 
     def channel_uploads(self, channel: Channel, limit: int = 30) -> list[Video]:
@@ -186,7 +195,12 @@ class YoutubeExtractor:
     def _best_thumbnail(self, info: dict[str, Any]) -> str | None:
         thumbnails = info.get("thumbnails") or []
         if thumbnails:
-            return thumbnails[-1].get("url")
+            urls = [thumbnail.get("url") for thumbnail in thumbnails]
+            for url in reversed(urls):
+                if url and ".webp" not in str(url).lower():
+                    return str(url)
+            if urls[-1]:
+                return str(urls[-1])
         thumbnail = info.get("thumbnail")
         return str(thumbnail) if thumbnail else None
 
