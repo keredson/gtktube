@@ -89,6 +89,24 @@ APP_CSS = """
 .queue-row:last-child {
   border-bottom: none;
 }
+
+.video-progress {
+  background: alpha(currentColor, 0.2);
+}
+
+.video-progress progress {
+  background-color: #f00;
+  border: none;
+  border-radius: 0;
+  min-height: 3px;
+}
+
+.video-progress trough {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  min-height: 3px;
+}
 """
 
 
@@ -1708,7 +1726,18 @@ class MainWindow(Gtk.ApplicationWindow):
         thumbnail.set_can_shrink(False)
         thumbnail.set_content_fit(Gtk.ContentFit.CONTAIN)
         self.load_thumbnail(video, thumbnail)
-        box.append(thumbnail)
+
+        thumb_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        thumb_container.append(thumbnail)
+
+        if video.percent_watched and video.percent_watched > 0:
+            progress = Gtk.ProgressBar()
+            progress.set_fraction(video.percent_watched)
+            progress.add_css_class("video-progress")
+            progress.set_valign(Gtk.Align.END)
+            thumb_container.append(progress)
+
+        box.append(thumb_container)
 
         title = Gtk.Label(label=video.title, xalign=0)
         title.set_wrap(True)
