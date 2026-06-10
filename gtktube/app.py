@@ -37,6 +37,36 @@ Then install Python dependencies in your environment:
 """
 
 
+class StartupOptions:
+    def __init__(
+        self,
+        gtk_argv: list[str],
+        show_upgrade: bool = False,
+        show_deps_installer: bool = False,
+    ):
+        self.gtk_argv = gtk_argv
+        self.show_upgrade = show_upgrade
+        self.show_deps_installer = show_deps_installer
+
+
+def parse_startup_options(argv: list[str]) -> StartupOptions:
+    gtk_argv = [argv[0]]
+    show_upgrade = False
+    show_deps_installer = False
+    for arg in argv[1:]:
+        if arg == "--show-upgrade":
+            show_upgrade = True
+        elif arg == "--show-deps-installer":
+            show_deps_installer = True
+        else:
+            gtk_argv.append(arg)
+    return StartupOptions(
+        gtk_argv=gtk_argv,
+        show_upgrade=show_upgrade,
+        show_deps_installer=show_deps_installer,
+    )
+
+
 def configure_mpv_locale() -> None:
     locale.setlocale(locale.LC_NUMERIC, "C")
 
@@ -76,8 +106,12 @@ def launch_dependency_installer() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv
-    if not dependency_checks_pass():
+    options = parse_startup_options(argv)
+    if options.show_deps_installer:
         launch_dependency_installer()
+    if not dependency_checks_pass():
+        if not options.show_deps_installer:
+            launch_dependency_installer()
         if not dependency_checks_pass():
             return 2
 
@@ -93,7 +127,11 @@ def main(argv: list[str] | None = None) -> int:
 
     from .ui.main_window import GTKTubeApplication
 
-    app = GTKTubeApplication(service, paths)
+    app = GTKTubeApplication(
+        service,
+        paths,
+        force_update_dialog=options.show_upgrade,
+    )
     previous_sigint = signal.getsignal(signal.SIGINT)
 
     def on_sigint(_signum: int, _frame: object) -> None:
@@ -101,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGINT, on_sigint)
     try:
-        return app.run(argv)
+        return app.run(options.gtk_argv)
     except KeyboardInterrupt:
         return 130
     finally:

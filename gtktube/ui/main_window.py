@@ -36,7 +36,7 @@ from gtktube.extractors.youtube import ExtractorError, QUALITY_FORMATS
 from gtktube.models import Channel, PlayableVideo, SearchResults, Video
 from gtktube.paths import AppPaths
 from gtktube.services.library import LibraryService
-from gtktube.update_check import UpdateInfo, check_for_update
+from gtktube.update_check import UpdateInfo, check_for_update, upgrade_command
 
 
 T = TypeVar("T")
@@ -114,6 +114,17 @@ APP_CSS = """
   border-radius: 0;
   min-height: 3px;
 }
+
+.video-tile {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.video-tile:hover {
+  background: alpha(currentColor, 0.05);
+}
 """
 
 
@@ -125,16 +136,27 @@ class ViewState:
 
 
 class GTKTubeApplication(Gtk.Application):
-    def __init__(self, service: LibraryService, paths: AppPaths):
+    def __init__(
+        self,
+        service: LibraryService,
+        paths: AppPaths,
+        force_update_dialog: bool = False,
+    ):
         super().__init__(
             application_id="local.gtktube.GTKTube",
             flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
         )
         self.service = service
         self.paths = paths
+        self.force_update_dialog = force_update_dialog
 
     def do_activate(self) -> None:
-        window = MainWindow(self, self.service, self.paths)
+        window = MainWindow(
+            self,
+            self.service,
+            self.paths,
+            force_update_dialog=self.force_update_dialog,
+        )
         window.present()
 
     def do_shutdown(self) -> None:
@@ -146,11 +168,16 @@ class GTKTubeApplication(Gtk.Application):
 
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(
-        self, app: GTKTubeApplication, service: LibraryService, paths: AppPaths
+        self,
+        app: GTKTubeApplication,
+        service: LibraryService,
+        paths: AppPaths,
+        force_update_dialog: bool = False,
     ):
         super().__init__(application=app, title="GTKTube")
         self.service = service
         self.paths = paths
+        self.force_update_dialog = force_update_dialog
         self.thumbnail_dir = paths.cache_dir / "thumbnails"
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
         self.executor = ThreadPoolExecutor(max_workers=3)
@@ -715,13 +742,25 @@ class MainWindow(Gtk.ApplicationWindow):
         self.set_status(message)
 
     def start_update_check(self) -> bool:
-        future = self.executor.submit(check_for_update, __version__)
+        future = self.executor.submit(
+            check_for_update,
+            __version__,
+            self.force_update_dialog,
+        )
 
         def finish() -> bool:
             try:
                 update = future.result()
             except Exception as exc:
                 self.log(f"update check failed: {exc}")
+                if self.force_update_dialog and not self.cleaned_up:
+                    self.show_update_dialog(
+                        UpdateInfo(
+                            current_version=__version__,
+                            latest_version="unknown",
+                            project_url="https://pypi.org/project/gtktube/",
+                        )
+                    )
                 return False
             if update is not None and not self.cleaned_up:
                 self.show_update_dialog(update)
@@ -758,7 +797,7 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         content.append(message)
 
-        command = "python3 -m pip install --upgrade gtktube"
+        command = upgrade_command()
         command_label = Gtk.Label(label=command, xalign=0)
         command_label.add_css_class("dim-label")
         command_label.set_selectable(True)
@@ -1153,7 +1192,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.close_player_button = Gtk.Button(
             child=Gtk.Image.new_from_icon_name("window-close-symbolic")
         )
-        self.close_player_button.set_tooltip_text("Close player")
+        self.close_player_button.set_tooltip_text("Close mini player")
         self.close_player_button.connect("clicked", self.on_close_player_clicked)
         mini_header.append(self.close_player_button)
         self.restore_player_button = Gtk.Button(
@@ -1314,6 +1353,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def create_video_grid(self) -> Gtk.FlowBox:
         grid = Gtk.FlowBox()
         grid.set_selection_mode(Gtk.SelectionMode.NONE)
+        grid.set_homogeneous(False)
         grid.set_min_children_per_line(1)
         grid.set_max_children_per_line(16)
         grid.set_column_spacing(12)
@@ -1819,42 +1859,56 @@ class MainWindow(Gtk.ApplicationWindow):
     def video_tile(
         self,
         video: Video,
-        on_clicked: Callable[[Gtk.Button], None] | None = None,
+        on_clicked: Callable[[Gtk.Widget], None] | None = None,
         on_context_menu: Callable[[Gtk.Widget, Video, float, float], None] | None = None,
     ) -> Gtk.Widget:
-        button = Gtk.Button()
-        button.set_size_request(232, -1)
-        button.set_hexpand(False)
-        button.set_halign(Gtk.Align.START)
-        button.connect(
-            "clicked",
-            lambda _btn: on_clicked(_btn) if on_clicked else self.play_video(video),
+        tile_width = 232
+        thumbnail_height = 131
+        tile = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        tile.add_css_class("video-tile")
+        tile.set_size_request(tile_width, -1)
+        tile.set_hexpand(False)
+        tile.set_halign(Gtk.Align.START)
+        tile.set_focusable(True)
+
+        left_click = Gtk.GestureClick()
+        left_click.set_button(1)
+        left_click.connect(
+            "released",
+            lambda _gesture, _n_press, _x, _y: (
+                on_clicked(tile) if on_clicked else self.play_video(video)
+            ),
         )
+        tile.add_controller(left_click)
+
+        key_controller = Gtk.EventControllerKey()
+        key_controller.connect(
+            "key-pressed",
+            lambda _controller, keyval, _keycode, _state: self.activate_video_tile(
+                tile,
+                video,
+                on_clicked,
+                keyval,
+            ),
+        )
+        tile.add_controller(key_controller)
 
         right_click = Gtk.GestureClick()
         right_click.set_button(3)
         right_click.connect(
             "pressed",
             lambda _gesture, _n_press, x, y: (
-                on_context_menu(button, video, x, y)
+                on_context_menu(tile, video, x, y)
                 if on_context_menu
-                else self.show_video_context_menu(button, video, x, y)
+                else self.show_video_context_menu(tile, video, x, y)
             ),
         )
-        button.add_controller(right_click)
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        box.set_size_request(220, -1)
-        box.set_margin_top(6)
-        box.set_margin_bottom(6)
-        box.set_margin_start(6)
-        box.set_margin_end(6)
-        button.set_child(box)
+        tile.add_controller(right_click)
 
         thumbnail = Gtk.Picture()
-        thumbnail.set_size_request(220, 165)
+        thumbnail.set_size_request(tile_width, thumbnail_height)
         thumbnail.set_can_shrink(False)
-        thumbnail.set_content_fit(Gtk.ContentFit.CONTAIN)
+        thumbnail.set_content_fit(Gtk.ContentFit.COVER)
         self.load_thumbnail(video, thumbnail)
 
         thumb_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -1870,7 +1924,7 @@ class MainWindow(Gtk.ApplicationWindow):
             )
             thumb_container.append(progress)
 
-        box.append(thumb_container)
+        tile.append(thumb_container)
 
         title = Gtk.Label(label=video.title, xalign=0)
         title.set_wrap(True)
@@ -1878,7 +1932,9 @@ class MainWindow(Gtk.ApplicationWindow):
         title.set_width_chars(28)
         title.set_max_width_chars(28)
         title.set_ellipsize(Pango.EllipsizeMode.END)
-        box.append(title)
+        title.set_margin_start(6)
+        title.set_margin_end(6)
+        tile.append(title)
 
         meta = self.video_meta(video)
         subtitle = Gtk.Label(label=meta, xalign=0)
@@ -1888,9 +1944,27 @@ class MainWindow(Gtk.ApplicationWindow):
         subtitle.set_width_chars(28)
         subtitle.set_max_width_chars(28)
         subtitle.set_ellipsize(Pango.EllipsizeMode.END)
-        box.append(subtitle)
+        subtitle.set_margin_start(6)
+        subtitle.set_margin_end(6)
+        subtitle.set_margin_bottom(6)
+        tile.append(subtitle)
 
-        return button
+        return tile
+
+    def activate_video_tile(
+        self,
+        tile: Gtk.Widget,
+        video: Video,
+        on_clicked: Callable[[Gtk.Widget], None] | None,
+        keyval: int,
+    ) -> bool:
+        if keyval not in {Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_space}:
+            return False
+        if on_clicked is not None:
+            on_clicked(tile)
+        else:
+            self.play_video(video)
+        return True
 
     def draw_video_progress(
         self,
@@ -2232,8 +2306,8 @@ class MainWindow(Gtk.ApplicationWindow):
             picture,
             self.jpeg_thumbnail_url(url),
             suffix=".jpg",
-            width=220,
-            height=165,
+            width=232,
+            height=131,
         )
 
     def load_cached_image(
@@ -2329,16 +2403,18 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def display_thumbnail_url(self, video: Video) -> str:
         if video.id:
-            return f"https://img.youtube.com/vi/{video.id}/hqdefault.jpg"
+            return f"https://img.youtube.com/vi/{video.id}/mqdefault.jpg"
         return self.jpeg_thumbnail_url(video.thumbnail_url or "")
 
     def jpeg_thumbnail_url(self, url: str) -> str:
         if "i.ytimg.com/vi_webp/" in url:
             url = url.replace("i.ytimg.com/vi_webp/", "i.ytimg.com/vi/")
         url = (
-            url.replace("maxresdefault.webp", "hqdefault.jpg")
+            url.replace("maxresdefault.webp", "mqdefault.jpg")
             .replace("mqdefault.webp", "mqdefault.jpg")
-            .replace("hqdefault.webp", "hqdefault.jpg")
+            .replace("hqdefault.webp", "mqdefault.jpg")
+            .replace("maxresdefault.jpg", "mqdefault.jpg")
+            .replace("hqdefault.jpg", "mqdefault.jpg")
         )
         return url.split("?", 1)[0]
 

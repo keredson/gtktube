@@ -40,6 +40,7 @@ The feed has no algorithm. It just shows recent videos from the channels you sub
 ## Install
 
 ```sh
+pipx ensurepath
 pipx install --system-site-packages gtktube
 ```
 
@@ -54,6 +55,11 @@ You can also run it from a terminal:
 ```sh
 gtktube
 ```
+
+Useful startup flags:
+
+- `gtktube --show-upgrade` opens the upgrade dialog even when GTKTube has not detected a newer version.
+- `gtktube --show-deps-installer` opens the system dependency installer even when GTKTube thinks dependencies are present.
 
 ## Data Storage
 
