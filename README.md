@@ -11,6 +11,8 @@ The feed has no algorithm. It just shows recent videos from the channels you sub
 ## Features
 
 - Browse recent videos from your subscribed channels without YouTube recommendations.
+- Watch without ads.
+- No tracking by GTKTube.
 - Search YouTube for videos and channels without signing in.
 - Subscribe and unsubscribe locally; no Google account, OAuth, cookies, or account sync.
 - Play videos inside the GTK app with libmpv.
@@ -61,6 +63,7 @@ GTKTube keeps its state on your machine:
 - thumbnail cache under the user cache directory
 - no Google account integration
 - no cloud sync
+- no analytics or tracking by GTKTube
 
 ## License
 
