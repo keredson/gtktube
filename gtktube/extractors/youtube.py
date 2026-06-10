@@ -143,7 +143,7 @@ class YoutubeExtractor:
         target = channel.url.rstrip("/")
         if not target.endswith("/videos"):
             target = f"{target}/videos"
-        info = self._extract(target, flat=True, limit=limit)
+        info = self._extract(target, flat=False, limit=limit)
         entries = info.get("entries") or []
         videos: list[Video] = []
         for entry in entries:

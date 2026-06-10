@@ -55,6 +55,14 @@ class LibraryService:
     def unsubscribe_channel(self, channel: Channel) -> None:
         self.repository.unsubscribe_channel(channel.id)
 
+    def open_channel_url(self, url: str) -> Channel:
+        channel = self.extractor.resolve_channel(url)
+        self.repository.upsert_channel(
+            channel,
+            subscribed=self.repository.is_subscribed(channel.id),
+        )
+        return self.repository.channel(channel.id) or channel
+
     def refresh_channel(self, channel: Channel, limit: int = 30) -> list[Video]:
         was_subscribed = self.repository.is_subscribed(channel.id)
         try:

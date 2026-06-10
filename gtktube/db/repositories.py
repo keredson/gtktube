@@ -202,6 +202,14 @@ class LibraryRepository:
             (channel_id, limit),
         )
 
+    def channel_video_count(self, channel_id: str) -> int:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT COUNT(*) AS count FROM videos WHERE channel_id = ?",
+                (channel_id,),
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
     def watch_history(self, query: str = "", limit: int = 100) -> list[Video]:
         pattern = f"%{query.strip()}%"
         params: tuple[object, ...]
