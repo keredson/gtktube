@@ -22,7 +22,14 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 gi.require_version("GdkPixbuf", "2.0")
-from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
+
+
+class VideoObject(GObject.Object):
+    def __init__(self, video: Video):
+        super().__init__()
+        self.video = video
+
 
 from gtktube.extractors.youtube import ExtractorError, QUALITY_FORMATS
 from gtktube.models import Channel, PlayableVideo, SearchResults, Video
@@ -122,7 +129,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.thumbnail_dir = paths.cache_dir / "thumbnails"
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
         self.executor = ThreadPoolExecutor(max_workers=3)
-        self.video_queue: list[Video] = []
+        self.video_queue = Gio.ListStore(item_type=VideoObject)
+        self.dragging_index = -1
         self.current_playable: PlayableVideo | None = None
         self.player: Any | None = None
         self.mpv_module: Any | None = None
@@ -997,6 +1005,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.queue_list = Gtk.ListBox()
         self.queue_list.set_selection_mode(Gtk.SelectionMode.NONE)
         self.queue_list.add_css_class("sidebar-list")
+        self.queue_list.bind_model(self.video_queue, self.create_queue_row)
         scroller.set_child(self.queue_list)
         self.queue_pane.append(scroller)
 
@@ -1596,19 +1605,29 @@ class MainWindow(Gtk.ApplicationWindow):
 
         GLib.idle_add(append_batch)
 
-    def video_tile(self, video: Video) -> Gtk.Widget:
+    def video_tile(
+        self,
+        video: Video,
+        on_clicked: Callable[[Gtk.Button], None] | None = None,
+        on_context_menu: Callable[[Gtk.Widget, Video, float, float], None] | None = None,
+    ) -> Gtk.Widget:
         button = Gtk.Button()
         button.set_size_request(232, -1)
         button.set_hexpand(False)
         button.set_halign(Gtk.Align.START)
-        button.connect("clicked", lambda _button: self.play_video(video))
+        button.connect(
+            "clicked",
+            lambda _btn: on_clicked(_btn) if on_clicked else self.play_video(video),
+        )
 
         right_click = Gtk.GestureClick()
         right_click.set_button(3)
         right_click.connect(
             "pressed",
-            lambda _gesture, _n_press, x, y: self.show_video_context_menu(
-                button, video, x, y
+            lambda _gesture, _n_press, x, y: (
+                on_context_menu(button, video, x, y)
+                if on_context_menu
+                else self.show_video_context_menu(button, video, x, y)
             ),
         )
         button.add_controller(right_click)
@@ -1648,83 +1667,61 @@ class MainWindow(Gtk.ApplicationWindow):
 
         return button
 
-    def queue_tile(self, video: Video, index: int) -> Gtk.Widget:
+    def create_queue_row(self, item: VideoObject) -> Gtk.Widget:
+        video = item.video
         row = Gtk.ListBoxRow()
         row.add_css_class("queue-row")
 
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        row.set_child(box)
-
-        thumbnail = Gtk.Picture()
-        thumbnail.set_size_request(80, 45)
-        thumbnail.set_can_shrink(False)
-        thumbnail.set_content_fit(Gtk.ContentFit.COVER)
-        self.load_thumbnail(video, thumbnail)
-        box.append(thumbnail)
-
-        details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        details.set_hexpand(True)
-        box.append(details)
-
-        title = Gtk.Label(label=video.title, xalign=0)
-        title.set_ellipsize(Pango.EllipsizeMode.END)
-        title.set_single_line_mode(True)
-        details.append(title)
-
-        meta = self.video_meta(video)
-        subtitle = Gtk.Label(label=meta, xalign=0)
-        subtitle.add_css_class("caption")
-        subtitle.add_css_class("dim-label")
-        subtitle.set_ellipsize(Pango.EllipsizeMode.END)
-        subtitle.set_single_line_mode(True)
-        details.append(subtitle)
-
-        # Context menu for queue items
-        right_click = Gtk.GestureClick()
-        right_click.set_button(3)
-        right_click.connect(
-            "pressed",
-            lambda _gesture, _n_press, x, y: self.show_queue_context_menu(
-                row, video, index, x, y
+        tile = self.video_tile(
+            video,
+            on_clicked=lambda _: self.play_from_queue_index(row.get_index()),
+            on_context_menu=lambda _w, _v, x, y: self.show_queue_context_menu(
+                row, video, x, y
             ),
         )
-        row.add_controller(right_click)
+        tile.set_halign(Gtk.Align.CENTER)
+        tile.set_margin_bottom(12)
+        row.set_child(tile)
 
         # Setup Drag and Drop
-        self.setup_queue_dnd(row, index)
+        self.setup_queue_dnd(row)
 
         return row
 
-    def setup_queue_dnd(self, row: Gtk.ListBoxRow, index: int) -> None:
+    def play_from_queue_index(self, index: int) -> None:
+        if 0 <= index < self.video_queue.get_n_items():
+            item = self.video_queue.get_item(index)
+            self.video_queue.remove(index)
+            self.queue_pane.set_visible(self.video_queue.get_n_items() > 0)
+            self.play_video(item.video)
+
+    def setup_queue_dnd(self, row: Gtk.ListBoxRow) -> None:
         source = Gtk.DragSource()
         source.set_actions(Gdk.DragAction.MOVE)
-        source.connect("prepare", lambda *_: Gdk.ContentProvider.new_for_value(index))
+        source.connect("prepare", lambda *_: Gdk.ContentProvider.new_for_value(row.get_index()))
+        source.connect("drag-begin", lambda *_: self.on_drag_begin(row))
         row.add_controller(source)
 
         target = Gtk.DropTarget.new(int, Gdk.DragAction.MOVE)
-        target.connect("drop", lambda *args: self.on_queue_drop(index, *args))
+        target.connect("drop", lambda *args: self.on_queue_drop(row, *args))
+        target.connect("motion", lambda *args: self.on_queue_motion(row, *args))
         row.add_controller(target)
 
-    def on_queue_drop(self, target_index: int, _target: Gtk.DropTarget, source_index: int, _x: float, _y: float) -> bool:
-        if source_index == target_index:
-            return False
-        video = self.video_queue.pop(source_index)
-        self.video_queue.insert(target_index, video)
-        self.refresh_queue_ui()
+    def on_drag_begin(self, row: Gtk.ListBoxRow) -> None:
+        self.dragging_index = row.get_index()
+
+    def on_queue_motion(self, target_row: Gtk.ListBoxRow, _target: Gtk.DropTarget, _x: float, _y: float) -> Gdk.DragAction:
+        target_index = target_row.get_index()
+        if self.dragging_index != -1 and self.dragging_index != target_index:
+            item = self.video_queue.get_item(self.dragging_index)
+            self.video_queue.remove(self.dragging_index)
+            self.video_queue.insert(target_index, item)
+            self.dragging_index = target_index
+        return Gdk.DragAction.MOVE
+
+    def on_queue_drop(self, target_row: Gtk.ListBoxRow, _target: Gtk.DropTarget, source_index: int, _x: float, _y: float) -> bool:
+        self.dragging_index = -1
         return True
-
-    def refresh_queue_ui(self) -> None:
-        self.clear_listbox(self.queue_list)
-        for i, video in enumerate(self.video_queue):
-            self.queue_list.append(self.queue_tile(video, i))
-        self.queue_pane.set_visible(len(self.video_queue) > 0)
-
-    def clear_listbox(self, listbox: Gtk.ListBox) -> None:
-        child = listbox.get_first_child()
-        while child is not None:
-            next_child = child.get_next_sibling()
-            listbox.remove(child)
-            child = next_child
 
     def show_video_context_menu(
         self, parent: Gtk.Widget, video: Video, x: float, y: float
@@ -1774,7 +1771,7 @@ class MainWindow(Gtk.ApplicationWindow):
         popover.popup()
 
     def show_queue_context_menu(
-        self, row: Gtk.ListBoxRow, video: Video, index: int, x: float, y: float
+        self, row: Gtk.ListBoxRow, video: Video, x: float, y: float
     ) -> None:
         popover = Gtk.Popover()
         popover.set_parent(row)
@@ -1789,13 +1786,13 @@ class MainWindow(Gtk.ApplicationWindow):
         play_now = Gtk.Button(label="Play now")
         play_now.add_css_class("flat")
         play_now.set_halign(Gtk.Align.FILL)
-        play_now.connect("clicked", lambda _: self.play_from_queue(popover, index))
+        play_now.connect("clicked", lambda _: self.play_from_queue(popover, row.get_index()))
         actions.append(play_now)
 
         remove_queue = Gtk.Button(label="Remove from queue")
         remove_queue.add_css_class("flat")
         remove_queue.set_halign(Gtk.Align.FILL)
-        remove_queue.connect("clicked", lambda _: self.remove_from_queue(popover, index))
+        remove_queue.connect("clicked", lambda _: self.remove_from_queue(popover, row.get_index()))
         actions.append(remove_queue)
 
         rectangle = Gdk.Rectangle()
@@ -1807,23 +1804,20 @@ class MainWindow(Gtk.ApplicationWindow):
         popover.popup()
 
     def add_to_queue(self, video: Video) -> None:
-        self.video_queue.append(video)
-        self.refresh_queue_ui()
+        self.video_queue.append(VideoObject(video))
+        self.queue_pane.set_visible(True)
 
     def remove_from_queue(self, popover: Gtk.Popover, index: int) -> None:
         popover.popdown()
         popover.unparent()
-        if 0 <= index < len(self.video_queue):
-            self.video_queue.pop(index)
-            self.refresh_queue_ui()
+        if 0 <= index < self.video_queue.get_n_items():
+            self.video_queue.remove(index)
+            self.queue_pane.set_visible(self.video_queue.get_n_items() > 0)
 
     def play_from_queue(self, popover: Gtk.Popover, index: int) -> None:
         popover.popdown()
         popover.unparent()
-        if 0 <= index < len(self.video_queue):
-            video = self.video_queue.pop(index)
-            self.refresh_queue_ui()
-            self.play_video(video)
+        self.play_from_queue_index(index)
 
     def activate_video_menu(
         self, popover: Gtk.Popover, video: Video, action: str
@@ -2333,14 +2327,15 @@ class MainWindow(Gtk.ApplicationWindow):
             GLib.idle_add(self.on_mpv_end_file)
 
     def on_mpv_end_file(self) -> None:
-        if self.video_queue:
+        if self.video_queue.get_n_items() > 0:
             self.play_next_in_queue()
 
     def play_next_in_queue(self) -> None:
-        if self.video_queue:
-            video = self.video_queue.pop(0)
-            self.refresh_queue_ui()
-            self.play_video(video)
+        if self.video_queue.get_n_items() > 0:
+            item = self.video_queue.get_item(0)
+            self.video_queue.remove(0)
+            self.queue_pane.set_visible(self.video_queue.get_n_items() > 0)
+            self.play_video(item.video)
 
     def stop_pipeline(self) -> None:
         if self.video_fullscreen:
@@ -2469,6 +2464,9 @@ class MainWindow(Gtk.ApplicationWindow):
             return True
         if state & Gdk.ModifierType.CONTROL_MASK and keyval in (Gdk.KEY_o, Gdk.KEY_O):
             self.show_open_url_dialog()
+            return True
+        if state & Gdk.ModifierType.CONTROL_MASK and keyval in (Gdk.KEY_q, Gdk.KEY_Q):
+            self.close()
             return True
         if self.focus_is_text_input():
             return False
