@@ -62,6 +62,12 @@ APP_CSS = """
 .channel-nav-label {
   font-size: 0.92em;
 }
+
+.miniplayer {
+  background: alpha(currentColor, 0.08);
+  border-top: 1px solid alpha(currentColor, 0.18);
+  padding: 8px 12px;
+}
 """
 
 
@@ -119,6 +125,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.description_link_generation = 0
         self.current_channel_url: str | None = None
         self.video_fullscreen = False
+        self.fullscreen_return_view: ViewState | None = None
         self.status_text = "Ready"
         self.back_stack: list[ViewState] = []
         self.forward_stack: list[ViewState] = []
@@ -128,6 +135,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.feed_limit = 100
         self.channel_video_limits: dict[str, int] = {}
         self.loading_more_videos = False
+        self.grid_generations: dict[int, int] = {}
         self.cleaned_up = False
         self.gl = CDLL("libepoxy.so.0")
         self.libgl = self.load_library("GL")
@@ -224,9 +232,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.sidebar.set_size_request(210, -1)
         body.append(self.sidebar)
 
+        nav_scroller = Gtk.ScrolledWindow(vexpand=True)
+        nav_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.sidebar.append(nav_scroller)
+
         nav = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
         nav.add_css_class("sidebar-list")
-        self.sidebar.append(nav)
+        nav_scroller.set_child(nav)
         self.nav = nav
         self.nav_pages: dict[Gtk.ListBoxRow, str] = {}
         self.nav_channels: dict[Gtk.ListBoxRow, Channel] = {}
@@ -234,8 +246,14 @@ class MainWindow(Gtk.ApplicationWindow):
         self.channel_rows: dict[str, Gtk.ListBoxRow] = {}
         self.channel_nav_rows: list[Gtk.ListBoxRow] = []
 
+        self.content_pane = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=0, hexpand=True, vexpand=True
+        )
+        body.append(self.content_pane)
+
         self.stack = Gtk.Stack(hexpand=True, vexpand=True)
-        body.append(self.stack)
+        self.content_pane.append(self.stack)
+        self.build_miniplayer()
 
         self.pages: dict[str, Gtk.Widget] = {}
         for key, title in [
@@ -471,9 +489,14 @@ class MainWindow(Gtk.ApplicationWindow):
         self.update_navigation_buttons()
 
     def apply_view_state(self, view: ViewState) -> None:
-        if view.page != "player":
+        if view.page == "player":
+            self.show_full_player()
+        else:
             self.flush_watch_range()
-            self.stop_pipeline()
+            if self.current_playable is not None and self.player is not None:
+                self.show_miniplayer()
+            else:
+                self.hide_miniplayer()
         self.update_header_subtitle(view)
         self.update_context_refresh_button(view)
         self.update_context_unsubscribe_button(view)
@@ -892,30 +915,68 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.stack.add_named(page, "history")
 
+    def build_miniplayer(self) -> None:
+        self.miniplayer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.miniplayer.add_css_class("miniplayer")
+        self.miniplayer.set_vexpand(False)
+        self.miniplayer.set_visible(False)
+
+        self.miniplayer_video_container = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=0
+        )
+        self.miniplayer_video_container.set_size_request(176, 99)
+        self.miniplayer_video_container.set_hexpand(False)
+        self.miniplayer_video_container.set_vexpand(False)
+        self.miniplayer_video_container.set_valign(Gtk.Align.CENTER)
+        self.miniplayer.append(self.miniplayer_video_container)
+
+        self.miniplayer_controls_container = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=6, hexpand=True
+        )
+        self.miniplayer_controls_container.set_valign(Gtk.Align.CENTER)
+        mini_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        mini_header.set_valign(Gtk.Align.CENTER)
+        self.miniplayer_info = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True
+        )
+        mini_header.append(self.miniplayer_info)
+        self.miniplayer_title = Gtk.Label(label="", xalign=0, hexpand=True)
+        self.miniplayer_title.set_single_line_mode(True)
+        self.miniplayer_title.set_ellipsize(Pango.EllipsizeMode.END)
+        self.miniplayer_info.append(self.miniplayer_title)
+        self.miniplayer_meta = Gtk.Label(label="", xalign=0, hexpand=True)
+        self.miniplayer_meta.add_css_class("dim-label")
+        self.miniplayer_meta.set_single_line_mode(True)
+        self.miniplayer_meta.set_ellipsize(Pango.EllipsizeMode.END)
+        self.miniplayer_info.append(self.miniplayer_meta)
+        self.restore_player_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("go-up-symbolic")
+        )
+        self.restore_player_button.set_tooltip_text("Open full player")
+        self.restore_player_button.connect("clicked", self.on_restore_player_clicked)
+        mini_header.append(self.restore_player_button)
+        self.miniplayer_controls_container.append(mini_header)
+        self.miniplayer.append(self.miniplayer_controls_container)
+        self.content_pane.append(self.miniplayer)
+
     def build_player_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
 
-        self.video = Gtk.GLArea(hexpand=True, vexpand=True)
+        self.video = Gtk.GLArea(hexpand=False, vexpand=False)
         self.video.set_auto_render(False)
         self.video.set_has_depth_buffer(False)
         self.video.set_has_stencil_buffer(False)
-        self.video.set_size_request(-1, 360)
+        self.video.set_size_request(176, 99)
         self.video.connect("realize", self.on_video_realize)
         self.video.connect("render", self.on_video_render)
         self.video.connect("unrealize", self.on_video_unrealize)
         video_click = Gtk.GestureClick()
         video_click.connect("released", self.on_video_clicked)
         self.video.add_controller(video_click)
-        self.video_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self.video_container.append(self.video)
-        page.append(self.video_container)
+        self.miniplayer_video_container.append(self.video)
 
         self.player_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.player_controls.set_margin_top(8)
-        self.player_controls.set_margin_bottom(8)
-        self.player_controls.set_margin_start(12)
-        self.player_controls.set_margin_end(12)
-        page.append(self.player_controls)
+        self.miniplayer_controls_container.append(self.player_controls)
         self.play_pause_icon = Gtk.Image.new_from_icon_name(
             "media-playback-start-symbolic"
         )
@@ -956,12 +1017,20 @@ class MainWindow(Gtk.ApplicationWindow):
         self.fullscreen_button.connect("clicked", self.on_fullscreen_clicked)
         self.player_controls.append(self.fullscreen_button)
 
+        self.close_player_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("window-close-symbolic")
+        )
+        self.close_player_button.set_tooltip_text("Close player")
+        self.close_player_button.connect("clicked", self.on_close_player_clicked)
+        self.player_controls.append(self.close_player_button)
+
         self.player_metadata = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.player_metadata.set_margin_top(4)
         self.player_metadata.set_margin_bottom(12)
         self.player_metadata.set_margin_start(12)
         self.player_metadata.set_margin_end(12)
-        page.append(self.player_metadata)
+        self.player_metadata.set_visible(False)
+        self.miniplayer.append(self.player_metadata)
         self.player_title = Gtk.Label(label="No video loaded", xalign=0, hexpand=True)
         self.player_title.set_wrap(True)
         self.player_metadata.append(self.player_title)
@@ -1457,6 +1526,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def populate_video_grid(self, grid: Gtk.FlowBox, videos: list[Video]) -> None:
         self.clear_flowbox(grid)
+        self.grid_generations[id(grid)] = self.grid_generations.get(id(grid), 0) + 1
         for video in videos:
             grid.append(self.video_tile(video))
 
@@ -1467,9 +1537,12 @@ class MainWindow(Gtk.ApplicationWindow):
         done: Callable[[], bool] | None = None,
     ) -> None:
         index = 0
+        generation = self.grid_generations.get(id(grid), 0)
 
         def append_batch() -> bool:
             nonlocal index
+            if self.grid_generations.get(id(grid), 0) != generation:
+                return False
             end = min(index + 8, len(videos))
             for video in videos[index:end]:
                 grid.append(self.video_tile(video))
@@ -1781,6 +1854,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if resume > 0:
             self.queue_seek_media(resume)
         self.range_start_seconds = self.current_position_seconds()
+        self.show_full_player()
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
 
@@ -1790,6 +1864,8 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.current_playable and self.current_playable.resolved_quality:
             meta = f"{meta} · {self.current_playable.resolved_quality}".strip(" ·")
         self.player_meta.set_text(meta)
+        self.miniplayer_title.set_text(video.title)
+        self.miniplayer_meta.set_text(meta)
         self.set_description_text(video.description or "")
         self.update_player_share_button()
 
@@ -1854,13 +1930,95 @@ class MainWindow(Gtk.ApplicationWindow):
         self.player_share_button.set_sensitive(self.current_playable is not None)
         self.restore_player_share_icon()
 
+    def show_full_player(self) -> None:
+        self.stack.set_visible(False)
+        self.miniplayer.remove_css_class("miniplayer")
+        self.miniplayer.set_orientation(Gtk.Orientation.VERTICAL)
+        self.miniplayer.set_spacing(0)
+        self.miniplayer.set_hexpand(True)
+        self.miniplayer.set_vexpand(True)
+        self.miniplayer_video_container.set_hexpand(True)
+        self.miniplayer_video_container.set_vexpand(True)
+        self.miniplayer_video_container.set_valign(Gtk.Align.FILL)
+        self.miniplayer_video_container.set_size_request(-1, -1)
+        self.miniplayer_controls_container.set_hexpand(True)
+        self.miniplayer_controls_container.set_vexpand(False)
+        self.miniplayer_controls_container.set_valign(Gtk.Align.FILL)
+        self.miniplayer_info.get_parent().set_visible(False)
+        self.player_metadata.set_visible(True)
+        self.video.set_hexpand(True)
+        self.video.set_vexpand(True)
+        self.video.set_valign(Gtk.Align.FILL)
+        self.video.set_size_request(-1, 360)
+        self.player_controls.set_margin_top(8)
+        self.player_controls.set_margin_bottom(8)
+        self.player_controls.set_margin_start(12)
+        self.player_controls.set_margin_end(12)
+        self.miniplayer.set_visible(True)
+        self.video.queue_resize()
+        self.video.queue_render()
+
+    def show_miniplayer(self) -> None:
+        if self.video_fullscreen:
+            self.close_video_fullscreen()
+        self.stack.set_visible(True)
+        self.miniplayer.add_css_class("miniplayer")
+        self.miniplayer.set_orientation(Gtk.Orientation.HORIZONTAL)
+        self.miniplayer.set_spacing(8)
+        self.miniplayer.set_hexpand(True)
+        self.miniplayer.set_vexpand(False)
+        self.miniplayer_video_container.set_hexpand(False)
+        self.miniplayer_video_container.set_vexpand(False)
+        self.miniplayer_video_container.set_valign(Gtk.Align.CENTER)
+        self.miniplayer_video_container.set_size_request(176, 99)
+        self.miniplayer_controls_container.set_hexpand(True)
+        self.miniplayer_controls_container.set_vexpand(False)
+        self.miniplayer_controls_container.set_valign(Gtk.Align.CENTER)
+        self.miniplayer_info.get_parent().set_visible(True)
+        self.player_metadata.set_visible(False)
+        self.video.set_hexpand(False)
+        self.video.set_vexpand(False)
+        self.video.set_valign(Gtk.Align.CENTER)
+        self.video.set_size_request(176, 99)
+        self.player_controls.set_margin_top(0)
+        self.player_controls.set_margin_bottom(0)
+        self.player_controls.set_margin_start(0)
+        self.player_controls.set_margin_end(0)
+        self.miniplayer.set_visible(True)
+        self.video.queue_resize()
+        self.video.queue_render()
+
+    def hide_miniplayer(self) -> None:
+        self.miniplayer.set_visible(False)
+        self.stack.set_visible(True)
+
+    def schedule_video_render_context_reset(self) -> None:
+        GLib.idle_add(self.reset_video_render_context, 0)
+
+    def reset_video_render_context(self, attempts: int = 0) -> bool:
+        if (
+            self.player is None
+            or self.mpv_module is None
+            or not self.video.get_realized()
+        ):
+            return False
+        if self.video.get_allocated_width() <= 0 or self.video.get_allocated_height() <= 0:
+            if attempts < 5:
+                GLib.timeout_add(50, self.reset_video_render_context, attempts + 1)
+            return False
+        if self.mpv_render_context is not None:
+            return False
+        self.create_mpv_render_context(self.player, self.mpv_module)
+        self.video.queue_render()
+        return False
+
     def on_video_realize(self, _area: Gtk.GLArea) -> None:
         if (
             self.player is not None
             and self.mpv_render_context is None
             and self.mpv_module is not None
         ):
-            self.create_mpv_render_context(self.player, self.mpv_module)
+            self.schedule_video_render_context_reset()
 
     def on_video_render(self, area: Gtk.GLArea, _context: Gdk.GLContext) -> bool:
         if self.mpv_render_context is None:
@@ -1991,6 +2149,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def stop_pipeline(self) -> None:
         if self.video_fullscreen:
             self.close_video_fullscreen()
+        self.hide_miniplayer()
         if self.player is None:
             self.free_mpv_render_context()
             return
@@ -2004,6 +2163,26 @@ class MainWindow(Gtk.ApplicationWindow):
         self.range_start_seconds = None
         self.pending_seek_seconds = None
         self.update_play_pause_button()
+
+    def on_close_player_clicked(self, _button: Gtk.Button) -> None:
+        self.close_current_video()
+
+    def on_restore_player_clicked(self, _button: Gtk.Button) -> None:
+        self.navigate_to(ViewState("player"))
+
+    def close_current_video(self) -> None:
+        self.flush_watch_range()
+        self.stop_pipeline()
+        self.current_playable = None
+        self.player_title.set_text("No video loaded")
+        self.player_meta.set_text("")
+        self.miniplayer_title.set_text("")
+        self.miniplayer_meta.set_text("")
+        self.set_description_text("")
+        self.update_subscribe_check(
+            Video(id="", channel_id="", title="", url="")
+        )
+        self.update_player_share_button()
 
     def on_play_pause_clicked(self, _button: Gtk.Button) -> None:
         self.toggle_play_pause()
@@ -2048,6 +2227,15 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.video_fullscreen:
             return
 
+        self.fullscreen_return_view = (
+            self.current_view
+            if self.current_view is not None and self.current_view.page != "player"
+            else None
+        )
+        if self.fullscreen_return_view is not None:
+            self.show_full_player()
+            self.stack.set_visible_child_name("player")
+
         self.video_fullscreen = True
         self.header.set_visible(False)
         self.sidebar.set_visible(False)
@@ -2066,6 +2254,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self.fullscreen_icon.set_from_icon_name("view-fullscreen-symbolic")
         self.fullscreen_button.set_tooltip_text("Fullscreen video")
         self.unfullscreen()
+        return_view = self.fullscreen_return_view
+        self.fullscreen_return_view = None
+        if return_view is not None:
+            self.apply_view_state(return_view)
+        else:
+            self.show_full_player()
 
     def on_key_pressed(
         self,
@@ -2287,8 +2481,23 @@ class MainWindow(Gtk.ApplicationWindow):
             self.service.record_watch_range(self.current_playable.video.id, start, current)
             self.range_start_seconds = current
             self.reload_history()
-            self.reload_feed()
+            self.reload_visible_video_grid()
         return True
+
+    def reload_visible_video_grid(self) -> None:
+        if self.current_view is None:
+            return
+        if self.current_view.channel_id is not None:
+            self.populate_video_grid(
+                self.feed_grid,
+                self.service.repository.channel_videos(
+                    self.current_view.channel_id,
+                    self.channel_video_limits.get(self.current_view.channel_id, 30),
+                ),
+            )
+            return
+        if self.current_view.page == "feed":
+            self.reload_feed()
 
     def current_position_seconds(self) -> int:
         if self.player is None:
