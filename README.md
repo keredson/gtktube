@@ -40,7 +40,7 @@ The feed has no algorithm. It just shows recent videos from the channels you sub
 ## Install
 
 ```sh
-pip install gtktube
+pipx install --system-site-packages gtktube
 ```
 
 GTKTube also needs GTK4/PyGObject and libmpv from your Linux distribution.
