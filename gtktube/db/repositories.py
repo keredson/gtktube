@@ -268,6 +268,51 @@ class LibraryRepository:
             ).fetchall()
         return [row["query"] for row in rows]
 
+    def add_watch_later(self, video_id: str) -> None:
+        now = utcnow()
+        with self._lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO watch_later (video_id, added_at)
+                VALUES (?, ?)
+                ON CONFLICT(video_id) DO NOTHING
+                """,
+                (video_id, now),
+            )
+
+    def remove_watch_later(self, video_id: str) -> None:
+        with self._lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM watch_later WHERE video_id = ?", (video_id,)
+            )
+
+    def is_watch_later(self, video_id: str) -> bool:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT 1 FROM watch_later WHERE video_id = ?", (video_id,)
+            ).fetchone()
+        return bool(row)
+
+    def watch_later_videos(self, limit: int = 100) -> list[Video]:
+        return self._videos_query(
+            """
+            SELECT
+                v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
+                v.thumbnail_url, v.description, v.duration_seconds,
+                v.published_at, v.view_count,
+                COALESCE(wp.percent_watched, 0) AS percent_watched,
+                COALESCE(wh.completed, 0) AS completed
+            FROM watch_later wl
+            JOIN videos v ON v.id = wl.video_id
+            LEFT JOIN channels c ON c.id = v.channel_id
+            LEFT JOIN watch_progress wp ON wp.video_id = v.id
+            LEFT JOIN watch_history wh ON wh.video_id = v.id
+            ORDER BY wl.added_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+
     def record_play_started(self, video_id: str) -> None:
         now = utcnow()
         with self._lock, self.connection:
@@ -281,6 +326,9 @@ class LibraryRepository:
                     updated_at = excluded.updated_at
                 """,
                 (video_id, now, now, now),
+            )
+            self.connection.execute(
+                "DELETE FROM watch_later WHERE video_id = ?", (video_id,)
             )
 
     def add_watch_range(

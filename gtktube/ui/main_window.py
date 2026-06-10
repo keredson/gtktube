@@ -285,6 +285,7 @@ class MainWindow(Gtk.ApplicationWindow):
             ("feed", "Feed"),
             ("search", "Search"),
             ("history", "History"),
+            ("watch_later", "Watch Later"),
             ("channels", "Channels"),
         ]:
             row = Gtk.ListBoxRow()
@@ -296,6 +297,7 @@ class MainWindow(Gtk.ApplicationWindow):
         nav.connect("row-selected", self.on_nav_selected)
 
         self.build_feed_page()
+        self.build_watch_later_page()
         self.build_channels_page()
         self.build_search_page()
         self.build_history_page()
@@ -323,6 +325,7 @@ class MainWindow(Gtk.ApplicationWindow):
             "feed": "view-list-symbolic",
             "search": "system-search-symbolic",
             "history": "document-open-recent-symbolic",
+            "watch_later": "clock-symbolic",
             "channels": "folder-symbolic",
         }
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
@@ -546,6 +549,8 @@ class MainWindow(Gtk.ApplicationWindow):
             self.reload_channels()
         elif view.page == "history":
             self.reload_history()
+        elif view.page == "watch_later":
+            self.reload_watch_later()
 
         self.select_nav_page(view.page)
         self.stack.set_visible_child_name(view.page)
@@ -563,6 +568,8 @@ class MainWindow(Gtk.ApplicationWindow):
             self.header_subtitle.set_text("Search")
         elif view.page == "history":
             self.header_subtitle.set_text("History")
+        elif view.page == "watch_later":
+            self.header_subtitle.set_text("Watch Later")
         elif view.page == "channels":
             self.header_subtitle.set_text("Channels")
         elif view.page == "player" and self.current_playable is not None:
@@ -753,7 +760,24 @@ class MainWindow(Gtk.ApplicationWindow):
         self.reload_feed()
         self.reload_channels()
         self.reload_history()
+        self.reload_watch_later()
         self.reload_recent_searches()
+
+    def reload_watch_later(self) -> None:
+        videos = self.service.watch_later_videos()
+        self.clear_flowbox(self.watch_later_grid)
+        self.grid_generations[id(self.watch_later_grid)] = (
+            self.grid_generations.get(id(self.watch_later_grid), 0) + 1
+        )
+        for video in videos:
+            self.watch_later_grid.append(
+                self.video_tile(
+                    video, on_context_menu=self.show_watch_later_context_menu
+                )
+            )
+        has_videos = len(videos) > 0
+        self.watch_later_scroller.set_visible(has_videos)
+        self.watch_later_empty_box.set_visible(not has_videos)
 
     def build_feed_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -914,6 +938,36 @@ class MainWindow(Gtk.ApplicationWindow):
         page.append(scroller)
 
         self.stack.add_named(page, "search")
+
+    def build_watch_later_page(self) -> None:
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        page.set_margin_top(12)
+        page.set_margin_bottom(12)
+        page.set_margin_start(12)
+        page.set_margin_end(12)
+
+        self.watch_later_grid = self.create_video_grid()
+        self.watch_later_scroller = Gtk.ScrolledWindow(vexpand=True)
+        self.watch_later_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.watch_later_scroller.set_child(self.watch_later_grid)
+        page.append(self.watch_later_scroller)
+
+        self.watch_later_empty_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=12, vexpand=True, hexpand=True
+        )
+        self.watch_later_empty_box.set_valign(Gtk.Align.CENTER)
+        self.watch_later_empty_box.set_halign(Gtk.Align.CENTER)
+        empty_icon = Gtk.Image.new_from_icon_name("clock-symbolic")
+        empty_icon.set_pixel_size(64)
+        empty_icon.add_css_class("dim-label")
+        self.watch_later_empty_box.append(empty_icon)
+        empty_label = Gtk.Label(label="No videos in Watch Later")
+        empty_label.add_css_class("title-4")
+        empty_label.add_css_class("dim-label")
+        self.watch_later_empty_box.append(empty_label)
+        page.append(self.watch_later_empty_box)
+
+        self.stack.add_named(page, "watch_later")
 
     def build_history_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -1762,6 +1816,14 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         actions.append(add_queue)
 
+        add_watch_later = Gtk.Button(label="Add to watch later")
+        add_watch_later.add_css_class("flat")
+        add_watch_later.set_halign(Gtk.Align.FILL)
+        add_watch_later.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "watch_later")
+        )
+        actions.append(add_watch_later)
+
         rectangle = Gdk.Rectangle()
         rectangle.x = int(x)
         rectangle.y = int(y)
@@ -1769,6 +1831,53 @@ class MainWindow(Gtk.ApplicationWindow):
         rectangle.height = 1
         popover.set_pointing_to(rectangle)
         popover.popup()
+
+    def show_watch_later_context_menu(
+        self, parent: Gtk.Widget, video: Video, x: float, y: float
+    ) -> None:
+        popover = Gtk.Popover()
+        popover.set_parent(parent)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        actions.set_margin_top(6)
+        actions.set_margin_bottom(6)
+        actions.set_margin_start(6)
+        actions.set_margin_end(6)
+        popover.set_child(actions)
+
+        open_video = Gtk.Button(label="Open video")
+        open_video.add_css_class("flat")
+        open_video.set_halign(Gtk.Align.FILL)
+        open_video.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "video")
+        )
+        actions.append(open_video)
+
+        remove_watch_later = Gtk.Button(label="Remove from watch later")
+        remove_watch_later.add_css_class("flat")
+        remove_watch_later.set_halign(Gtk.Align.FILL)
+        remove_watch_later.connect(
+            "clicked",
+            lambda _: self.activate_watch_later_menu(popover, video, "remove"),
+        )
+        actions.append(remove_watch_later)
+
+        rectangle = Gdk.Rectangle()
+        rectangle.x = int(x)
+        rectangle.y = int(y)
+        rectangle.width = 1
+        rectangle.height = 1
+        popover.set_pointing_to(rectangle)
+        popover.popup()
+
+    def activate_watch_later_menu(
+        self, popover: Gtk.Popover, video: Video, action: str
+    ) -> None:
+        popover.popdown()
+        popover.unparent()
+        if action == "remove":
+            self.service.remove_watch_later(video)
+            self.reload_watch_later()
 
     def show_queue_context_menu(
         self, row: Gtk.ListBoxRow, video: Video, x: float, y: float
@@ -1828,6 +1937,9 @@ class MainWindow(Gtk.ApplicationWindow):
             self.open_video_channel(video)
         elif action == "queue":
             self.add_to_queue(video)
+        elif action == "watch_later":
+            self.service.add_watch_later(video)
+            self.reload_watch_later()
         else:
             self.play_video(video)
 
@@ -2323,7 +2435,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return None
 
     def on_mpv_event(self, event: Any) -> None:
-        if event["event_id"] == self.mpv_module.MpvEventID.END_FILE:
+        if event.event_id == self.mpv_module.MpvEventID.END_FILE:
             GLib.idle_add(self.on_mpv_end_file)
 
     def on_mpv_end_file(self) -> None:
@@ -2692,6 +2804,13 @@ class MainWindow(Gtk.ApplicationWindow):
             return
         if self.current_view.page == "feed":
             self.reload_feed()
+            return
+        if self.current_view.page == "watch_later":
+            self.reload_watch_later()
+            return
+        if self.current_view.page == "history":
+            self.reload_history()
+            return
 
     def current_position_seconds(self) -> int:
         if self.player is None:

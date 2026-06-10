@@ -55,6 +55,19 @@ class LibraryService:
     def unsubscribe_channel(self, channel: Channel) -> None:
         self.repository.unsubscribe_channel(channel.id)
 
+    def add_watch_later(self, video: Video) -> None:
+        self._store_video_and_channel(video)
+        self.repository.add_watch_later(video.id)
+
+    def remove_watch_later(self, video: Video) -> None:
+        self.repository.remove_watch_later(video.id)
+
+    def watch_later_videos(self, limit: int = 100) -> list[Video]:
+        return self.repository.watch_later_videos(limit=limit)
+
+    def is_watch_later(self, video: Video) -> bool:
+        return self.repository.is_watch_later(video.id)
+
     def open_channel_url(self, url: str) -> Channel:
         channel = self.extractor.resolve_channel(url)
         self.repository.upsert_channel(

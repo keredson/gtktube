@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def migrate(connection: sqlite3.Connection) -> None:
@@ -17,6 +17,9 @@ def migrate(connection: sqlite3.Connection) -> None:
         current = 1
     if current < 2:
         _migrate_2(connection)
+        current = 2
+    if current < 3:
+        _migrate_3(connection)
 
 
 def _migrate_1(connection: sqlite3.Connection) -> None:
@@ -214,5 +217,23 @@ def _migrate_2(connection: sqlite3.Connection) -> None:
         connection.executescript(
             """
             PRAGMA user_version = 2;
+            """
+        )
+
+
+def _migrate_3(connection: sqlite3.Connection) -> None:
+    with connection:
+        connection.executescript(
+            """
+            CREATE TABLE watch_later (
+                video_id TEXT PRIMARY KEY,
+                added_at TEXT NOT NULL,
+                FOREIGN KEY (video_id) REFERENCES videos(id)
+            );
+
+            CREATE INDEX idx_watch_later_added_at
+            ON watch_later(added_at DESC);
+
+            PRAGMA user_version = 3;
             """
         )
