@@ -666,14 +666,26 @@ class MainWindow(Gtk.ApplicationWindow):
             self.unsubscribe_channel(channel)
 
     def on_about_clicked(self, _button: Gtk.Button) -> None:
+        icon_path = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
         dialog = Gtk.AboutDialog(
             transient_for=self,
             modal=True,
             program_name="GTKTube",
             version=__version__,
-            comments="A local-first GTK4 YouTube subscription browser and player.",
-            license_type=Gtk.License.UNKNOWN,
+            comments=(
+                "A GPLv3 local-first GTK4 YouTube subscription browser and player."
+            ),
+            website="https://keredson.github.io/gtktube/",
+            license_type=Gtk.License.GPL_3_0,
         )
+        try:
+            dialog.set_logo(
+                GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                    str(icon_path), 128, 128, True
+                )
+            )
+        except GLib.Error:
+            pass
         dialog.present()
 
     def set_context_refresh_loading(self, loading: bool) -> None:
