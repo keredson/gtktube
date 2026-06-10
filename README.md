@@ -13,7 +13,7 @@ Install runtime dependencies for GTK4/PyGObject and libmpv on Debian/Ubuntu:
 ```
 
 There is also a minimal GTK installer helper that checks installed packages and
-uses `gksu` when available, falling back to `pkexec`:
+uses `pkexec` when available, falling back to `gksu`:
 
 ```sh
 ./scripts/install-deps-gui.py

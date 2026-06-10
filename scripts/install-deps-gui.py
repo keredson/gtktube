@@ -92,8 +92,8 @@ if Gtk is not None:
 
             command = apt_command(self.missing)
             self.message.set_text(
-                "Some Debian packages are missing. The installer will use gksu if "
-                "available, otherwise pkexec. If neither is installed, run this "
+                "Some Debian packages are missing. The installer will use pkexec if "
+                "available, otherwise gksu. If neither is installed, run this "
                 "command manually:"
             )
             self.details.get_buffer().set_text(command)
@@ -107,7 +107,7 @@ if Gtk is not None:
             launcher = privileged_launcher()
             if launcher is None:
                 self.message.set_text(
-                    "Could not find gksu or pkexec. Run the command below in a terminal."
+                    "Could not find pkexec or gksu. Run the command below in a terminal."
                 )
                 return
 
@@ -127,10 +127,10 @@ def apt_command(packages: list[str]) -> str:
 
 
 def privileged_launcher() -> str | None:
-    if shutil.which("gksu"):
-        return "gksu"
     if shutil.which("pkexec"):
         return "pkexec"
+    if shutil.which("gksu"):
+        return "gksu"
     return None
 
 
@@ -171,7 +171,7 @@ def fallback_gui_install(missing: list[str]) -> int:
 
     launcher = privileged_launcher()
     if launcher is None:
-        print("Could not find gksu or pkexec. Run the command above manually.", file=sys.stderr)
+        print("Could not find pkexec or gksu. Run the command above manually.", file=sys.stderr)
         return 1
     return subprocess.run(privileged_args(launcher, command), check=False).returncode
 
