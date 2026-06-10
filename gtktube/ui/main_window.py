@@ -89,7 +89,7 @@ class GTKTubeApplication(Gtk.Application):
         for window in self.get_windows():
             if isinstance(window, MainWindow):
                 window.cleanup()
-        super().do_shutdown()
+        Gtk.Application.do_shutdown(self)
 
 
 class MainWindow(Gtk.ApplicationWindow):
@@ -118,7 +118,6 @@ class MainWindow(Gtk.ApplicationWindow):
         self.playback_rate = 1.0
         self.description_link_generation = 0
         self.current_channel_url: str | None = None
-        self.video_fullscreen_window: Gtk.Window | None = None
         self.video_fullscreen = False
         self.status_text = "Ready"
         self.back_stack: list[ViewState] = []
@@ -155,17 +154,17 @@ class MainWindow(Gtk.ApplicationWindow):
         shortcuts.connect("key-pressed", self.on_key_pressed)
         self.add_controller(shortcuts)
 
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self.set_child(root)
+        self.root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.set_child(self.root)
 
-        header = Gtk.HeaderBar()
+        self.header = Gtk.HeaderBar()
         self.back_button = Gtk.Button(
             child=Gtk.Image.new_from_icon_name("go-previous-symbolic")
         )
         self.back_button.set_tooltip_text("Back")
         self.back_button.set_sensitive(False)
         self.back_button.connect("clicked", self.on_back_clicked)
-        header.pack_start(self.back_button)
+        self.header.pack_start(self.back_button)
 
         self.forward_button = Gtk.Button(
             child=Gtk.Image.new_from_icon_name("go-next-symbolic")
@@ -173,14 +172,14 @@ class MainWindow(Gtk.ApplicationWindow):
         self.forward_button.set_tooltip_text("Forward")
         self.forward_button.set_sensitive(False)
         self.forward_button.connect("clicked", self.on_forward_clicked)
-        header.pack_start(self.forward_button)
+        self.header.pack_start(self.forward_button)
 
         self.open_url_button = Gtk.Button(
             child=Gtk.Image.new_from_icon_name("document-open-symbolic")
         )
         self.open_url_button.set_tooltip_text("Open URL")
         self.open_url_button.connect("clicked", self.on_open_url_clicked)
-        header.pack_start(self.open_url_button)
+        self.header.pack_start(self.open_url_button)
 
         self.context_refresh_icon = Gtk.Image.new_from_icon_name("view-refresh-symbolic")
         self.context_refresh_spinner = Gtk.Spinner()
@@ -188,7 +187,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.context_refresh_button.set_tooltip_text("Refresh")
         self.context_refresh_button.set_visible(False)
         self.context_refresh_button.connect("clicked", self.on_context_refresh_clicked)
-        header.pack_end(self.context_refresh_button)
+        self.header.pack_end(self.context_refresh_button)
 
         self.context_unsubscribe_button = Gtk.Button(
             child=Gtk.Image.new_from_icon_name("edit-delete-symbolic")
@@ -198,7 +197,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.context_unsubscribe_button.connect(
             "clicked", self.on_context_unsubscribe_clicked
         )
-        header.pack_end(self.context_unsubscribe_button)
+        self.header.pack_end(self.context_unsubscribe_button)
 
         title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         title_box.set_halign(Gtk.Align.CENTER)
@@ -214,20 +213,20 @@ class MainWindow(Gtk.ApplicationWindow):
         self.header_subtitle.set_single_line_mode(True)
         self.header_subtitle.set_max_width_chars(48)
         title_box.append(self.header_subtitle)
-        header.set_title_widget(title_box)
-        self.set_titlebar(header)
+        self.header.set_title_widget(title_box)
+        self.set_titlebar(self.header)
 
         body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0, vexpand=True)
-        root.append(body)
+        self.root.append(body)
 
-        sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        sidebar.add_css_class("sidebar")
-        sidebar.set_size_request(210, -1)
-        body.append(sidebar)
+        self.sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.sidebar.add_css_class("sidebar")
+        self.sidebar.set_size_request(210, -1)
+        body.append(self.sidebar)
 
         nav = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
         nav.add_css_class("sidebar-list")
-        sidebar.append(nav)
+        self.sidebar.append(nav)
         self.nav = nav
         self.nav_pages: dict[Gtk.ListBoxRow, str] = {}
         self.nav_channels: dict[Gtk.ListBoxRow, Channel] = {}
@@ -894,11 +893,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.stack.add_named(page, "history")
 
     def build_player_page(self) -> None:
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        page.set_margin_top(12)
-        page.set_margin_bottom(12)
-        page.set_margin_start(12)
-        page.set_margin_end(12)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
 
         self.video = Gtk.GLArea(hexpand=True, vexpand=True)
         self.video.set_auto_render(False)
@@ -915,63 +910,70 @@ class MainWindow(Gtk.ApplicationWindow):
         self.video_container.append(self.video)
         page.append(self.video_container)
 
-        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        page.append(controls)
+        self.player_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.player_controls.set_margin_top(8)
+        self.player_controls.set_margin_bottom(8)
+        self.player_controls.set_margin_start(12)
+        self.player_controls.set_margin_end(12)
+        page.append(self.player_controls)
         self.play_pause_icon = Gtk.Image.new_from_icon_name(
             "media-playback-start-symbolic"
         )
         self.play_pause_button = Gtk.Button(child=self.play_pause_icon)
         self.play_pause_button.set_tooltip_text("Play")
         self.play_pause_button.connect("clicked", self.on_play_pause_clicked)
-        controls.append(self.play_pause_button)
+        self.player_controls.append(self.play_pause_button)
 
         self.elapsed_label = Gtk.Label(label="0:00")
-        controls.append(self.elapsed_label)
+        self.player_controls.append(self.elapsed_label)
 
         self.scrubber = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 1, 1)
         self.scrubber.set_hexpand(True)
         self.scrubber.set_draw_value(False)
         self.scrubber.connect("change-value", self.on_scrub_changed)
-        controls.append(self.scrubber)
+        self.player_controls.append(self.scrubber)
 
         self.duration_label = Gtk.Label(label="0:00")
-        controls.append(self.duration_label)
+        self.player_controls.append(self.duration_label)
 
         self.quality_combo = Gtk.ComboBoxText()
         for quality in QUALITY_FORMATS:
             self.quality_combo.append(quality, quality)
         self.quality_combo.set_active_id("720p")
         self.quality_combo.connect("changed", self.on_quality_changed)
-        controls.append(self.quality_combo)
+        self.player_controls.append(self.quality_combo)
 
         self.speed_combo = Gtk.ComboBoxText()
         for rate in PLAYBACK_RATES:
             self.speed_combo.append(self.speed_id(rate), self.speed_label(rate))
         self.speed_combo.set_active_id(self.speed_id(self.playback_rate))
         self.speed_combo.connect("changed", self.on_speed_changed)
-        controls.append(self.speed_combo)
+        self.player_controls.append(self.speed_combo)
 
         self.fullscreen_icon = Gtk.Image.new_from_icon_name("view-fullscreen-symbolic")
         self.fullscreen_button = Gtk.Button(child=self.fullscreen_icon)
         self.fullscreen_button.set_tooltip_text("Fullscreen video")
         self.fullscreen_button.connect("clicked", self.on_fullscreen_clicked)
-        controls.append(self.fullscreen_button)
+        self.player_controls.append(self.fullscreen_button)
 
-        metadata = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        metadata.set_margin_top(4)
-        page.append(metadata)
+        self.player_metadata = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.player_metadata.set_margin_top(4)
+        self.player_metadata.set_margin_bottom(12)
+        self.player_metadata.set_margin_start(12)
+        self.player_metadata.set_margin_end(12)
+        page.append(self.player_metadata)
         self.player_title = Gtk.Label(label="No video loaded", xalign=0, hexpand=True)
         self.player_title.set_wrap(True)
-        metadata.append(self.player_title)
+        self.player_metadata.append(self.player_title)
 
         self.player_meta = Gtk.Label(label="", xalign=0)
         self.player_meta.set_wrap(True)
         self.player_meta.add_css_class("dim-label")
-        metadata.append(self.player_meta)
+        self.player_metadata.append(self.player_meta)
 
         player_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         player_actions.set_valign(Gtk.Align.CENTER)
-        metadata.append(player_actions)
+        self.player_metadata.append(player_actions)
 
         self.player_subscribe = Gtk.CheckButton(label="Subscribed")
         self.player_subscribe.set_sensitive(False)
@@ -1003,7 +1005,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         description = Gtk.Expander(label="Description")
         description.set_child(description_scroller)
-        metadata.append(description)
+        self.player_metadata.append(description)
 
         self.stack.add_named(page, "player")
 
@@ -1987,7 +1989,7 @@ class MainWindow(Gtk.ApplicationWindow):
             return None
 
     def stop_pipeline(self) -> None:
-        if self.video_fullscreen_window is not None:
+        if self.video_fullscreen:
             self.close_video_fullscreen()
         if self.player is None:
             self.free_mpv_render_context()
@@ -2037,69 +2039,33 @@ class MainWindow(Gtk.ApplicationWindow):
             self.play_pause_button.set_tooltip_text("Pause")
 
     def on_fullscreen_clicked(self, _button: Gtk.Button) -> None:
-        if self.video_fullscreen_window is None:
-            self.open_video_fullscreen()
-        else:
+        if self.video_fullscreen:
             self.close_video_fullscreen()
+        else:
+            self.open_video_fullscreen()
 
     def open_video_fullscreen(self) -> None:
-        if self.video_fullscreen_window is not None:
+        if self.video_fullscreen:
             return
 
-        parent = self.video.get_parent()
-        if isinstance(parent, Gtk.Box):
-            parent.remove(self.video)
-
-        window = Gtk.Window(title="GTKTube")
-        window.set_transient_for(self)
-        window.set_child(self.video)
-        window.connect("close-request", self.on_video_fullscreen_close_request)
-
-        key_controller = Gtk.EventControllerKey()
-        key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        key_controller.connect("key-pressed", self.on_video_fullscreen_key_pressed)
-        window.add_controller(key_controller)
-
-        self.video_fullscreen_window = window
         self.video_fullscreen = True
+        self.header.set_visible(False)
+        self.sidebar.set_visible(False)
+        self.player_metadata.set_visible(False)
         self.fullscreen_icon.set_from_icon_name("view-restore-symbolic")
         self.fullscreen_button.set_tooltip_text("Exit fullscreen video")
-        window.fullscreen()
-        window.present()
+        self.fullscreen()
 
     def close_video_fullscreen(self) -> None:
-        self.restore_video_from_fullscreen(close_window=True)
-
-    def restore_video_from_fullscreen(self, close_window: bool) -> None:
-        window = self.video_fullscreen_window
-        if window is None:
+        if not self.video_fullscreen:
             return
-        self.video_fullscreen_window = None
         self.video_fullscreen = False
-        window.set_child(None)
-        self.video_container.append(self.video)
+        self.header.set_visible(True)
+        self.sidebar.set_visible(True)
+        self.player_metadata.set_visible(True)
         self.fullscreen_icon.set_from_icon_name("view-fullscreen-symbolic")
         self.fullscreen_button.set_tooltip_text("Fullscreen video")
-        if close_window:
-            window.close()
-
-    def on_video_fullscreen_close_request(self, _window: Gtk.Window) -> bool:
-        self.restore_video_from_fullscreen(close_window=False)
-        return False
-
-    def on_video_fullscreen_key_pressed(
-        self,
-        _controller: Gtk.EventControllerKey,
-        keyval: int,
-        _keycode: int,
-        state: Gdk.ModifierType,
-    ) -> bool:
-        if keyval == Gdk.KEY_Escape:
-            self.close_video_fullscreen()
-            return True
-        if self.handle_navigation_shortcut(keyval, state):
-            return True
-        return self.handle_player_shortcut(keyval, state)
+        self.unfullscreen()
 
     def on_key_pressed(
         self,
@@ -2108,6 +2074,9 @@ class MainWindow(Gtk.ApplicationWindow):
         _keycode: int,
         state: Gdk.ModifierType,
     ) -> bool:
+        if self.video_fullscreen and keyval == Gdk.KEY_Escape:
+            self.close_video_fullscreen()
+            return True
         if state & Gdk.ModifierType.CONTROL_MASK and keyval in (Gdk.KEY_o, Gdk.KEY_O):
             self.show_open_url_dialog()
             return True
