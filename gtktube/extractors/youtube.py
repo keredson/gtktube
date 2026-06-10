@@ -13,9 +13,32 @@ class ExtractorError(RuntimeError):
 DEFAULT_PLAYBACK_FORMAT = (
     "best[protocol^=http][ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=720]/"
     "best[protocol^=http][ext=mp4][acodec!=none][vcodec!=none][height<=720]/"
-    "best[protocol^=http][acodec!=none][vcodec!=none][height<=480]/"
+    "best[protocol^=http][acodec!=none][vcodec!=none][height<=720]/"
     "best[acodec!=none][vcodec!=none]"
 )
+
+QUALITY_FORMATS = {
+    "360p": (
+        "best[protocol^=http][ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=360]/"
+        "best[protocol^=http][ext=mp4][acodec!=none][vcodec!=none][height<=360]/"
+        "best[acodec!=none][vcodec!=none][height<=360]"
+    ),
+    "480p": (
+        "best[protocol^=http][ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=480]/"
+        "best[protocol^=http][ext=mp4][acodec!=none][vcodec!=none][height<=480]/"
+        "best[acodec!=none][vcodec!=none][height<=480]"
+    ),
+    "720p": DEFAULT_PLAYBACK_FORMAT,
+    "1080p": (
+        "best[protocol^=http][ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=1080]/"
+        "best[protocol^=http][ext=mp4][acodec!=none][vcodec!=none][height<=1080]/"
+        "best[acodec!=none][vcodec!=none][height<=1080]"
+    ),
+    "best": (
+        "best[protocol^=http][ext=mp4][acodec!=none][vcodec!=none]/"
+        "best[acodec!=none][vcodec!=none]"
+    ),
+}
 
 
 class YoutubeExtractor:
@@ -51,13 +74,17 @@ class YoutubeExtractor:
         except Exception as exc:
             raise ExtractorError(str(exc)) from exc
 
-    def resolve_video(self, url: str) -> PlayableVideo:
+    def resolve_video(self, url: str, quality: str = "720p") -> PlayableVideo:
+        selected_quality = quality if quality in QUALITY_FORMATS else "720p"
         options = {
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
             "noplaylist": True,
-            "format": os.environ.get("GTKTUBE_YTDLP_FORMAT", DEFAULT_PLAYBACK_FORMAT),
+            "format": os.environ.get(
+                "GTKTUBE_YTDLP_FORMAT",
+                QUALITY_FORMATS[selected_quality],
+            ),
         }
         try:
             with self._youtube_dl()(options) as ydl:
@@ -65,10 +92,16 @@ class YoutubeExtractor:
         except Exception as exc:
             raise ExtractorError(str(exc)) from exc
 
-        stream_url = info.get("url")
+        stream_url, audio_url = self._stream_urls(info)
         if not stream_url:
             raise ExtractorError("No playable stream URL found")
-        return PlayableVideo(video=self._video_from_info(info), stream_url=stream_url)
+        return PlayableVideo(
+            video=self._video_from_info(info),
+            stream_url=stream_url,
+            quality=selected_quality,
+            audio_url=audio_url,
+            resolved_quality=self._resolved_quality(info),
+        )
 
     def resolve_channel(self, url: str) -> Channel:
         info = self._extract(url, flat=True, limit=1)
@@ -144,8 +177,10 @@ class YoutubeExtractor:
             channel_id=str(channel_id) if channel_id else None,
             channel_title=str(channel_title) if channel_title else None,
             thumbnail_url=self._best_thumbnail(info),
+            description=info.get("description"),
             duration_seconds=self._optional_int(info.get("duration")),
             published_at=self._published_at(info),
+            view_count=self._optional_int(info.get("view_count")),
         )
 
     def _best_thumbnail(self, info: dict[str, Any]) -> str | None:
@@ -171,3 +206,42 @@ class YoutubeExtractor:
             return int(value) if value is not None else None
         except (TypeError, ValueError):
             return None
+
+    def _stream_urls(self, info: dict[str, Any]) -> tuple[str | None, str | None]:
+        requested = info.get("requested_downloads") or []
+        if requested:
+            video_url: str | None = None
+            audio_url: str | None = None
+            for item in requested:
+                url = item.get("url")
+                if not url:
+                    continue
+                vcodec = item.get("vcodec")
+                acodec = item.get("acodec")
+                if vcodec and vcodec != "none":
+                    video_url = str(url)
+                elif acodec and acodec != "none":
+                    audio_url = str(url)
+            if video_url:
+                return video_url, audio_url
+        url = info.get("url")
+        return str(url) if url else None, None
+
+    def _resolved_quality(self, info: dict[str, Any]) -> str | None:
+        height = self._optional_int(info.get("height"))
+        if height:
+            return f"{height}p"
+        requested = info.get("requested_downloads") or []
+        heights = [
+            self._optional_int(item.get("height"))
+            for item in requested
+            if item.get("vcodec") and item.get("vcodec") != "none"
+        ]
+        heights = [height for height in heights if height]
+        if heights:
+            return f"{max(heights)}p"
+        format_note = info.get("format_note")
+        if format_note:
+            return str(format_note)
+        format_id = info.get("format_id")
+        return str(format_id) if format_id else None

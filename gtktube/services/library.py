@@ -10,16 +10,22 @@ class LibraryService:
         self.repository = repository
         self.extractor = extractor
 
-    def play_url(self, url: str) -> PlayableVideo:
-        playable = self.extractor.resolve_video(url)
+    def play_url(
+        self, url: str, quality: str = "720p", record_play: bool = True
+    ) -> PlayableVideo:
+        playable = self.extractor.resolve_video(url, quality=quality)
         self._store_video_and_channel(playable.video)
-        self.repository.record_play_started(playable.video.id)
+        if record_play:
+            self.repository.record_play_started(playable.video.id)
         return playable
 
-    def play_video(self, video: Video) -> PlayableVideo:
-        playable = self.extractor.resolve_video(video.url)
+    def play_video(
+        self, video: Video, quality: str = "720p", record_play: bool = True
+    ) -> PlayableVideo:
+        playable = self.extractor.resolve_video(video.url, quality=quality)
         self._store_video_and_channel(playable.video)
-        self.repository.record_play_started(playable.video.id)
+        if record_play:
+            self.repository.record_play_started(playable.video.id)
         return playable
 
     def record_watch_range(self, video_id: str, start_seconds: int, end_seconds: int) -> None:
@@ -41,6 +47,10 @@ class LibraryService:
             self.repository.upsert_channel(channel, subscribed=True)
             return channel
         return self.subscribe(video.url)
+
+    def unsubscribe_from_video_channel(self, video: Video) -> None:
+        if video.channel_id:
+            self.repository.unsubscribe_channel(video.channel_id)
 
     def refresh_channel(self, channel: Channel, limit: int = 30) -> list[Video]:
         videos = self.extractor.channel_uploads(channel, limit=limit)

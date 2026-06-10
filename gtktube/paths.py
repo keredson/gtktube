@@ -35,5 +35,4 @@ class AppPaths:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "thumbnails" / "channels").mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "thumbnails" / "videos").mkdir(parents=True, exist_ok=True)
+        (self.cache_dir / "thumbnails").mkdir(parents=True, exist_ok=True)

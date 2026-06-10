@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def migrate(connection: sqlite3.Connection) -> None:
@@ -14,6 +14,9 @@ def migrate(connection: sqlite3.Connection) -> None:
         )
     if current < 1:
         _migrate_1(connection)
+        current = 1
+    if current < 2:
+        _migrate_2(connection)
 
 
 def _migrate_1(connection: sqlite3.Connection) -> None:
@@ -202,5 +205,14 @@ def _migrate_1(connection: sqlite3.Connection) -> None:
             END;
 
             PRAGMA user_version = 1;
+            """
+        )
+
+
+def _migrate_2(connection: sqlite3.Connection) -> None:
+    with connection:
+        connection.executescript(
+            """
+            PRAGMA user_version = 2;
             """
         )

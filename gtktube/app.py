@@ -44,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
 
     paths = AppPaths.discover()
     paths.ensure()
+    print(f"gtktube: database={paths.database_path}", file=sys.stderr)
 
     connection = connect(paths.database_path)
     migrate(connection)
@@ -53,5 +54,5 @@ def main(argv: list[str] | None = None) -> int:
 
     from .ui.main_window import GTKTubeApplication
 
-    app = GTKTubeApplication(service)
+    app = GTKTubeApplication(service, paths)
     return app.run(argv)

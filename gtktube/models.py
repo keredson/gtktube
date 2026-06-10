@@ -11,8 +11,10 @@ class Video:
     channel_id: str | None = None
     channel_title: str | None = None
     thumbnail_url: str | None = None
+    description: str | None = None
     duration_seconds: int | None = None
     published_at: str | None = None
+    view_count: int | None = None
     percent_watched: float | None = None
     completed: bool = False
 
@@ -31,3 +33,6 @@ class Channel:
 class PlayableVideo:
     video: Video
     stream_url: str
+    quality: str
+    audio_url: str | None = None
+    resolved_quality: str | None = None

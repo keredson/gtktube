@@ -26,7 +26,9 @@ class DatabaseTests(unittest.TestCase):
                 channel_title="Channel One",
                 title="A Long Video",
                 url="https://example.test/watch?v=vid1",
+                description="Useful context about the video.",
                 duration_seconds=100,
+                view_count=12345,
             )
         )
 
@@ -84,6 +86,13 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertEqual([video.id for video in by_video], ["vid1"])
         self.assertEqual([video.id for video in by_channel], ["vid1"])
+
+    def test_video_metadata_round_trips_through_feed(self) -> None:
+        feed = self.repository.subscription_feed()
+
+        self.assertEqual(feed[0].description, "Useful context about the video.")
+        self.assertEqual(feed[0].duration_seconds, 100)
+        self.assertEqual(feed[0].view_count, 12345)
 
 
 class ConnectionTests(unittest.TestCase):

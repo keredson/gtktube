@@ -111,9 +111,10 @@ class LibraryRepository:
                 """
                 INSERT INTO videos (
                     id, channel_id, title, url, thumbnail_url, duration_seconds,
-                    published_at, discovered_at, created_at, updated_at
+                    published_at, view_count, description, discovered_at,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     channel_id = COALESCE(excluded.channel_id, videos.channel_id),
                     title = excluded.title,
@@ -121,6 +122,8 @@ class LibraryRepository:
                     thumbnail_url = COALESCE(excluded.thumbnail_url, videos.thumbnail_url),
                     duration_seconds = COALESCE(excluded.duration_seconds, videos.duration_seconds),
                     published_at = COALESCE(excluded.published_at, videos.published_at),
+                    view_count = COALESCE(excluded.view_count, videos.view_count),
+                    description = COALESCE(excluded.description, videos.description),
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -131,6 +134,8 @@ class LibraryRepository:
                     video.thumbnail_url,
                     video.duration_seconds,
                     video.published_at,
+                    video.view_count,
+                    video.description,
                     now,
                     now,
                     now,
@@ -147,7 +152,8 @@ class LibraryRepository:
             """
             SELECT
                 v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
-                v.thumbnail_url, v.duration_seconds, v.published_at,
+                v.thumbnail_url, v.description, v.duration_seconds,
+                v.published_at, v.view_count,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 COALESCE(wh.completed, 0) AS completed
             FROM videos v
@@ -166,7 +172,8 @@ class LibraryRepository:
             """
             SELECT
                 v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
-                v.thumbnail_url, v.duration_seconds, v.published_at,
+                v.thumbnail_url, v.description, v.duration_seconds,
+                v.published_at, v.view_count,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 COALESCE(wh.completed, 0) AS completed
             FROM videos v
@@ -194,7 +201,8 @@ class LibraryRepository:
             f"""
             SELECT
                 v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
-                v.thumbnail_url, v.duration_seconds, v.published_at,
+                v.thumbnail_url, v.description, v.duration_seconds,
+                v.published_at, v.view_count,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 COALESCE(wh.completed, 0) AS completed
             FROM watch_history wh
@@ -314,8 +322,10 @@ class LibraryRepository:
             channel_id=row["channel_id"],
             channel_title=row["channel_title"],
             thumbnail_url=row["thumbnail_url"],
+            description=row["description"],
             duration_seconds=row["duration_seconds"],
             published_at=row["published_at"],
+            view_count=row["view_count"],
             percent_watched=row["percent_watched"],
             completed=bool(row["completed"]),
         )
