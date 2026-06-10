@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import locale
+import signal
 import sys
 
 from .db.connection import connect
@@ -24,6 +26,20 @@ site-packages so it can see python3-gi:
   .venv/bin/python -m gtktube
 """
 
+MPV_HELP = """\
+GTKTube needs libmpv and the Python mpv bindings.
+
+On Debian/Ubuntu:
+  ./scripts/install-apt-deps.sh
+
+Then install Python dependencies in your environment:
+  python3 -m pip install -r requirements.txt
+"""
+
+
+def configure_mpv_locale() -> None:
+    locale.setlocale(locale.LC_NUMERIC, "C")
+
 
 def ensure_pygobject() -> bool:
     try:
@@ -37,9 +53,20 @@ def ensure_pygobject() -> bool:
     return True
 
 
+def ensure_mpv() -> bool:
+    configure_mpv_locale()
+    try:
+        import mpv  # noqa: F401
+    except (ImportError, ModuleNotFoundError, OSError) as exc:
+        print(MPV_HELP, file=sys.stderr)
+        print(f"Original import error: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv
-    if not ensure_pygobject():
+    if not ensure_pygobject() or not ensure_mpv():
         return 2
 
     paths = AppPaths.discover()
@@ -55,4 +82,15 @@ def main(argv: list[str] | None = None) -> int:
     from .ui.main_window import GTKTubeApplication
 
     app = GTKTubeApplication(service, paths)
-    return app.run(argv)
+    previous_sigint = signal.getsignal(signal.SIGINT)
+
+    def on_sigint(_signum: int, _frame: object) -> None:
+        app.quit()
+
+    signal.signal(signal.SIGINT, on_sigint)
+    try:
+        return app.run(argv)
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)

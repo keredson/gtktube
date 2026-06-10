@@ -2,24 +2,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import locale
+import os
 import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from ctypes import CDLL, POINTER, byref, c_char_p, c_int, c_void_p
+from ctypes.util import find_library
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Any, Callable, TypeVar
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 gi.require_version("GdkPixbuf", "2.0")
-gi.require_version("Gst", "1.0")
-from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gst, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from gtktube.extractors.youtube import ExtractorError, QUALITY_FORMATS
 from gtktube.models import Channel, PlayableVideo, SearchResults, Video
@@ -28,7 +31,6 @@ from gtktube.services.library import LibraryService
 
 
 T = TypeVar("T")
-Gst.init(None)
 
 PLAYBACK_RATES = [rate / 100 for rate in range(25, 401, 25)]
 URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>\"]+")
@@ -83,6 +85,12 @@ class GTKTubeApplication(Gtk.Application):
         window = MainWindow(self, self.service, self.paths)
         window.present()
 
+    def do_shutdown(self) -> None:
+        for window in self.get_windows():
+            if isinstance(window, MainWindow):
+                window.cleanup()
+        super().do_shutdown()
+
 
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(
@@ -95,9 +103,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
         self.executor = ThreadPoolExecutor(max_workers=3)
         self.current_playable: PlayableVideo | None = None
-        self.pipeline: Gst.Element | None = None
-        self.bus_watch_id: int | None = None
+        self.player: Any | None = None
+        self.mpv_module: Any | None = None
+        self.mpv_render_context: Any | None = None
+        self.mpv_get_proc_address: Any | None = None
         self.range_start_seconds: int | None = None
+        self.pending_seek_seconds: int | None = None
+        self.pending_seek_attempts = 0
         self.updating_scrubber = False
         self.updating_subscribe_check = False
         self.updating_channel_subscribe_check = False
@@ -106,8 +118,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.playback_rate = 1.0
         self.description_link_generation = 0
         self.current_channel_url: str | None = None
-        self.fullscreen_window: Gtk.Window | None = None
-        self.fullscreen_picture: Gtk.Picture | None = None
+        self.video_fullscreen_window: Gtk.Window | None = None
+        self.video_fullscreen = False
         self.status_text = "Ready"
         self.back_stack: list[ViewState] = []
         self.forward_stack: list[ViewState] = []
@@ -117,6 +129,23 @@ class MainWindow(Gtk.ApplicationWindow):
         self.feed_limit = 100
         self.channel_video_limits: dict[str, int] = {}
         self.loading_more_videos = False
+        self.cleaned_up = False
+        self.gl = CDLL("libepoxy.so.0")
+        self.libgl = self.load_library("GL")
+        self.libegl = self.load_library("EGL")
+        if self.libgl is not None:
+            try:
+                self.libgl.glGetIntegerv.argtypes = [c_int, POINTER(c_int)]
+                self.libgl.glXGetProcAddressARB.restype = c_void_p
+                self.libgl.glXGetProcAddressARB.argtypes = [c_char_p]
+            except AttributeError:
+                self.libgl = None
+        if self.libegl is not None:
+            try:
+                self.libegl.eglGetProcAddress.restype = c_void_p
+                self.libegl.eglGetProcAddress.argtypes = [c_char_p]
+            except AttributeError:
+                self.libegl = None
 
         self.restore_window_size()
         self.install_css()
@@ -160,14 +189,6 @@ class MainWindow(Gtk.ApplicationWindow):
         self.context_refresh_button.set_visible(False)
         self.context_refresh_button.connect("clicked", self.on_context_refresh_clicked)
         header.pack_end(self.context_refresh_button)
-
-        self.context_share_button = Gtk.Button(
-            child=Gtk.Image.new_from_icon_name("edit-copy-symbolic")
-        )
-        self.context_share_button.set_tooltip_text("Copy video URL")
-        self.context_share_button.set_visible(False)
-        self.context_share_button.connect("clicked", self.on_context_share_clicked)
-        header.pack_end(self.context_share_button)
 
         self.context_unsubscribe_button = Gtk.Button(
             child=Gtk.Image.new_from_icon_name("edit-delete-symbolic")
@@ -270,12 +291,28 @@ class MainWindow(Gtk.ApplicationWindow):
         box.append(label)
         return box
 
+    def load_library(self, name: str) -> Any | None:
+        path = find_library(name)
+        if path is None:
+            return None
+        try:
+            return CDLL(path)
+        except OSError as exc:
+            self.log(f"could not load lib{name}: {exc}")
+            return None
+
     def on_close_request(self, *_args: object) -> bool:
+        self.cleanup()
+        return False
+
+    def cleanup(self) -> None:
+        if self.cleaned_up:
+            return
+        self.cleaned_up = True
         self.save_window_size()
         self.flush_watch_range()
         self.stop_pipeline()
         self.executor.shutdown(wait=False, cancel_futures=True)
-        return False
 
     def restore_window_size(self) -> None:
         size = self.read_window_size()
@@ -435,9 +472,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.update_navigation_buttons()
 
     def apply_view_state(self, view: ViewState) -> None:
+        if view.page != "player":
+            self.flush_watch_range()
+            self.stop_pipeline()
         self.update_header_subtitle(view)
         self.update_context_refresh_button(view)
-        self.update_context_share_button(view)
         self.update_context_unsubscribe_button(view)
         if view.channel_id is not None:
             self.update_channel_header(view)
@@ -526,16 +565,6 @@ class MainWindow(Gtk.ApplicationWindow):
     def update_context_unsubscribe_button(self, view: ViewState | None = None) -> None:
         self.context_unsubscribe_button.set_visible(False)
 
-    def update_context_share_button(self, view: ViewState | None = None) -> None:
-        view = view or self.current_view
-        visible = bool(
-            view
-            and view.page == "player"
-            and view.channel_id is None
-            and self.current_playable is not None
-        )
-        self.context_share_button.set_visible(visible)
-
     def on_context_refresh_clicked(self, _button: Gtk.Button) -> None:
         if self.current_view and self.current_view.channel_id is not None:
             channel = self.current_channel()
@@ -560,10 +589,16 @@ class MainWindow(Gtk.ApplicationWindow):
         self.context_refresh_button.set_child(self.context_refresh_icon)
         self.context_refresh_button.set_sensitive(True)
 
-    def on_context_share_clicked(self, _button: Gtk.Button) -> None:
+    def on_player_share_clicked(self, _button: Gtk.Button) -> None:
         if self.current_playable is None:
             return
         self.copy_to_clipboard(self.current_playable.video.url, "Copied video URL")
+        self.player_share_icon.set_from_icon_name("emblem-ok-symbolic")
+        GLib.timeout_add_seconds(1, self.restore_player_share_icon)
+
+    def restore_player_share_icon(self) -> bool:
+        self.player_share_icon.set_from_icon_name("edit-copy-symbolic")
+        return False
 
     def copy_to_clipboard(self, text: str, message: str) -> None:
         display = Gdk.Display.get_default()
@@ -865,13 +900,20 @@ class MainWindow(Gtk.ApplicationWindow):
         page.set_margin_start(12)
         page.set_margin_end(12)
 
-        self.video = Gtk.Picture(hexpand=True, vexpand=True)
-        self.video.set_can_shrink(True)
+        self.video = Gtk.GLArea(hexpand=True, vexpand=True)
+        self.video.set_auto_render(False)
+        self.video.set_has_depth_buffer(False)
+        self.video.set_has_stencil_buffer(False)
         self.video.set_size_request(-1, 360)
+        self.video.connect("realize", self.on_video_realize)
+        self.video.connect("render", self.on_video_render)
+        self.video.connect("unrealize", self.on_video_unrealize)
         video_click = Gtk.GestureClick()
         video_click.connect("released", self.on_video_clicked)
         self.video.add_controller(video_click)
-        page.append(self.video)
+        self.video_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.video_container.append(self.video)
+        page.append(self.video_container)
 
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         page.append(controls)
@@ -927,6 +969,22 @@ class MainWindow(Gtk.ApplicationWindow):
         self.player_meta.add_css_class("dim-label")
         metadata.append(self.player_meta)
 
+        player_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        player_actions.set_valign(Gtk.Align.CENTER)
+        metadata.append(player_actions)
+
+        self.player_subscribe = Gtk.CheckButton(label="Subscribed")
+        self.player_subscribe.set_sensitive(False)
+        self.player_subscribe.connect("toggled", self.on_player_subscribe_toggled)
+        player_actions.append(self.player_subscribe)
+
+        self.player_share_icon = Gtk.Image.new_from_icon_name("edit-copy-symbolic")
+        self.player_share_button = Gtk.Button(child=self.player_share_icon)
+        self.player_share_button.set_tooltip_text("Copy video URL")
+        self.player_share_button.set_sensitive(False)
+        self.player_share_button.connect("clicked", self.on_player_share_clicked)
+        player_actions.append(self.player_share_button)
+
         self.player_description = Gtk.TextView()
         self.player_description.set_editable(False)
         self.player_description.set_cursor_visible(False)
@@ -946,11 +1004,6 @@ class MainWindow(Gtk.ApplicationWindow):
         description = Gtk.Expander(label="Description")
         description.set_child(description_scroller)
         metadata.append(description)
-
-        self.player_subscribe = Gtk.CheckButton(label="Subscribed")
-        self.player_subscribe.set_sensitive(False)
-        self.player_subscribe.connect("toggled", self.on_player_subscribe_toggled)
-        metadata.append(self.player_subscribe)
 
         self.stack.add_named(page, "player")
 
@@ -1702,16 +1755,21 @@ class MainWindow(Gtk.ApplicationWindow):
         self.updating_quality = False
         self.update_player_metadata(playable.video)
         self.update_subscribe_check(playable.video)
-        self.update_context_share_button(ViewState("player"))
+        self.update_player_share_button()
 
-        pipeline = self.create_pipeline(playable)
-        if pipeline is None:
+        player = self.create_player(playable)
+        if player is None:
             return
-        self.pipeline = pipeline
-        self.watch_pipeline_bus(pipeline)
-        pipeline.set_state(Gst.State.PLAYING)
-        if self.playback_rate != 1.0:
-            GLib.timeout_add(250, lambda: self.seek_media(self.current_position_seconds()))
+        self.player = player
+        try:
+            self.player.play(playable.video.url)
+            self.player.pause = False
+            self.player.speed = self.playback_rate
+        except Exception as exc:
+            self.set_status(f"Playback error: {exc}")
+            self.log(f"mpv playback start failed: {exc}")
+            self.stop_pipeline()
+            return
 
         resume = (
             resume_position
@@ -1719,10 +1777,7 @@ class MainWindow(Gtk.ApplicationWindow):
             else self.service.repository.resume_position(playable.video.id)
         )
         if resume > 0:
-            GLib.timeout_add(
-                500,
-                lambda: self.seek_media(resume),
-            )
+            self.queue_seek_media(resume)
         self.range_start_seconds = self.current_position_seconds()
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
@@ -1734,6 +1789,7 @@ class MainWindow(Gtk.ApplicationWindow):
             meta = f"{meta} · {self.current_playable.resolved_quality}".strip(" ·")
         self.player_meta.set_text(meta)
         self.set_description_text(video.description or "")
+        self.update_player_share_button()
 
     def set_description_text(self, text: str) -> None:
         buffer = self.player_description.get_buffer()
@@ -1792,76 +1848,160 @@ class MainWindow(Gtk.ApplicationWindow):
         self.updating_subscribe_check = False
         self.player_subscribe.set_sensitive(bool(video.channel_id or video.url))
 
-    def create_pipeline(self, playable: PlayableVideo) -> Gst.Element | None:
-        sink = Gst.ElementFactory.make("gtk4paintablesink", "video_sink")
-        if sink is None:
-            self.set_status(
-                "Missing GStreamer gtk4paintablesink. Install gstreamer1.0-gtk4."
-            )
-            return None
+    def update_player_share_button(self) -> None:
+        self.player_share_button.set_sensitive(self.current_playable is not None)
+        self.restore_player_share_icon()
 
-        paintable = sink.get_property("paintable")
-        if paintable is not None:
-            self.video.set_paintable(paintable)
-
-        pipeline = Gst.ElementFactory.make("playbin", "player")
-        if pipeline is None:
-            self.set_status("Could not create GStreamer playbin")
-            return None
-        pipeline.set_property("uri", playable.stream_url)
-        pipeline.set_property("video-sink", sink)
-        tempo = Gst.ElementFactory.make("scaletempo", "audio_tempo")
-        if tempo is not None:
-            pipeline.set_property("audio-filter", tempo)
-        else:
-            self.log("scaletempo audio filter not available; speed changes will alter pitch")
-        return pipeline
-
-    def watch_pipeline_bus(self, pipeline: Gst.Element) -> None:
-        bus = pipeline.get_bus()
-        if bus is None:
-            return
-        bus.add_signal_watch()
-        self.bus_watch_id = bus.connect("message", self.on_gst_message)
-
-    def on_gst_message(self, _bus: Gst.Bus, message: Gst.Message) -> None:
-        if message.type == Gst.MessageType.ERROR:
-            error, debug = message.parse_error()
-            self.set_status(f"Playback error: {error.message}")
-            self.log(f"playback error message={error.message} debug={debug or ''}")
-            if debug:
-                self.log(f"playback debug={debug}")
-        elif message.type == Gst.MessageType.EOS:
-            self.flush_watch_range()
-            self.set_pipeline_state(Gst.State.PAUSED)
-        elif (
-            message.type == Gst.MessageType.STATE_CHANGED
-            and message.src == self.pipeline
+    def on_video_realize(self, _area: Gtk.GLArea) -> None:
+        if (
+            self.player is not None
+            and self.mpv_render_context is None
+            and self.mpv_module is not None
         ):
-            self.update_play_pause_button()
+            self.create_mpv_render_context(self.player, self.mpv_module)
+
+    def on_video_render(self, area: Gtk.GLArea, _context: Gdk.GLContext) -> bool:
+        if self.mpv_render_context is None:
+            return True
+        width = area.get_allocated_width() * area.get_scale_factor()
+        height = area.get_allocated_height() * area.get_scale_factor()
+        if width <= 0 or height <= 0:
+            return True
+
+        if self.libgl is None:
+            self.log("mpv render skipped: libGL is unavailable")
+            return True
+        framebuffer = c_int()
+        self.libgl.glGetIntegerv(0x8CA6, byref(framebuffer))
+        try:
+            self.mpv_render_context.render(
+                opengl_fbo={
+                    "fbo": framebuffer.value,
+                    "w": width,
+                    "h": height,
+                    "internal_format": 0,
+                },
+                flip_y=True,
+            )
+            self.mpv_render_context.report_swap()
+        except Exception as exc:
+            self.log(f"mpv render failed: {exc}")
+        return True
+
+    def on_video_unrealize(self, _area: Gtk.GLArea) -> None:
+        self.free_mpv_render_context()
+
+    def queue_video_render(self) -> bool:
+        self.video.queue_render()
+        return False
+
+    def on_mpv_render_update(self) -> None:
+        GLib.idle_add(self.queue_video_render)
+
+    def get_gl_proc_address(self, _ctx: object, name: bytes) -> int:
+        if self.libgl is not None:
+            address = self.libgl.glXGetProcAddressARB(name)
+            if address:
+                return int(address)
+        if self.libegl is not None:
+            address = self.libegl.eglGetProcAddress(name)
+            if address:
+                return int(address)
+        try:
+            return int(c_void_p.in_dll(self.gl, name.decode("ascii")).value or 0)
+        except (UnicodeDecodeError, ValueError):
+            return 0
+
+    def create_mpv_render_context(self, player: Any, mpv: Any) -> bool:
+        if not self.video.get_realized():
+            return True
+        self.video.make_current()
+        error = self.video.get_error()
+        if error is not None:
+            self.set_status(f"OpenGL error: {error.message}")
+            self.log(f"gtk glarea error: {error.message}")
+            return False
+
+        self.mpv_get_proc_address = mpv.MpvGlGetProcAddressFn(
+            self.get_gl_proc_address
+        )
+        try:
+            self.mpv_render_context = mpv.MpvRenderContext(
+                player,
+                "opengl",
+                opengl_init_params={
+                    "get_proc_address": self.mpv_get_proc_address,
+                },
+                advanced_control=True,
+            )
+            self.mpv_render_context.update_cb = self.on_mpv_render_update
+        except Exception as exc:
+            self.set_status(f"Could not create mpv renderer: {exc}")
+            self.log(f"mpv render context creation failed: {exc}")
+            self.mpv_render_context = None
+            return False
+        return True
+
+    def free_mpv_render_context(self) -> None:
+        if self.mpv_render_context is None:
+            return
+        try:
+            self.mpv_render_context.update_cb = None
+            self.mpv_render_context.free()
+        except Exception as exc:
+            self.log(f"mpv render context free failed: {exc}")
+        self.mpv_render_context = None
+
+    def create_player(self, playable: PlayableVideo) -> Any | None:
+        locale.setlocale(locale.LC_NUMERIC, "C")
+        try:
+            import mpv
+        except (ImportError, ModuleNotFoundError, OSError) as exc:
+            self.set_status(
+                "Missing mpv dependencies. Run ./scripts/install-deps-gui.py and "
+                "install Python requirements."
+            )
+            self.log(f"mpv import failed: {exc}")
+            return None
+
+        try:
+            player = mpv.MPV(
+                input_default_bindings=True,
+                input_vo_keyboard=True,
+                osc=True,
+                vo="libmpv",
+                ytdl=True,
+                ytdl_format=os.environ.get(
+                    "GTKTUBE_YTDLP_FORMAT",
+                    QUALITY_FORMATS.get(playable.quality, QUALITY_FORMATS["720p"]),
+                ),
+            )
+            self.mpv_module = mpv
+            if not self.create_mpv_render_context(player, mpv):
+                player.terminate()
+                return None
+            return player
+        except Exception as exc:
+            self.set_status(f"Could not create mpv player: {exc}")
+            self.log(f"mpv player creation failed: {exc}")
+            return None
 
     def stop_pipeline(self) -> None:
-        if self.fullscreen_window is not None:
+        if self.video_fullscreen_window is not None:
             self.close_video_fullscreen()
-        if self.pipeline is None:
+        if self.player is None:
+            self.free_mpv_render_context()
             return
-        bus = self.pipeline.get_bus()
-        if bus is not None:
-            bus.remove_signal_watch()
-            if self.bus_watch_id is not None:
-                try:
-                    bus.disconnect(self.bus_watch_id)
-                except TypeError:
-                    pass
-        self.pipeline.set_state(Gst.State.NULL)
-        self.pipeline = None
-        self.bus_watch_id = None
+        self.free_mpv_render_context()
+        try:
+            self.player.terminate()
+        except Exception as exc:
+            self.log(f"mpv terminate failed: {exc}")
+        self.player = None
+        self.mpv_module = None
         self.range_start_seconds = None
-
-    def set_pipeline_state(self, state: Gst.State) -> None:
-        if self.pipeline is not None:
-            self.pipeline.set_state(state)
-            self.update_play_pause_button()
+        self.pending_seek_seconds = None
+        self.update_play_pause_button()
 
     def on_play_pause_clicked(self, _button: Gtk.Button) -> None:
         self.toggle_play_pause()
@@ -1876,80 +2016,78 @@ class MainWindow(Gtk.ApplicationWindow):
         self.toggle_play_pause()
 
     def toggle_play_pause(self) -> None:
-        if self.pipeline is None:
+        if self.player is None:
             return
-        _ret, state, _pending = self.pipeline.get_state(0)
-        if state == Gst.State.PLAYING:
-            self.set_pipeline_state(Gst.State.PAUSED)
-        else:
-            self.set_pipeline_state(Gst.State.PLAYING)
+        try:
+            self.player.pause = not bool(getattr(self.player, "pause", False))
+        except Exception as exc:
+            self.log(f"mpv pause toggle failed: {exc}")
+        self.update_play_pause_button()
 
     def update_play_pause_button(self) -> None:
-        if self.pipeline is None:
+        if self.player is None:
             self.play_pause_icon.set_from_icon_name("media-playback-start-symbolic")
             self.play_pause_button.set_tooltip_text("Play")
             return
-        _ret, state, _pending = self.pipeline.get_state(0)
-        if state == Gst.State.PLAYING:
-            self.play_pause_icon.set_from_icon_name("media-playback-pause-symbolic")
-            self.play_pause_button.set_tooltip_text("Pause")
-        else:
+        if bool(getattr(self.player, "pause", False)):
             self.play_pause_icon.set_from_icon_name("media-playback-start-symbolic")
             self.play_pause_button.set_tooltip_text("Play")
+        else:
+            self.play_pause_icon.set_from_icon_name("media-playback-pause-symbolic")
+            self.play_pause_button.set_tooltip_text("Pause")
 
     def on_fullscreen_clicked(self, _button: Gtk.Button) -> None:
-        if self.fullscreen_window is None:
+        if self.video_fullscreen_window is None:
             self.open_video_fullscreen()
         else:
             self.close_video_fullscreen()
 
     def open_video_fullscreen(self) -> None:
-        paintable = self.video.get_paintable()
-        if paintable is None:
+        if self.video_fullscreen_window is not None:
             return
 
-        picture = Gtk.Picture(hexpand=True, vexpand=True)
-        picture.set_paintable(paintable)
-        picture.set_can_shrink(True)
-        picture_click = Gtk.GestureClick()
-        picture_click.connect("released", self.on_video_clicked)
-        picture.add_controller(picture_click)
+        parent = self.video.get_parent()
+        if isinstance(parent, Gtk.Box):
+            parent.remove(self.video)
 
         window = Gtk.Window(title="GTKTube")
         window.set_transient_for(self)
-        window.set_child(picture)
-        window.connect("close-request", self.on_fullscreen_close_request)
+        window.set_child(self.video)
+        window.connect("close-request", self.on_video_fullscreen_close_request)
 
         key_controller = Gtk.EventControllerKey()
         key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        key_controller.connect("key-pressed", self.on_fullscreen_key_pressed)
+        key_controller.connect("key-pressed", self.on_video_fullscreen_key_pressed)
         window.add_controller(key_controller)
 
-        self.fullscreen_window = window
-        self.fullscreen_picture = picture
+        self.video_fullscreen_window = window
+        self.video_fullscreen = True
         self.fullscreen_icon.set_from_icon_name("view-restore-symbolic")
         self.fullscreen_button.set_tooltip_text("Exit fullscreen video")
         window.fullscreen()
         window.present()
 
     def close_video_fullscreen(self) -> None:
-        window = self.fullscreen_window
+        self.restore_video_from_fullscreen(close_window=True)
+
+    def restore_video_from_fullscreen(self, close_window: bool) -> None:
+        window = self.video_fullscreen_window
         if window is None:
             return
-        self.fullscreen_window = None
-        self.fullscreen_picture = None
+        self.video_fullscreen_window = None
+        self.video_fullscreen = False
+        window.set_child(None)
+        self.video_container.append(self.video)
         self.fullscreen_icon.set_from_icon_name("view-fullscreen-symbolic")
         self.fullscreen_button.set_tooltip_text("Fullscreen video")
-        window.close()
+        if close_window:
+            window.close()
 
-    def on_fullscreen_close_request(self, _window: Gtk.Window) -> bool:
-        self.fullscreen_window = None
-        self.fullscreen_picture = None
-        self.fullscreen_icon.set_from_icon_name("view-fullscreen-symbolic")
-        self.fullscreen_button.set_tooltip_text("Fullscreen video")
+    def on_video_fullscreen_close_request(self, _window: Gtk.Window) -> bool:
+        self.restore_video_from_fullscreen(close_window=False)
         return False
 
-    def on_fullscreen_key_pressed(
+    def on_video_fullscreen_key_pressed(
         self,
         _controller: Gtk.EventControllerKey,
         keyval: int,
@@ -2101,29 +2239,60 @@ class MainWindow(Gtk.ApplicationWindow):
         self.updating_speed = True
         self.speed_combo.set_active_id(self.speed_id(rate))
         self.updating_speed = False
-        if self.pipeline is not None:
-            self.seek_media(self.current_position_seconds())
+        if self.player is not None:
+            try:
+                self.player.speed = rate
+            except Exception as exc:
+                self.log(f"mpv speed change failed: {exc}")
         self.set_status(f"Playback speed {self.speed_label(rate)}")
 
     def load_playable_at(self, playable: PlayableVideo, position: int) -> None:
         self.load_playable(playable, resume_position=position)
 
+    def queue_seek_media(self, seconds: int) -> None:
+        start_timer = self.pending_seek_seconds is None
+        self.pending_seek_seconds = seconds
+        self.pending_seek_attempts = 0
+        if start_timer:
+            GLib.timeout_add(250, self.flush_pending_seek)
+
+    def flush_pending_seek(self) -> bool:
+        if self.pending_seek_seconds is None:
+            return False
+        self.pending_seek_attempts += 1
+        if self.seek_media_impl(self.pending_seek_seconds, defer_until_ready=False):
+            self.pending_seek_seconds = None
+            return False
+        if self.pending_seek_attempts >= 40:
+            self.log(f"mpv deferred seek abandoned: {self.pending_seek_seconds}")
+            self.pending_seek_seconds = None
+            return False
+        return True
+
     def seek_media(self, seconds: int) -> bool:
-        if self.pipeline is not None:
+        return self.seek_media_impl(seconds, defer_until_ready=True)
+
+    def seek_media_impl(self, seconds: int, defer_until_ready: bool) -> bool:
+        if self.player is not None:
             self.flush_watch_range()
             duration = self.current_duration_seconds()
+            if duration <= 0:
+                if defer_until_ready:
+                    self.queue_seek_media(seconds)
+                return False
             if duration > 0:
                 seconds = max(0, min(seconds, duration))
-            self.pipeline.seek(
-                self.playback_rate,
-                Gst.Format.TIME,
-                Gst.SeekFlags.FLUSH | Gst.SeekFlags.KEY_UNIT,
-                Gst.SeekType.SET,
-                seconds * Gst.SECOND,
-                Gst.SeekType.NONE,
-                -1,
-            )
+            try:
+                self.player.seek(seconds, reference="absolute", precision="keyframes")
+            except Exception as exc:
+                if defer_until_ready:
+                    self.queue_seek_media(seconds)
+                else:
+                    self.log(f"mpv seek failed: {exc}")
+                return False
             self.range_start_seconds = seconds
+            self.update_playback_controls()
+            return True
         return False
 
     def seek_relative(self, delta_seconds: int) -> None:
@@ -2141,7 +2310,7 @@ class MainWindow(Gtk.ApplicationWindow):
         return False
 
     def flush_watch_range(self) -> bool:
-        if self.current_playable is None or self.pipeline is None:
+        if self.current_playable is None or self.player is None:
             return True
         current = self.current_position_seconds()
         start = self.range_start_seconds
@@ -2153,20 +2322,26 @@ class MainWindow(Gtk.ApplicationWindow):
         return True
 
     def current_position_seconds(self) -> int:
-        if self.pipeline is None:
+        if self.player is None:
             return 0
-        success, position = self.pipeline.query_position(Gst.Format.TIME)
-        if not success:
+        try:
+            position = getattr(self.player, "time_pos", None)
+        except Exception:
             return 0
-        return max(0, int(position / Gst.SECOND))
+        if position is None:
+            return 0
+        return max(0, int(position))
 
     def current_duration_seconds(self) -> int:
-        if self.pipeline is None:
+        if self.player is None:
             return 0
-        success, duration = self.pipeline.query_duration(Gst.Format.TIME)
-        if not success:
+        try:
+            duration = getattr(self.player, "duration", None)
+        except Exception:
             return 0
-        return max(0, int(duration / Gst.SECOND))
+        if duration is None:
+            return 0
+        return max(0, int(duration))
 
     def update_playback_controls(self) -> bool:
         current = self.current_position_seconds()

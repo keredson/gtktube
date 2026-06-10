@@ -12,31 +12,30 @@ class ExtractorError(RuntimeError):
 
 
 DEFAULT_PLAYBACK_FORMAT = (
-    "best[protocol^=http][ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=720]/"
-    "best[protocol^=http][ext=mp4][acodec!=none][vcodec!=none][height<=720]/"
-    "best[protocol^=http][acodec!=none][vcodec!=none][height<=720]/"
+    "bestvideo[height<=720]+bestaudio/"
+    "best[height<=720]/"
     "best[acodec!=none][vcodec!=none]"
 )
 
 QUALITY_FORMATS = {
     "360p": (
-        "best[protocol^=http][ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=360]/"
-        "best[protocol^=http][ext=mp4][acodec!=none][vcodec!=none][height<=360]/"
+        "bestvideo[height<=360]+bestaudio/"
+        "best[height<=360]/"
         "best[acodec!=none][vcodec!=none][height<=360]"
     ),
     "480p": (
-        "best[protocol^=http][ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=480]/"
-        "best[protocol^=http][ext=mp4][acodec!=none][vcodec!=none][height<=480]/"
+        "bestvideo[height<=480]+bestaudio/"
+        "best[height<=480]/"
         "best[acodec!=none][vcodec!=none][height<=480]"
     ),
     "720p": DEFAULT_PLAYBACK_FORMAT,
     "1080p": (
-        "best[protocol^=http][ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=1080]/"
-        "best[protocol^=http][ext=mp4][acodec!=none][vcodec!=none][height<=1080]/"
+        "bestvideo[height<=1080]+bestaudio/"
+        "best[height<=1080]/"
         "best[acodec!=none][vcodec!=none][height<=1080]"
     ),
     "best": (
-        "best[protocol^=http][ext=mp4][acodec!=none][vcodec!=none]/"
+        "bestvideo+bestaudio/"
         "best[acodec!=none][vcodec!=none]"
     ),
 }
@@ -293,7 +292,7 @@ class YoutubeExtractor:
             return None
 
     def _stream_urls(self, info: dict[str, Any]) -> tuple[str | None, str | None]:
-        requested = info.get("requested_downloads") or []
+        requested = info.get("requested_downloads") or info.get("requested_formats") or []
         if requested:
             video_url: str | None = None
             audio_url: str | None = None
@@ -316,7 +315,7 @@ class YoutubeExtractor:
         height = self._optional_int(info.get("height"))
         if height:
             return f"{height}p"
-        requested = info.get("requested_downloads") or []
+        requested = info.get("requested_downloads") or info.get("requested_formats") or []
         heights = [
             self._optional_int(item.get("height"))
             for item in requested

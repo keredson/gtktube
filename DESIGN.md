@@ -13,7 +13,8 @@ personalized recommendations, comments, likes, and server-side sync.
 
 ## Goals
 
-- Play YouTube videos inside a native Python/GTK4 desktop app using GStreamer.
+- Play YouTube videos inside a native Python/GTK4 desktop app using embedded
+  libmpv playback.
 - Use `yt-dlp` as a Python library to resolve video metadata and stream URLs.
 - Store all application state locally in SQLite.
 - Let users subscribe to YouTube channels by URL, handle, channel ID, or video
@@ -87,14 +88,20 @@ patterns where plain GTK4 is sufficient.
 
 ### Video Playback
 
-The playback stack is a direct GStreamer `playbin` pipeline rendered into GTK4
-with `gtk4paintablesink`.
+The playback stack is libmpv rendered directly into GTK4 with a `Gtk.GLArea`
+and libmpv's OpenGL render API. mpv must be embedded in the GTK player surface;
+it must not launch or manage a separate playback window.
 
 The app should resolve fresh stream URLs through `yt-dlp` immediately before
 playback. Resolved media URLs should not be persisted because they can expire.
 
-This replaces the initial `Gtk.Video` approach because `Gtk.Video` was too
-limited for reliable YouTube stream playback and troubleshooting.
+This replaces the initial `Gtk.Video` approach and the later GStreamer
+prototype because both were too limited for reliable YouTube playback quality,
+seeking, and speed control.
+
+Fullscreen is video-only. Activating fullscreen should move or render only the
+video surface into a fullscreen presentation and should not fullscreen the
+entire application chrome, navigation, metadata, or controls.
 
 ### YouTube Extraction
 
@@ -653,7 +660,7 @@ The rest of the app should talk to typed application-level methods such as
 - Create GTK4 application shell.
 - Add URL entry.
 - Resolve a video URL through `yt-dlp`.
-- Play it through a GStreamer `playbin` pipeline.
+- Play it through embedded libmpv rendered into GTK.
 - Show title and basic metadata.
 
 ### Phase 2: SQLite and Watch History
@@ -743,7 +750,7 @@ Possible packaging targets:
 Flatpak will need careful handling for:
 
 - Network access.
-- GStreamer plugins.
+- libmpv availability and OpenGL rendering.
 - Python dependencies.
 - `yt-dlp` updates.
 - XDG data/cache/config directories.
@@ -763,13 +770,15 @@ Mitigation:
 
 ### Playback Reliability
 
-Some resolved formats may not play cleanly through the chosen media layer.
+Some resolved formats may not play cleanly through the chosen media layer, or
+may require tuning of mpv/yt-dlp format selection.
 
 Mitigation:
 
-- Start with conservative format selection.
-- Prefer formats compatible with GStreamer.
-- Keep format selection conservative for reliable GStreamer playback.
+- Use libmpv for split audio/video stream playback.
+- Keep the renderer embedded in GTK through `Gtk.GLArea`.
+- Keep format selection conservative enough for reliable mpv playback while
+  still allowing higher-quality streams.
 
 ### API-Like Usage Without an API
 

@@ -1,12 +1,12 @@
 # GTKTube
 
 GTKTube is a local-first Python/GTK4 YouTube player. It uses `yt-dlp` to resolve
-metadata and stream URLs, stores subscriptions and viewing state in SQLite, and
+metadata and libmpv/mpv for playback, stores subscriptions and viewing state in SQLite, and
 does not use a Google account.
 
 ## Run
 
-Install runtime dependencies for GTK4/PyGObject and GStreamer on Debian/Ubuntu:
+Install runtime dependencies for GTK4/PyGObject and libmpv on Debian/Ubuntu:
 
 ```sh
 ./scripts/install-apt-deps.sh
@@ -48,12 +48,12 @@ gtktube
 
 ## Playback Troubleshooting
 
-GTKTube defaults to a conservative progressive stream format for `Gtk.Video`:
-MP4/H.264/AAC up to 720p, with lower-quality fallbacks. You can override the
-`yt-dlp` format selector when testing playback performance:
+GTKTube plays through libmpv. The quality selector passes a yt-dlp format string
+to mpv so split audio/video formats can be used for higher resolutions. You can
+override the format selector when testing playback performance:
 
 ```sh
-GTKTUBE_YTDLP_FORMAT='best[height<=480][acodec!=none][vcodec!=none]' python -m gtktube
+GTKTUBE_YTDLP_FORMAT='bestvideo[height<=1080]+bestaudio/best[height<=1080]' python -m gtktube
 ```
 
 The app stores data under the XDG data/cache/config directories, using
@@ -61,7 +61,7 @@ The app stores data under the XDG data/cache/config directories, using
 
 ## Current Scope
 
-- Play a YouTube URL through a GStreamer `playbin` pipeline rendered into GTK4.
+- Play a YouTube URL through libmpv.
 - Subscribe to channels locally.
 - Refresh recent subscription videos with `yt-dlp`.
 - Search YouTube through `yt-dlp` and store local search history.
