@@ -1074,13 +1074,40 @@ class MainWindow(Gtk.ApplicationWindow):
         self.channel_search_entry.connect("changed", self.on_channel_search_changed)
         search_box.append(self.channel_search_entry)
 
+        channel_results = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        channel_results.set_margin_bottom(12)
+        channel_results.set_margin_start(12)
+        channel_results.set_margin_end(12)
+
         self.channel_grid = self.create_channel_grid()
-        self.channel_grid.set_margin_bottom(12)
-        self.channel_grid.set_margin_start(12)
-        self.channel_grid.set_margin_end(12)
+        channel_results.append(self.channel_grid)
+
+        self.channel_empty_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=12,
+            vexpand=True,
+            hexpand=True,
+        )
+        self.channel_empty_box.set_valign(Gtk.Align.CENTER)
+        self.channel_empty_box.set_halign(Gtk.Align.CENTER)
+        channel_empty_icon = Gtk.Image.new_from_icon_name("folder-symbolic")
+        channel_empty_icon.set_pixel_size(64)
+        channel_empty_icon.add_css_class("dim-label")
+        self.channel_empty_box.append(channel_empty_icon)
+        self.channel_empty_title = Gtk.Label(label="No subscribed channels")
+        self.channel_empty_title.add_css_class("title-4")
+        self.channel_empty_title.add_css_class("dim-label")
+        self.channel_empty_box.append(self.channel_empty_title)
+        self.channel_empty_help = Gtk.Label(
+            label="Open a channel URL or subscribe from a video to add channels."
+        )
+        self.channel_empty_help.add_css_class("dim-label")
+        self.channel_empty_box.append(self.channel_empty_help)
+        channel_results.append(self.channel_empty_box)
+
         scroller = Gtk.ScrolledWindow(vexpand=True)
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_child(self.channel_grid)
+        scroller.set_child(channel_results)
         page.append(scroller)
 
         self.stack.add_named(page, "channels")
@@ -1299,13 +1326,40 @@ class MainWindow(Gtk.ApplicationWindow):
         history_button.connect("clicked", self.on_history_search_changed)
         search_box.append(history_button)
 
+        history_results = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        history_results.set_margin_bottom(12)
+        history_results.set_margin_start(12)
+        history_results.set_margin_end(12)
+
         self.history_grid = self.create_video_grid()
-        self.history_grid.set_margin_bottom(12)
-        self.history_grid.set_margin_start(12)
-        self.history_grid.set_margin_end(12)
+        history_results.append(self.history_grid)
+
+        self.history_empty_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=12,
+            vexpand=True,
+            hexpand=True,
+        )
+        self.history_empty_box.set_valign(Gtk.Align.CENTER)
+        self.history_empty_box.set_halign(Gtk.Align.CENTER)
+        history_empty_icon = Gtk.Image.new_from_icon_name("document-open-recent-symbolic")
+        history_empty_icon.set_pixel_size(64)
+        history_empty_icon.add_css_class("dim-label")
+        self.history_empty_box.append(history_empty_icon)
+        self.history_empty_title = Gtk.Label(label="No watch history")
+        self.history_empty_title.add_css_class("title-4")
+        self.history_empty_title.add_css_class("dim-label")
+        self.history_empty_box.append(self.history_empty_title)
+        self.history_empty_help = Gtk.Label(
+            label="Videos you watch will appear here."
+        )
+        self.history_empty_help.add_css_class("dim-label")
+        self.history_empty_box.append(self.history_empty_help)
+        history_results.append(self.history_empty_box)
+
         scroller = Gtk.ScrolledWindow(vexpand=True)
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_child(self.history_grid)
+        scroller.set_child(history_results)
         page.append(scroller)
 
         self.stack.add_named(page, "history")
@@ -1740,10 +1794,31 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def reload_channels(self) -> None:
         channels = self.service.repository.subscribed_channels()
+        query = (
+            self.channel_search_entry.get_text().strip()
+            if hasattr(self, "channel_search_entry")
+            else ""
+        )
+        visible_count = 0
         self.clear_flowbox(self.channel_grid)
         for channel in channels:
             if self.channel_matches_filter(channel):
                 self.channel_grid.append(self.channel_tile(channel))
+                visible_count += 1
+        has_visible_channels = visible_count > 0
+        self.channel_grid.set_visible(has_visible_channels)
+        self.channel_empty_box.set_visible(not has_visible_channels)
+        if not has_visible_channels:
+            if query:
+                self.channel_empty_title.set_label("No channel results")
+                self.channel_empty_help.set_label(
+                    "No subscribed channels matched this search."
+                )
+            else:
+                self.channel_empty_title.set_label("No subscribed channels")
+                self.channel_empty_help.set_label(
+                    "Open a channel URL or subscribe from a video to add channels."
+                )
         self.reload_channel_nav(channels)
 
     def channel_matches_filter(self, channel: Channel) -> bool:
@@ -1946,7 +2021,19 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def reload_history(self) -> None:
         query = self.history_entry.get_text().strip() if hasattr(self, "history_entry") else ""
-        self.populate_video_grid(self.history_grid, self.service.repository.watch_history(query))
+        videos = self.service.repository.watch_history(query)
+        self.populate_video_grid(self.history_grid, videos)
+        has_videos = bool(videos)
+        self.history_grid.set_visible(has_videos)
+        self.history_empty_box.set_visible(not has_videos)
+        if has_videos:
+            return
+        if query:
+            self.history_empty_title.set_label("No history results")
+            self.history_empty_help.set_label("No watched videos matched this search.")
+        else:
+            self.history_empty_title.set_label("No watch history")
+            self.history_empty_help.set_label("Videos you watch will appear here.")
 
     def set_feed_loading(self, loading: bool, label: str = "Loading more...") -> None:
         self.feed_loading_label.set_text(label)
