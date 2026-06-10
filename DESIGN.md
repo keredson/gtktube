@@ -13,7 +13,7 @@ personalized recommendations, comments, likes, and server-side sync.
 
 ## Goals
 
-- Play YouTube videos inside a native Python/GTK4 desktop app.
+- Play YouTube videos inside a native Python/GTK4 desktop app using GStreamer.
 - Use `yt-dlp` as a Python library to resolve video metadata and stream URLs.
 - Store all application state locally in SQLite.
 - Let users subscribe to YouTube channels by URL, handle, channel ID, or video
@@ -87,15 +87,14 @@ patterns where plain GTK4 is sufficient.
 
 ### Video Playback
 
-The initial playback stack is `Gtk.Video` / `Gtk.MediaFile`, using GTK's media
-integration as the simplest route to native playback.
+The playback stack is a direct GStreamer `playbin` pipeline rendered into GTK4
+with `gtk4paintablesink`.
 
 The app should resolve fresh stream URLs through `yt-dlp` immediately before
 playback. Resolved media URLs should not be persisted because they can expire.
 
-A direct GStreamer pipeline remains a future option if `Gtk.Video` is not
-reliable enough for buffering behavior, media errors, subtitles, format
-selection, or seeking.
+This replaces the initial `Gtk.Video` approach because `Gtk.Video` was too
+limited for reliable YouTube stream playback and troubleshooting.
 
 ### YouTube Extraction
 
@@ -332,18 +331,20 @@ state decisions.
 CREATE VIEW watch_progress AS
 WITH ordered_ranges AS (
     SELECT
+        id,
         video_id,
         start_seconds,
         end_seconds,
         MAX(end_seconds) OVER (
             PARTITION BY video_id
-            ORDER BY start_seconds, end_seconds
+            ORDER BY start_seconds, end_seconds, id
             ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
         ) AS previous_max_end
     FROM watch_ranges
 ),
 range_groups AS (
     SELECT
+        id,
         video_id,
         start_seconds,
         end_seconds,
@@ -356,7 +357,8 @@ range_groups AS (
             END
         ) OVER (
             PARTITION BY video_id
-            ORDER BY start_seconds, end_seconds
+            ORDER BY start_seconds, end_seconds, id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS group_id
     FROM ordered_ranges
 ),
@@ -651,7 +653,7 @@ The rest of the app should talk to typed application-level methods such as
 - Create GTK4 application shell.
 - Add URL entry.
 - Resolve a video URL through `yt-dlp`.
-- Play it through `Gtk.Video`.
+- Play it through a GStreamer `playbin` pipeline.
 - Show title and basic metadata.
 
 ### Phase 2: SQLite and Watch History
@@ -767,7 +769,7 @@ Mitigation:
 
 - Start with conservative format selection.
 - Prefer formats compatible with GStreamer.
-- Keep direct GStreamer integration available if `Gtk.Video` is insufficient.
+- Keep format selection conservative for reliable GStreamer playback.
 
 ### API-Like Usage Without an API
 

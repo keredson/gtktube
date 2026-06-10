@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gtktube"
+version = "0.1.0"
+description = "Local-first GTK4 YouTube subscription browser and player"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "yt-dlp>=2025.1.15",
+]
+
+[project.scripts]
+gtktube = "gtktube.app:main"
+
+[tool.setuptools.packages.find]
+include = ["gtktube*"]
