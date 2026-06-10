@@ -176,7 +176,9 @@ class LibraryRepository:
             LEFT JOIN watch_progress wp ON wp.video_id = v.id
             LEFT JOIN watch_history wh ON wh.video_id = v.id
             WHERE c.is_subscribed = 1
-            ORDER BY COALESCE(v.published_at, v.discovered_at) DESC
+            ORDER BY
+                CASE WHEN v.published_at IS NULL THEN 1 ELSE 0 END,
+                COALESCE(v.published_at, v.discovered_at) DESC
             LIMIT ?
             """,
             (limit,),
@@ -196,7 +198,9 @@ class LibraryRepository:
             LEFT JOIN watch_progress wp ON wp.video_id = v.id
             LEFT JOIN watch_history wh ON wh.video_id = v.id
             WHERE v.channel_id = ?
-            ORDER BY COALESCE(v.published_at, v.discovered_at) DESC
+            ORDER BY
+                CASE WHEN v.published_at IS NULL THEN 1 ELSE 0 END,
+                COALESCE(v.published_at, v.discovered_at) DESC
             LIMIT ?
             """,
             (channel_id, limit),

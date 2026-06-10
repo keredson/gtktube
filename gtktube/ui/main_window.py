@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -30,6 +31,7 @@ T = TypeVar("T")
 Gst.init(None)
 
 PLAYBACK_RATES = [rate / 100 for rate in range(25, 401, 25)]
+URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>\"]+")
 
 
 APP_CSS = """
@@ -102,6 +104,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.updating_quality = False
         self.updating_speed = False
         self.playback_rate = 1.0
+        self.description_link_generation = 0
+        self.current_channel_url: str | None = None
         self.fullscreen_window: Gtk.Window | None = None
         self.fullscreen_picture: Gtk.Picture | None = None
         self.status_text = "Ready"
@@ -149,9 +153,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self.open_url_button.connect("clicked", self.on_open_url_clicked)
         header.pack_start(self.open_url_button)
 
-        self.context_refresh_button = Gtk.Button(
-            child=Gtk.Image.new_from_icon_name("view-refresh-symbolic")
-        )
+        self.context_refresh_icon = Gtk.Image.new_from_icon_name("view-refresh-symbolic")
+        self.context_refresh_spinner = Gtk.Spinner()
+        self.context_refresh_button = Gtk.Button(child=self.context_refresh_icon)
         self.context_refresh_button.set_tooltip_text("Refresh")
         self.context_refresh_button.set_visible(False)
         self.context_refresh_button.connect("clicked", self.on_context_refresh_clicked)
@@ -507,6 +511,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def update_context_refresh_button(self, view: ViewState | None = None) -> None:
         view = view or self.current_view
         if view is None:
+            self.set_context_refresh_loading(False)
             self.context_refresh_button.set_visible(False)
         elif view.channel_id is not None:
             self.context_refresh_button.set_tooltip_text("Refresh channel")
@@ -515,6 +520,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.context_refresh_button.set_tooltip_text("Refresh subscriptions")
             self.context_refresh_button.set_visible(True)
         else:
+            self.set_context_refresh_loading(False)
             self.context_refresh_button.set_visible(False)
 
     def update_context_unsubscribe_button(self, view: ViewState | None = None) -> None:
@@ -544,19 +550,44 @@ class MainWindow(Gtk.ApplicationWindow):
         if channel is not None:
             self.unsubscribe_channel(channel)
 
+    def set_context_refresh_loading(self, loading: bool) -> None:
+        if loading:
+            self.context_refresh_button.set_child(self.context_refresh_spinner)
+            self.context_refresh_spinner.start()
+            self.context_refresh_button.set_sensitive(False)
+            return
+        self.context_refresh_spinner.stop()
+        self.context_refresh_button.set_child(self.context_refresh_icon)
+        self.context_refresh_button.set_sensitive(True)
+
     def on_context_share_clicked(self, _button: Gtk.Button) -> None:
         if self.current_playable is None:
             return
+        self.copy_to_clipboard(self.current_playable.video.url, "Copied video URL")
+
+    def copy_to_clipboard(self, text: str, message: str) -> None:
         display = Gdk.Display.get_default()
         if display is None:
             return
-        display.get_clipboard().set(self.current_playable.video.url)
-        self.set_status("Copied video URL")
+        display.get_clipboard().set(text)
+        self.set_status(message)
+
+    def on_channel_header_share_clicked(self, _button: Gtk.Button) -> None:
+        if not self.current_channel_url:
+            return
+        self.copy_to_clipboard(self.current_channel_url, "Copied channel URL")
+        self.channel_header_share_icon.set_from_icon_name("emblem-ok-symbolic")
+        GLib.timeout_add_seconds(1, self.restore_channel_share_icon)
+
+    def restore_channel_share_icon(self) -> bool:
+        self.channel_header_share_icon.set_from_icon_name("edit-copy-symbolic")
+        return False
 
     def update_channel_header(self, view: ViewState) -> None:
         if view.channel_id is None:
             self.set_feed_loading(False)
             self.channel_header.set_visible(False)
+            self.current_channel_url = None
             return
         channel = self.service.repository.channel(view.channel_id)
         if channel is None:
@@ -575,8 +606,8 @@ class MainWindow(Gtk.ApplicationWindow):
         video_count = self.service.repository.channel_video_count(channel.id)
         if video_count:
             metadata.append(f"{video_count:,} loaded videos")
-        metadata.append(channel.url)
         self.channel_header_meta.set_text(" · ".join(metadata))
+        self.current_channel_url = channel.url
 
         self.updating_channel_subscribe_check = True
         self.channel_header_subscribe.set_active(channel.is_subscribed)
@@ -708,7 +739,21 @@ class MainWindow(Gtk.ApplicationWindow):
         self.channel_header_subscribe.connect(
             "toggled", self.on_channel_header_subscribe_toggled
         )
-        details.append(self.channel_header_subscribe)
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        details.append(actions)
+        actions.append(self.channel_header_subscribe)
+
+        self.channel_header_share_icon = Gtk.Image.new_from_icon_name(
+            "edit-copy-symbolic"
+        )
+        self.channel_header_share_button = Gtk.Button(
+            child=self.channel_header_share_icon
+        )
+        self.channel_header_share_button.set_tooltip_text("Copy channel URL")
+        self.channel_header_share_button.connect(
+            "clicked", self.on_channel_header_share_clicked
+        )
+        actions.append(self.channel_header_share_button)
         return header
 
     def build_channels_page(self) -> None:
@@ -882,10 +927,17 @@ class MainWindow(Gtk.ApplicationWindow):
         self.player_meta.add_css_class("dim-label")
         metadata.append(self.player_meta)
 
-        self.player_description = Gtk.Label(label="", xalign=0)
-        self.player_description.set_wrap(True)
-        self.player_description.set_selectable(True)
-        self.player_description.set_ellipsize(Pango.EllipsizeMode.END)
+        self.player_description = Gtk.TextView()
+        self.player_description.set_editable(False)
+        self.player_description.set_cursor_visible(False)
+        self.player_description.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.player_description.set_left_margin(2)
+        self.player_description.set_right_margin(2)
+        self.description_link_tags: dict[str, str] = {}
+        description_click = Gtk.GestureClick()
+        description_click.set_button(1)
+        description_click.connect("released", self.on_description_clicked)
+        self.player_description.add_controller(description_click)
 
         description_scroller = Gtk.ScrolledWindow()
         description_scroller.set_size_request(-1, 140)
@@ -927,10 +979,15 @@ class MainWindow(Gtk.ApplicationWindow):
             self.reload_channels()
             self.reload_feed()
 
+        def finished() -> None:
+            self.set_context_refresh_loading(False)
+
+        self.set_context_refresh_loading(True)
         self.run_task(
             "Refreshing subscriptions...",
             self.service.refresh_subscriptions,
             done,
+            finished=finished,
         )
 
     def on_feed_scroll(self, adjustment: Gtk.Adjustment) -> None:
@@ -1317,9 +1374,11 @@ class MainWindow(Gtk.ApplicationWindow):
         def finished() -> None:
             if self.current_view and self.current_view.channel_id == channel.id:
                 self.set_feed_loading(False)
+            self.set_context_refresh_loading(False)
 
         if self.current_view and self.current_view.channel_id == channel.id:
             self.set_feed_loading(True, "Loading videos...")
+            self.set_context_refresh_loading(True)
 
         self.run_task(
             f"Refreshing {channel.title}...",
@@ -1674,7 +1733,57 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.current_playable and self.current_playable.resolved_quality:
             meta = f"{meta} · {self.current_playable.resolved_quality}".strip(" ·")
         self.player_meta.set_text(meta)
-        self.player_description.set_text(video.description or "")
+        self.set_description_text(video.description or "")
+
+    def set_description_text(self, text: str) -> None:
+        buffer = self.player_description.get_buffer()
+        buffer.set_text(text)
+        self.description_link_tags = {}
+        self.description_link_generation += 1
+        for index, match in enumerate(URL_PATTERN.finditer(text)):
+            start_offset = match.start()
+            end_offset = self.link_end_offset(text, match.end())
+            url = text[start_offset:end_offset]
+            tag_name = f"description-link-{self.description_link_generation}-{index}"
+            tag = buffer.create_tag(
+                tag_name,
+                underline=Pango.Underline.SINGLE,
+                foreground="#62a0ea",
+            )
+            start = buffer.get_iter_at_offset(start_offset)
+            end = buffer.get_iter_at_offset(end_offset)
+            buffer.apply_tag(tag, start, end)
+            self.description_link_tags[tag_name] = self.normalized_url(url)
+
+    def link_end_offset(self, text: str, end: int) -> int:
+        while end > 0 and text[end - 1] in ".,;:!?)]}":
+            end -= 1
+        return end
+
+    def on_description_clicked(
+        self,
+        _gesture: Gtk.GestureClick,
+        _n_press: int,
+        x: float,
+        y: float,
+    ) -> None:
+        buffer_x, buffer_y = self.player_description.window_to_buffer_coords(
+            Gtk.TextWindowType.WIDGET,
+            int(x),
+            int(y),
+        )
+        found, text_iter = self.player_description.get_iter_at_location(
+            buffer_x,
+            buffer_y,
+        )
+        if not found:
+            return
+        for tag in text_iter.get_tags():
+            name = tag.props.name
+            uri = self.description_link_tags.get(name)
+            if uri:
+                Gtk.show_uri(self, uri, Gdk.CURRENT_TIME)
+                return
 
     def update_subscribe_check(self, video: Video) -> None:
         subscribed = self.service.repository.is_subscribed(video.channel_id)
