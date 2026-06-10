@@ -31,6 +31,7 @@ class VideoObject(GObject.Object):
         self.video = video
 
 
+from gtktube import __version__
 from gtktube.extractors.youtube import ExtractorError, QUALITY_FORMATS
 from gtktube.models import Channel, PlayableVideo, SearchResults, Video
 from gtktube.paths import AppPaths
@@ -68,6 +69,11 @@ APP_CSS = """
 
 .channel-nav-label {
   font-size: 0.92em;
+}
+
+.channel-avatar {
+  border-radius: 9999px;
+  background: alpha(currentColor, 0.08);
 }
 
 .miniplayer {
@@ -248,6 +254,13 @@ class MainWindow(Gtk.ApplicationWindow):
             "clicked", self.on_context_unsubscribe_clicked
         )
         self.header.pack_end(self.context_unsubscribe_button)
+
+        self.about_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("help-about-symbolic")
+        )
+        self.about_button.set_tooltip_text("About GTKTube")
+        self.about_button.connect("clicked", self.on_about_clicked)
+        self.header.pack_end(self.about_button)
 
         title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         title_box.set_halign(Gtk.Align.CENTER)
@@ -652,6 +665,17 @@ class MainWindow(Gtk.ApplicationWindow):
         if channel is not None:
             self.unsubscribe_channel(channel)
 
+    def on_about_clicked(self, _button: Gtk.Button) -> None:
+        dialog = Gtk.AboutDialog(
+            transient_for=self,
+            modal=True,
+            program_name="GTKTube",
+            version=__version__,
+            comments="A local-first GTK4 YouTube subscription browser and player.",
+            license_type=Gtk.License.UNKNOWN,
+        )
+        dialog.present()
+
     def set_context_refresh_loading(self, loading: bool) -> None:
         if loading:
             self.context_refresh_button.set_child(self.context_refresh_spinner)
@@ -841,9 +865,11 @@ class MainWindow(Gtk.ApplicationWindow):
         header.set_margin_end(8)
 
         self.channel_header_thumbnail = Gtk.Picture()
+        self.channel_header_thumbnail.add_css_class("channel-avatar")
         self.channel_header_thumbnail.set_size_request(72, 72)
         self.channel_header_thumbnail.set_can_shrink(False)
-        self.channel_header_thumbnail.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.channel_header_thumbnail.set_content_fit(Gtk.ContentFit.COVER)
+        self.clip_channel_avatar(self.channel_header_thumbnail)
         header.append(self.channel_header_thumbnail)
 
         details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -884,18 +910,15 @@ class MainWindow(Gtk.ApplicationWindow):
     def build_channels_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
 
-        add_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        add_box.set_margin_top(12)
-        add_box.set_margin_start(12)
-        add_box.set_margin_end(12)
-        page.append(add_box)
-        self.subscribe_entry = Gtk.Entry(hexpand=True)
-        self.subscribe_entry.set_placeholder_text("Channel URL, handle URL, or video URL")
-        self.subscribe_entry.connect("activate", self.on_subscribe_clicked)
-        add_box.append(self.subscribe_entry)
-        subscribe = Gtk.Button(label="Subscribe")
-        subscribe.connect("clicked", self.on_subscribe_clicked)
-        add_box.append(subscribe)
+        search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        search_box.set_margin_top(12)
+        search_box.set_margin_start(12)
+        search_box.set_margin_end(12)
+        page.append(search_box)
+        self.channel_search_entry = Gtk.Entry(hexpand=True)
+        self.channel_search_entry.set_placeholder_text("Search subscribed channels")
+        self.channel_search_entry.connect("changed", self.on_channel_search_changed)
+        search_box.append(self.channel_search_entry)
 
         self.channel_grid = self.create_channel_grid()
         self.channel_grid.set_margin_bottom(12)
@@ -1321,18 +1344,6 @@ class MainWindow(Gtk.ApplicationWindow):
             done,
         )
 
-    def on_subscribe_clicked(self, _widget: Gtk.Widget) -> None:
-        url = self.subscribe_entry.get_text().strip()
-        if not url:
-            return
-
-        def done(_channel: Channel) -> None:
-            self.subscribe_entry.set_text("")
-            self.reload_channels()
-            self.reload_feed()
-
-        self.run_task("Subscribing...", lambda: self.service.subscribe(url), done)
-
     def on_search_clicked(self, _widget: Gtk.Widget) -> None:
         query = self.search_entry.get_text().strip()
         if not query:
@@ -1359,6 +1370,9 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def on_history_search_changed(self, _widget: Gtk.Widget) -> None:
         self.reload_history()
+
+    def on_channel_search_changed(self, _widget: Gtk.Widget) -> None:
+        self.reload_channels()
 
     def on_player_subscribe_toggled(self, _button: Gtk.CheckButton) -> None:
         if self.updating_subscribe_check:
@@ -1452,8 +1466,24 @@ class MainWindow(Gtk.ApplicationWindow):
         channels = self.service.repository.subscribed_channels()
         self.clear_flowbox(self.channel_grid)
         for channel in channels:
-            self.channel_grid.append(self.channel_tile(channel))
+            if self.channel_matches_filter(channel):
+                self.channel_grid.append(self.channel_tile(channel))
         self.reload_channel_nav(channels)
+
+    def channel_matches_filter(self, channel: Channel) -> bool:
+        query = (
+            self.channel_search_entry.get_text().strip().lower()
+            if hasattr(self, "channel_search_entry")
+            else ""
+        )
+        if not query:
+            return True
+        haystack = " ".join(
+            part
+            for part in (channel.title, channel.handle, channel.url)
+            if part
+        ).lower()
+        return query in haystack
 
     def reload_channel_nav(self, channels: list[Channel]) -> None:
         self.suppress_nav_selection = True
@@ -1469,9 +1499,11 @@ class MainWindow(Gtk.ApplicationWindow):
             box.add_css_class("channel-nav-row")
             if channel.thumbnail_url:
                 icon = Gtk.Picture()
+                icon.add_css_class("channel-avatar")
                 icon.set_size_request(24, 24)
                 icon.set_can_shrink(False)
                 icon.set_content_fit(Gtk.ContentFit.COVER)
+                self.clip_channel_avatar(icon)
                 self.load_channel_nav_icon(channel, icon)
                 box.append(icon)
             else:
@@ -1503,6 +1535,15 @@ class MainWindow(Gtk.ApplicationWindow):
 
         open_button = Gtk.Button()
         open_button.connect("clicked", lambda _button: self.open_search_channel(channel))
+        right_click = Gtk.GestureClick()
+        right_click.set_button(3)
+        right_click.connect(
+            "pressed",
+            lambda _gesture, _n_press, x, y: self.show_channel_context_menu(
+                open_button, channel, x, y
+            ),
+        )
+        open_button.add_controller(right_click)
         tile.append(open_button)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -1514,8 +1555,10 @@ class MainWindow(Gtk.ApplicationWindow):
         open_button.set_child(content)
 
         thumbnail_area = Gtk.Overlay()
+        thumbnail_area.add_css_class("channel-avatar")
         thumbnail_area.set_size_request(112, 112)
         thumbnail_area.set_halign(Gtk.Align.CENTER)
+        self.clip_channel_avatar(thumbnail_area)
         thumbnail_placeholder = Gtk.Image.new_from_icon_name("avatar-default-symbolic")
         thumbnail_placeholder.set_pixel_size(64)
         thumbnail_placeholder.set_size_request(112, 112)
@@ -1525,11 +1568,13 @@ class MainWindow(Gtk.ApplicationWindow):
         thumbnail_area.set_child(thumbnail_placeholder)
         if channel.thumbnail_url:
             thumbnail = Gtk.Picture()
+            thumbnail.add_css_class("channel-avatar")
             thumbnail.set_size_request(112, 112)
             thumbnail.set_can_shrink(False)
             thumbnail.set_halign(Gtk.Align.CENTER)
             thumbnail.set_valign(Gtk.Align.CENTER)
-            thumbnail.set_content_fit(Gtk.ContentFit.CONTAIN)
+            thumbnail.set_content_fit(Gtk.ContentFit.COVER)
+            self.clip_channel_avatar(thumbnail)
             self.load_channel_thumbnail(channel, thumbnail)
             thumbnail_area.add_overlay(thumbnail)
         content.append(thumbnail_area)
@@ -1552,6 +1597,12 @@ class MainWindow(Gtk.ApplicationWindow):
             content.append(handle)
 
         return tile
+
+    def clip_channel_avatar(self, widget: Gtk.Widget) -> None:
+        try:
+            widget.set_overflow(Gtk.Overflow.HIDDEN)
+        except (AttributeError, TypeError):
+            pass
 
     def open_search_channel(self, channel: Channel) -> None:
         self.service.repository.upsert_channel(channel, subscribed=False)
@@ -1898,6 +1949,84 @@ class MainWindow(Gtk.ApplicationWindow):
         rectangle.height = 1
         popover.set_pointing_to(rectangle)
         popover.popup()
+
+    def show_channel_context_menu(
+        self, parent: Gtk.Widget, channel: Channel, x: float, y: float
+    ) -> None:
+        popover = Gtk.Popover()
+        popover.set_parent(parent)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        actions.set_margin_top(6)
+        actions.set_margin_bottom(6)
+        actions.set_margin_start(6)
+        actions.set_margin_end(6)
+        popover.set_child(actions)
+
+        open_channel = Gtk.Button(label="Open channel")
+        open_channel.add_css_class("flat")
+        open_channel.set_halign(Gtk.Align.FILL)
+        open_channel.connect(
+            "clicked",
+            lambda _button: self.activate_channel_menu(popover, channel, "open"),
+        )
+        actions.append(open_channel)
+
+        subscribed = self.service.repository.is_subscribed(channel.id)
+        subscription_label = "Unsubscribe" if subscribed else "Subscribe"
+        subscription_action = "unsubscribe" if subscribed else "subscribe"
+        subscription = Gtk.Button(label=subscription_label)
+        subscription.add_css_class("flat")
+        subscription.set_halign(Gtk.Align.FILL)
+        subscription.connect(
+            "clicked",
+            lambda _button: self.activate_channel_menu(
+                popover, channel, subscription_action
+            ),
+        )
+        actions.append(subscription)
+
+        copy_url = Gtk.Button(label="Copy channel URL")
+        copy_url.add_css_class("flat")
+        copy_url.set_halign(Gtk.Align.FILL)
+        copy_url.connect(
+            "clicked",
+            lambda _button: self.activate_channel_menu(popover, channel, "copy"),
+        )
+        actions.append(copy_url)
+
+        rectangle = Gdk.Rectangle()
+        rectangle.x = int(x)
+        rectangle.y = int(y)
+        rectangle.width = 1
+        rectangle.height = 1
+        popover.set_pointing_to(rectangle)
+        popover.popup()
+
+    def activate_channel_menu(
+        self, popover: Gtk.Popover, channel: Channel, action: str
+    ) -> None:
+        popover.popdown()
+        popover.unparent()
+        if action == "open":
+            self.open_search_channel(channel)
+            return
+        if action == "copy":
+            self.copy_to_clipboard(channel.url, "Copied channel URL")
+            return
+        if action == "unsubscribe":
+            self.unsubscribe_channel(channel)
+            return
+        if action == "subscribe":
+            def done(_channel: Channel) -> None:
+                self.reload_channels()
+                self.reload_feed()
+
+            self.run_task(
+                f"Subscribing to {channel.title}...",
+                lambda: self.service.subscribe(channel.url),
+                done,
+            )
 
     def show_watch_later_context_menu(
         self, parent: Gtk.Widget, video: Video, x: float, y: float
