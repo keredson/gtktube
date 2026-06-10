@@ -141,6 +141,7 @@ class GTKTubeApplication(Gtk.Application):
         service: LibraryService,
         paths: AppPaths,
         force_update_dialog: bool = False,
+        enable_update_check: bool = True,
     ):
         super().__init__(
             application_id="local.gtktube.GTKTube",
@@ -149,6 +150,7 @@ class GTKTubeApplication(Gtk.Application):
         self.service = service
         self.paths = paths
         self.force_update_dialog = force_update_dialog
+        self.enable_update_check = enable_update_check
 
     def do_activate(self) -> None:
         window = MainWindow(
@@ -156,6 +158,7 @@ class GTKTubeApplication(Gtk.Application):
             self.service,
             self.paths,
             force_update_dialog=self.force_update_dialog,
+            enable_update_check=self.enable_update_check,
         )
         window.present()
 
@@ -173,11 +176,13 @@ class MainWindow(Gtk.ApplicationWindow):
         service: LibraryService,
         paths: AppPaths,
         force_update_dialog: bool = False,
+        enable_update_check: bool = True,
     ):
         super().__init__(application=app, title="GTKTube")
         self.service = service
         self.paths = paths
         self.force_update_dialog = force_update_dialog
+        self.enable_update_check = enable_update_check
         self.thumbnail_dir = paths.cache_dir / "thumbnails"
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
         self.executor = ThreadPoolExecutor(max_workers=3)
@@ -196,6 +201,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.updating_channel_subscribe_check = False
         self.updating_quality = False
         self.updating_speed = False
+        self.updating_settings = False
         self.playback_rate = 1.0
         self.preferred_quality = "720p"
         self.description_link_generation = 0
@@ -346,6 +352,7 @@ class MainWindow(Gtk.ApplicationWindow):
             ("search", "Search"),
             ("history", "History"),
             ("watch_later", "Watch Later"),
+            ("settings", "Settings"),
             ("channels", "Channels"),
         ]:
             row = Gtk.ListBoxRow()
@@ -358,6 +365,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.build_feed_page()
         self.build_watch_later_page()
+        self.build_settings_page()
         self.build_channels_page()
         self.build_search_page()
         self.build_history_page()
@@ -367,7 +375,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.navigate_to(ViewState("feed"), record=False)
         GLib.timeout_add_seconds(5, self.flush_watch_range)
         GLib.timeout_add_seconds(1, self.update_playback_controls)
-        GLib.timeout_add_seconds(2, self.start_update_check)
+        if self.enable_update_check:
+            GLib.timeout_add_seconds(2, self.start_update_check)
 
     def install_css(self) -> None:
         display = Gdk.Display.get_default()
@@ -387,6 +396,7 @@ class MainWindow(Gtk.ApplicationWindow):
             "search": "system-search-symbolic",
             "history": "document-open-recent-symbolic",
             "watch_later": "clock-symbolic",
+            "settings": "preferences-system-symbolic",
             "channels": "folder-symbolic",
         }
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
@@ -591,6 +601,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.update_context_unsubscribe_button(view)
         if view.channel_id is not None:
             self.update_channel_header(view)
+            self.feed_grid.set_visible(True)
+            self.feed_empty_box.set_visible(False)
             self.populate_video_grid(
                 self.feed_grid,
                 self.service.repository.channel_videos(
@@ -612,6 +624,8 @@ class MainWindow(Gtk.ApplicationWindow):
             self.reload_history()
         elif view.page == "watch_later":
             self.reload_watch_later()
+        elif view.page == "settings":
+            self.reload_settings()
 
         self.select_nav_page(view.page)
         self.stack.set_visible_child_name(view.page)
@@ -631,6 +645,8 @@ class MainWindow(Gtk.ApplicationWindow):
             self.header_subtitle.set_text("History")
         elif view.page == "watch_later":
             self.header_subtitle.set_text("Watch Later")
+        elif view.page == "settings":
+            self.header_subtitle.set_text("Settings")
         elif view.page == "channels":
             self.header_subtitle.set_text("Channels")
         elif view.page == "player" and self.current_playable is not None:
@@ -949,6 +965,31 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self.feed_grid = self.create_video_grid()
         feed_content.append(self.feed_grid)
+
+        self.feed_empty_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=12, vexpand=True, hexpand=True
+        )
+        self.feed_empty_box.set_valign(Gtk.Align.CENTER)
+        self.feed_empty_box.set_halign(Gtk.Align.CENTER)
+        self.feed_empty_box.set_margin_top(80)
+        self.feed_empty_box.set_visible(False)
+        empty_icon = Gtk.Image.new_from_icon_name("view-list-symbolic")
+        empty_icon.set_pixel_size(64)
+        empty_icon.add_css_class("dim-label")
+        self.feed_empty_box.append(empty_icon)
+        empty_label = Gtk.Label(label="No videos in Feed")
+        empty_label.add_css_class("title-4")
+        empty_label.add_css_class("dim-label")
+        self.feed_empty_box.append(empty_label)
+        empty_help = Gtk.Label(
+            label="Subscribe to channels, then refresh subscriptions.",
+            xalign=0.5,
+            wrap=True,
+        )
+        empty_help.add_css_class("dim-label")
+        self.feed_empty_box.append(empty_help)
+        feed_content.append(self.feed_empty_box)
+
         self.feed_loading_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.feed_loading_box.set_halign(Gtk.Align.CENTER)
         self.feed_loading_box.set_margin_top(8)
@@ -1073,6 +1114,30 @@ class MainWindow(Gtk.ApplicationWindow):
         search_results.set_margin_bottom(12)
         search_results.set_margin_start(12)
         search_results.set_margin_end(12)
+
+        self.search_empty_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=12,
+            vexpand=True,
+            hexpand=True,
+        )
+        self.search_empty_box.set_valign(Gtk.Align.CENTER)
+        self.search_empty_box.set_halign(Gtk.Align.CENTER)
+        search_empty_icon = Gtk.Image.new_from_icon_name("system-search-symbolic")
+        search_empty_icon.set_pixel_size(64)
+        search_empty_icon.add_css_class("dim-label")
+        self.search_empty_box.append(search_empty_icon)
+        self.search_empty_title = Gtk.Label(label="Search YouTube")
+        self.search_empty_title.add_css_class("title-4")
+        self.search_empty_title.add_css_class("dim-label")
+        self.search_empty_box.append(self.search_empty_title)
+        self.search_empty_help = Gtk.Label(
+            label="Enter a search term to find videos and channels."
+        )
+        self.search_empty_help.add_css_class("dim-label")
+        self.search_empty_box.append(self.search_empty_help)
+        search_results.append(self.search_empty_box)
+
         self.search_channel_heading = Gtk.Label(label="Channels", xalign=0)
         self.search_channel_heading.add_css_class("heading")
         self.search_channel_heading.set_visible(False)
@@ -1127,6 +1192,96 @@ class MainWindow(Gtk.ApplicationWindow):
         page.append(self.watch_later_empty_box)
 
         self.stack.add_named(page, "watch_later")
+
+    def build_settings_page(self) -> None:
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        page.set_margin_top(18)
+        page.set_margin_bottom(18)
+        page.set_margin_start(18)
+        page.set_margin_end(18)
+
+        title = Gtk.Label(label="Feed", xalign=0)
+        title.add_css_class("heading")
+        page.append(title)
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        row.set_valign(Gtk.Align.CENTER)
+        page.append(row)
+
+        labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True)
+        row.append(labels)
+        label = Gtk.Label(label="Videos per channel per day", xalign=0)
+        labels.append(label)
+        help_label = Gtk.Label(
+            label=(
+                "Limits how many videos from one channel can appear in the "
+                "main feed for a single publish day."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        help_label.add_css_class("dim-label")
+        labels.append(help_label)
+
+        adjustment = Gtk.Adjustment(
+            value=3,
+            lower=1,
+            upper=25,
+            step_increment=1,
+            page_increment=5,
+        )
+        self.feed_daily_limit_reset_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("edit-undo-symbolic")
+        )
+        self.feed_daily_limit_reset_button.set_tooltip_text(
+            "Reset to the app default"
+        )
+        self.feed_daily_limit_reset_button.connect(
+            "clicked",
+            self.on_feed_daily_limit_reset_clicked,
+        )
+        row.append(self.feed_daily_limit_reset_button)
+
+        self.feed_daily_limit_spin = Gtk.SpinButton(
+            adjustment=adjustment,
+            climb_rate=1,
+            digits=0,
+        )
+        self.feed_daily_limit_spin.set_numeric(True)
+        self.feed_daily_limit_spin.connect(
+            "value-changed",
+            self.on_feed_daily_limit_changed,
+        )
+        row.append(self.feed_daily_limit_spin)
+
+        self.stack.add_named(page, "settings")
+
+    def reload_settings(self) -> None:
+        self.updating_settings = True
+        self.feed_daily_limit_spin.set_value(
+            self.service.repository.feed_daily_channel_limit()
+        )
+        self.feed_daily_limit_reset_button.set_visible(
+            self.service.repository.has_feed_daily_channel_limit_override()
+        )
+        self.updating_settings = False
+
+    def on_feed_daily_limit_changed(self, spin: Gtk.SpinButton) -> None:
+        if self.updating_settings:
+            return
+        limit = spin.get_value_as_int()
+        self.service.repository.set_feed_daily_channel_limit(limit)
+        self.feed_daily_limit_reset_button.set_visible(True)
+        self.feed_limit = 100
+        if self.current_view and self.current_view.page == "feed":
+            self.reload_feed()
+
+    def on_feed_daily_limit_reset_clicked(self, _button: Gtk.Button) -> None:
+        self.service.repository.clear_feed_daily_channel_limit()
+        self.reload_settings()
+        self.feed_limit = 100
+        if self.current_view and self.current_view.page == "feed":
+            self.reload_feed()
 
     def build_history_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -1555,14 +1710,21 @@ class MainWindow(Gtk.ApplicationWindow):
             )
 
     def reload_feed(self) -> None:
-        self.populate_video_grid(
-            self.feed_grid,
-            self.service.repository.subscription_feed(self.feed_limit),
-        )
+        videos = self.service.repository.subscription_feed(self.feed_limit)
+        self.populate_video_grid(self.feed_grid, videos)
+        has_videos = bool(videos)
+        self.feed_grid.set_visible(has_videos)
+        self.feed_empty_box.set_visible(not has_videos)
 
     def populate_search_results(self, results: SearchResults) -> None:
         self.clear_flowbox(self.search_channel_grid)
         self.clear_flowbox(self.search_grid)
+
+        has_results = bool(results.channels or results.videos)
+        self.search_empty_box.set_visible(not has_results)
+        if not has_results:
+            self.search_empty_title.set_label("No results")
+            self.search_empty_help.set_label("No videos or channels matched this search.")
 
         self.search_channel_heading.set_visible(bool(results.channels))
         self.search_channel_grid.set_visible(bool(results.channels))
@@ -2090,6 +2252,23 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         actions.append(add_watch_later)
 
+        mark_played = Gtk.Button(label="Mark as played")
+        mark_played.add_css_class("flat")
+        mark_played.set_halign(Gtk.Align.FILL)
+        mark_played.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "played")
+        )
+        actions.append(mark_played)
+
+        not_interested = Gtk.Button(label="Not interested")
+        not_interested.add_css_class("flat")
+        not_interested.set_halign(Gtk.Align.FILL)
+        not_interested.connect(
+            "clicked",
+            lambda _button: self.activate_video_menu(popover, video, "not_interested"),
+        )
+        actions.append(not_interested)
+
         rectangle = Gdk.Rectangle()
         rectangle.x = int(x)
         rectangle.y = int(y)
@@ -2197,6 +2376,23 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         actions.append(open_video)
 
+        mark_played = Gtk.Button(label="Mark as played")
+        mark_played.add_css_class("flat")
+        mark_played.set_halign(Gtk.Align.FILL)
+        mark_played.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "played")
+        )
+        actions.append(mark_played)
+
+        not_interested = Gtk.Button(label="Not interested")
+        not_interested.add_css_class("flat")
+        not_interested.set_halign(Gtk.Align.FILL)
+        not_interested.connect(
+            "clicked",
+            lambda _button: self.activate_video_menu(popover, video, "not_interested"),
+        )
+        actions.append(not_interested)
+
         remove_watch_later = Gtk.Button(label="Remove from watch later")
         remove_watch_later.add_css_class("flat")
         remove_watch_later.set_halign(Gtk.Align.FILL)
@@ -2284,6 +2480,13 @@ class MainWindow(Gtk.ApplicationWindow):
         elif action == "watch_later":
             self.service.add_watch_later(video)
             self.reload_watch_later()
+        elif action == "played":
+            self.service.repository.mark_played(video.id, video.duration_seconds)
+            self.reload_history()
+            self.reload_visible_video_grid()
+        elif action == "not_interested":
+            self.service.repository.hide_video(video.id)
+            self.reload_visible_video_grid()
         else:
             self.play_video(video)
 

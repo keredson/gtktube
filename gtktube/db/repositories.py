@@ -162,9 +162,88 @@ class LibraryRepository:
             for video in videos:
                 self.upsert_video(video)
 
-    def subscription_feed(self, limit: int = 100) -> list[Video]:
+    def setting(self, key: str, default: str = "") -> str:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT value FROM settings WHERE key = ?",
+                (key,),
+            ).fetchone()
+        return str(row["value"]) if row else default
+
+    def has_setting(self, key: str) -> bool:
+        with self._lock:
+            row = self.connection.execute(
+                "SELECT 1 FROM settings WHERE key = ?",
+                (key,),
+            ).fetchone()
+        return bool(row)
+
+    def int_setting(self, key: str, default: int) -> int:
+        try:
+            return int(self.setting(key, str(default)))
+        except ValueError:
+            return default
+
+    def set_setting(self, key: str, value: str) -> None:
+        now = utcnow()
+        with self._lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (key, value, now),
+            )
+
+    def clear_setting(self, key: str) -> None:
+        with self._lock, self.connection:
+            self.connection.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+    def feed_daily_channel_limit(self) -> int:
+        return max(1, self.int_setting("feed_daily_channel_limit", 3))
+
+    def has_feed_daily_channel_limit_override(self) -> bool:
+        return self.has_setting("feed_daily_channel_limit")
+
+    def set_feed_daily_channel_limit(self, limit: int) -> None:
+        self.set_setting("feed_daily_channel_limit", str(max(1, limit)))
+
+    def clear_feed_daily_channel_limit(self) -> None:
+        self.clear_setting("feed_daily_channel_limit")
+
+    def subscription_feed(
+        self,
+        limit: int = 100,
+        daily_channel_limit: int | None = None,
+    ) -> list[Video]:
+        daily_channel_limit = daily_channel_limit or self.feed_daily_channel_limit()
         return self._videos_query(
             """
+            WITH ranked_videos AS (
+                SELECT
+                    v.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY
+                            v.channel_id,
+                            date(COALESCE(v.published_at, v.discovered_at))
+                        ORDER BY
+                            CASE WHEN wh.video_id IS NULL THEN 0 ELSE 1 END,
+                            COALESCE(wh.completed, 0) ASC,
+                            COALESCE(wp.percent_watched, 0) ASC,
+                            COALESCE(v.view_count, 0) DESC,
+                            CASE WHEN v.published_at IS NULL THEN 1 ELSE 0 END,
+                            COALESCE(v.published_at, v.discovered_at) DESC,
+                            v.id
+                    ) AS channel_day_rank
+                FROM videos v
+                LEFT JOIN watch_progress wp ON wp.video_id = v.id
+                LEFT JOIN watch_history wh ON wh.video_id = v.id
+                LEFT JOIN hidden_videos hv ON hv.video_id = v.id
+                WHERE hv.video_id IS NULL
+            )
             SELECT
                 v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
                 v.thumbnail_url, v.description, v.duration_seconds,
@@ -172,17 +251,18 @@ class LibraryRepository:
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 wp.watch_range_string,
                 COALESCE(wh.completed, 0) AS completed
-            FROM videos v
+            FROM ranked_videos v
             JOIN channels c ON c.id = v.channel_id
             LEFT JOIN watch_progress wp ON wp.video_id = v.id
             LEFT JOIN watch_history wh ON wh.video_id = v.id
             WHERE c.is_subscribed = 1
+              AND v.channel_day_rank <= ?
             ORDER BY
                 CASE WHEN v.published_at IS NULL THEN 1 ELSE 0 END,
                 COALESCE(v.published_at, v.discovered_at) DESC
             LIMIT ?
             """,
-            (limit,),
+            (daily_channel_limit, limit),
         )
 
     def channel_videos(self, channel_id: str, limit: int = 100) -> list[Video]:
@@ -333,6 +413,51 @@ class LibraryRepository:
             )
             self.connection.execute(
                 "DELETE FROM watch_later WHERE video_id = ?", (video_id,)
+            )
+
+    def mark_played(self, video_id: str, duration_seconds: int | None = None) -> None:
+        now = utcnow()
+        with self._lock, self.connection:
+            if duration_seconds is not None and duration_seconds > 0:
+                self.connection.execute(
+                    """
+                    INSERT INTO watch_ranges (
+                        video_id, start_seconds, end_seconds, last_watched_at,
+                        created_at, updated_at
+                    )
+                    VALUES (?, 0, ?, ?, ?, ?)
+                    """,
+                    (video_id, duration_seconds, now, now, now),
+                )
+            self.connection.execute(
+                """
+                INSERT INTO watch_history (
+                    video_id, first_watched_at, last_watched_at, completed,
+                    completed_at, play_count, updated_at
+                )
+                VALUES (?, ?, ?, 1, ?, 0, ?)
+                ON CONFLICT(video_id) DO UPDATE SET
+                    first_watched_at = COALESCE(watch_history.first_watched_at, excluded.first_watched_at),
+                    completed = 1,
+                    completed_at = COALESCE(watch_history.completed_at, excluded.completed_at),
+                    last_watched_at = excluded.last_watched_at,
+                    updated_at = excluded.updated_at
+                """,
+                (video_id, now, now, now, now),
+            )
+
+    def hide_video(self, video_id: str, reason: str = "not_interested") -> None:
+        now = utcnow()
+        with self._lock, self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO hidden_videos (video_id, hidden_at, reason)
+                VALUES (?, ?, ?)
+                ON CONFLICT(video_id) DO UPDATE SET
+                    hidden_at = excluded.hidden_at,
+                    reason = excluded.reason
+                """,
+                (video_id, now, reason),
             )
 
     def add_watch_range(

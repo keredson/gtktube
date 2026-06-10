@@ -1,10 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=GTKTube
-Comment=Local-first YouTube subscription browser and player
+Comment=Local privacy-first YouTube player
 Exec=gtktube
 Icon=gtktube
 Terminal=false
 Categories=AudioVideo;Video;Player;GTK;
 Keywords=YouTube;Video;Player;Subscriptions;GTK;
 StartupNotify=true
+StartupWMClass=local.gtktube.GTKTube

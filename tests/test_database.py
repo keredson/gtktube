@@ -86,6 +86,30 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertEqual(row["completed"], 1)
 
+    def test_mark_played_records_full_watch_range(self) -> None:
+        self.repository.mark_played("vid1", 100)
+
+        history = self.connection.execute(
+            """
+            SELECT completed, completed_at
+            FROM watch_history
+            WHERE video_id = 'vid1'
+            """
+        ).fetchone()
+        progress = self.connection.execute(
+            """
+            SELECT covered_seconds, percent_watched, watch_range_string
+            FROM watch_progress
+            WHERE video_id = 'vid1'
+            """
+        ).fetchone()
+
+        self.assertEqual(history["completed"], 1)
+        self.assertIsNotNone(history["completed_at"])
+        self.assertEqual(progress["covered_seconds"], 100)
+        self.assertEqual(progress["percent_watched"], 1.0)
+        self.assertEqual(progress["watch_range_string"], "0-100")
+
     def test_watch_history_searches_video_and_channel_title(self) -> None:
         self.repository.add_watch_range("vid1", 0, 10)
 
@@ -101,6 +125,111 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(feed[0].description, "Useful context about the video.")
         self.assertEqual(feed[0].duration_seconds, 100)
         self.assertEqual(feed[0].view_count, 12345)
+
+    def test_feed_daily_channel_limit_default_is_not_persisted(self) -> None:
+        row = self.connection.execute(
+            "SELECT value FROM settings WHERE key = 'feed_daily_channel_limit'"
+        ).fetchone()
+
+        self.assertIsNone(row)
+        self.assertEqual(self.repository.feed_daily_channel_limit(), 3)
+        self.assertFalse(self.repository.has_feed_daily_channel_limit_override())
+
+    def test_feed_daily_channel_limit_can_reset_to_code_default(self) -> None:
+        self.repository.set_feed_daily_channel_limit(8)
+        self.assertEqual(self.repository.feed_daily_channel_limit(), 8)
+        self.assertTrue(self.repository.has_feed_daily_channel_limit_override())
+
+        self.repository.clear_feed_daily_channel_limit()
+
+        row = self.connection.execute(
+            "SELECT value FROM settings WHERE key = 'feed_daily_channel_limit'"
+        ).fetchone()
+        self.assertIsNone(row)
+        self.assertEqual(self.repository.feed_daily_channel_limit(), 3)
+        self.assertFalse(self.repository.has_feed_daily_channel_limit_override())
+
+    def test_feed_daily_channel_limit_prefers_unwatched_high_view_videos(self) -> None:
+        self.connection.execute(
+            "UPDATE videos SET published_at = ? WHERE id = ?",
+            ("2026-06-09T09:00:00+00:00", "vid1"),
+        )
+        self.repository.upsert_channel(
+            Channel(id="chan2", title="Channel Two", url="https://example.test/chan2")
+        )
+        for video in [
+            Video(
+                id="watched_high",
+                channel_id="chan1",
+                title="Watched High",
+                url="https://example.test/watched_high",
+                published_at="2026-06-10T10:00:00+00:00",
+                view_count=1000,
+            ),
+            Video(
+                id="unwatched_low",
+                channel_id="chan1",
+                title="Unwatched Low",
+                url="https://example.test/unwatched_low",
+                published_at="2026-06-10T11:00:00+00:00",
+                view_count=10,
+            ),
+            Video(
+                id="unwatched_high",
+                channel_id="chan1",
+                title="Unwatched High",
+                url="https://example.test/unwatched_high",
+                published_at="2026-06-10T09:00:00+00:00",
+                view_count=500,
+            ),
+            Video(
+                id="next_day",
+                channel_id="chan1",
+                title="Next Day",
+                url="https://example.test/next_day",
+                published_at="2026-06-11T09:00:00+00:00",
+                view_count=1,
+            ),
+            Video(
+                id="other_channel",
+                channel_id="chan2",
+                title="Other Channel",
+                url="https://example.test/other_channel",
+                published_at="2026-06-10T09:00:00+00:00",
+                view_count=1,
+            ),
+        ]:
+            self.repository.upsert_video(video)
+        self.repository.add_watch_range("watched_high", 0, 10)
+
+        feed = self.repository.subscription_feed(daily_channel_limit=1)
+
+        self.assertIn("unwatched_high", [video.id for video in feed])
+        self.assertIn("next_day", [video.id for video in feed])
+        self.assertIn("other_channel", [video.id for video in feed])
+        self.assertNotIn("watched_high", [video.id for video in feed])
+        self.assertNotIn("unwatched_low", [video.id for video in feed])
+
+    def test_hidden_videos_are_excluded_before_feed_daily_limit(self) -> None:
+        self.connection.execute(
+            "UPDATE videos SET published_at = ?, view_count = ? WHERE id = ?",
+            ("2026-06-10T08:00:00+00:00", 1000, "vid1"),
+        )
+        self.repository.upsert_video(
+            Video(
+                id="replacement",
+                channel_id="chan1",
+                title="Replacement",
+                url="https://example.test/replacement",
+                published_at="2026-06-10T09:00:00+00:00",
+                view_count=10,
+            )
+        )
+
+        self.repository.hide_video("vid1")
+        feed = self.repository.subscription_feed(daily_channel_limit=1)
+
+        self.assertEqual([video.id for video in feed], ["replacement"])
 
 
 class ConnectionTests(unittest.TestCase):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 
 def migrate(connection: sqlite3.Connection) -> None:
@@ -23,6 +23,12 @@ def migrate(connection: sqlite3.Connection) -> None:
         current = 3
     if current < 4:
         _migrate_4(connection)
+        current = 4
+    if current < 5:
+        _migrate_5(connection)
+        current = 5
+    if current < 6:
+        _migrate_6(connection)
 
 
 def _migrate_1(connection: sqlite3.Connection) -> None:
@@ -325,5 +331,39 @@ def _migrate_4(connection: sqlite3.Connection) -> None:
             LEFT JOIN concatenated con ON con.video_id = v.id;
 
             PRAGMA user_version = 4;
+            """
+        )
+
+
+def _migrate_5(connection: sqlite3.Connection) -> None:
+    with connection:
+        connection.executescript(
+            """
+            CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            PRAGMA user_version = 5;
+            """
+        )
+
+
+def _migrate_6(connection: sqlite3.Connection) -> None:
+    with connection:
+        connection.executescript(
+            """
+            CREATE TABLE hidden_videos (
+                video_id TEXT PRIMARY KEY,
+                hidden_at TEXT NOT NULL,
+                reason TEXT,
+                FOREIGN KEY (video_id) REFERENCES videos(id)
+            );
+
+            CREATE INDEX idx_hidden_videos_hidden_at
+            ON hidden_videos(hidden_at DESC);
+
+            PRAGMA user_version = 6;
             """
         )

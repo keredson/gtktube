@@ -42,6 +42,7 @@ The feed has no algorithm. It just shows recent videos from the channels you sub
 ```sh
 pipx ensurepath
 pipx install --system-site-packages gtktube
+gtktube --install-desktop
 ```
 
 GTKTube also needs GTK4/PyGObject and libmpv from your Linux distribution.
@@ -56,10 +57,19 @@ You can also run it from a terminal:
 gtktube
 ```
 
+When launched as the installed `gtktube` command, GTKTube also installs or updates
+its desktop launcher entry in your user application directory. If your desktop
+environment does not show it immediately after installation, run `gtktube` once
+from a terminal or run `gtktube --install-desktop`.
+
 Useful startup flags:
 
 - `gtktube --show-upgrade` opens the upgrade dialog even when GTKTube has not detected a newer version.
 - `gtktube --show-deps-installer` opens the system dependency installer even when GTKTube thinks dependencies are present.
+- `gtktube --db /path/to/gtktube.sqlite3` uses a specific SQLite database file.
+- `gtktube --install-desktop` installs the desktop launcher entry and exits.
+
+Development runs with `python -m gtktube` do not auto-install a desktop launcher or check PyPI for upgrades.
 
 ## Data Storage
 

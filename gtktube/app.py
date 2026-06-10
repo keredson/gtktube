@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
 import locale
+import shutil
 import signal
 import sys
+from importlib import resources
+from pathlib import Path
 
 from .db.connection import connect
 from .db.migrations import migrate
@@ -11,6 +15,10 @@ from .extractors.youtube import YoutubeExtractor
 from .paths import AppPaths
 from .services.library import LibraryService
 
+
+DESKTOP_ID = "local.gtktube.GTKTube"
+DESKTOP_FILENAME = f"{DESKTOP_ID}.desktop"
+OLD_DESKTOP_FILENAME = "gtktube.desktop"
 
 PYGOBJECT_HELP = """\
 GTKTube needs PyGObject from your system packages.
@@ -43,28 +51,111 @@ class StartupOptions:
         gtk_argv: list[str],
         show_upgrade: bool = False,
         show_deps_installer: bool = False,
+        database_path: Path | None = None,
+        install_desktop: bool = False,
     ):
         self.gtk_argv = gtk_argv
         self.show_upgrade = show_upgrade
         self.show_deps_installer = show_deps_installer
+        self.database_path = database_path
+        self.install_desktop = install_desktop
 
 
 def parse_startup_options(argv: list[str]) -> StartupOptions:
     gtk_argv = [argv[0]]
     show_upgrade = False
     show_deps_installer = False
-    for arg in argv[1:]:
+    database_path: Path | None = None
+    install_desktop = False
+    index = 1
+    while index < len(argv):
+        arg = argv[index]
         if arg == "--show-upgrade":
             show_upgrade = True
         elif arg == "--show-deps-installer":
             show_deps_installer = True
+        elif arg == "--install-desktop":
+            install_desktop = True
+        elif arg == "--db":
+            index += 1
+            if index >= len(argv):
+                raise ValueError("--db requires a path")
+            database_path = Path(argv[index]).expanduser()
+        elif arg.startswith("--db="):
+            database_path = Path(arg.split("=", 1)[1]).expanduser()
         else:
             gtk_argv.append(arg)
+        index += 1
     return StartupOptions(
         gtk_argv=gtk_argv,
         show_upgrade=show_upgrade,
         show_deps_installer=show_deps_installer,
+        database_path=database_path,
+        install_desktop=install_desktop,
     )
+
+
+def user_data_home() -> Path:
+    return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+
+
+def desktop_exec(argv0: str) -> str:
+    executable = Path(argv0)
+    if executable.is_absolute():
+        return str(executable)
+    resolved = shutil.which(argv0)
+    if resolved:
+        return resolved
+    return argv0
+
+
+def launched_as_installed_command(argv0: str) -> bool:
+    return Path(argv0).name == "gtktube"
+
+
+def desktop_exec_for_launch(argv: list[str]) -> str:
+    if launched_as_installed_command(argv[0]):
+        return desktop_exec(argv[0])
+    return f"{sys.executable} -m gtktube"
+
+
+def desktop_entry_text(exec_path: str, icon_path: str) -> str:
+    return f"""\
+[Desktop Entry]
+Type=Application
+Name=GTKTube
+Comment=Local privacy-first YouTube player
+Exec={exec_path}
+Icon={icon_path}
+Terminal=false
+Categories=AudioVideo;Video;Player;GTK;
+Keywords=YouTube;Video;Player;Subscriptions;GTK;
+StartupNotify=true
+StartupWMClass={DESKTOP_ID}
+"""
+
+
+def install_desktop_entry(exec_path: str) -> None:
+    data_home = user_data_home()
+    applications_dir = data_home / "applications"
+    icon_dir = data_home / "icons" / "hicolor" / "256x256" / "apps"
+    applications_dir.mkdir(parents=True, exist_ok=True)
+    icon_dir.mkdir(parents=True, exist_ok=True)
+
+    icon_path = icon_dir / "gtktube.png"
+    with resources.as_file(resources.files("gtktube") / "assets" / "gtktube.png") as icon:
+        shutil.copyfile(icon, icon_path)
+
+    old_desktop_file = applications_dir / OLD_DESKTOP_FILENAME
+    if old_desktop_file.exists():
+        old_desktop_file.unlink()
+
+    desktop_file = applications_dir / DESKTOP_FILENAME
+    desktop_file.write_text(
+        desktop_entry_text(exec_path, str(icon_path)),
+        encoding="utf-8",
+    )
+    desktop_file.chmod(0o644)
 
 
 def configure_mpv_locale() -> None:
@@ -107,6 +198,14 @@ def launch_dependency_installer() -> None:
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv
     options = parse_startup_options(argv)
+    installed_command = launched_as_installed_command(argv[0])
+    if installed_command or options.install_desktop:
+        try:
+            install_desktop_entry(desktop_exec_for_launch(argv))
+        except OSError as exc:
+            print(f"gtktube: could not install desktop entry: {exc}", file=sys.stderr)
+    if options.install_desktop:
+        return 0
     if options.show_deps_installer:
         launch_dependency_installer()
     if not dependency_checks_pass():
@@ -116,7 +215,15 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     paths = AppPaths.discover()
+    if options.database_path is not None:
+        paths = AppPaths(
+            data_dir=paths.data_dir,
+            cache_dir=paths.cache_dir,
+            config_dir=paths.config_dir,
+            database_path=options.database_path,
+        )
     paths.ensure()
+    paths.database_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"gtktube: database={paths.database_path}", file=sys.stderr)
 
     connection = connect(paths.database_path)
@@ -131,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
         service,
         paths,
         force_update_dialog=options.show_upgrade,
+        enable_update_check=installed_command or options.show_upgrade,
     )
     previous_sigint = signal.getsignal(signal.SIGINT)
 

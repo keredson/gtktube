@@ -29,5 +29,5 @@ include = ["gtktube*"]
 gtktube = ["assets/gtktube.png"]
 
 [tool.setuptools.data-files]
-"share/applications" = ["packaging/gtktube.desktop"]
+"share/applications" = ["packaging/local.gtktube.GTKTube.desktop"]
 "share/icons/hicolor/256x256/apps" = ["gtktube/assets/gtktube.png"]
