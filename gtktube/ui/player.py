@@ -4,7 +4,7 @@ import locale
 import os
 import re
 from ctypes import byref, c_int, c_void_p
-from typing import Any
+from typing import Any, Callable
 
 import gi
 
@@ -69,6 +69,19 @@ class PlayerMixin:
         self.update_subscribe_check(playable.video)
         self.update_player_share_button()
         self.reload_channels()
+        self.show_full_player()
+        self.select_nav_page("player")
+        self.stack.set_visible_child_name("player")
+
+        if self.maybe_show_sponsorblock_prompt(
+            lambda: self.start_playback(playable, resume_position)
+        ):
+            return
+        self.start_playback(playable, resume_position)
+
+    def start_playback(
+        self, playable: PlayableVideo, resume_position: int | None = None
+    ) -> None:
         self.load_sponsorblock_segments()
 
         player = self.create_player(playable)
@@ -97,13 +110,13 @@ class PlayerMixin:
         self.show_full_player()
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
-        self.maybe_show_sponsorblock_prompt()
 
-    def maybe_show_sponsorblock_prompt(self) -> None:
+    def maybe_show_sponsorblock_prompt(
+        self, after_response: Callable[[], None] | None = None
+    ) -> bool:
         repository = self.service.repository
         if repository.sponsorblock_enabled() or repository.sponsorblock_prompt_shown():
-            return
-        repository.set_sponsorblock_prompt_shown()
+            return False
 
         dialog = Gtk.Dialog(
             title="Enable SponsorBlock?",
@@ -141,14 +154,17 @@ class PlayerMixin:
         dialog.set_default_response(Gtk.ResponseType.ACCEPT)
 
         def response(_dialog: Gtk.Dialog, response_id: int) -> None:
+            repository.set_sponsorblock_prompt_shown()
             if response_id == Gtk.ResponseType.ACCEPT:
                 repository.set_sponsorblock_enabled(True)
                 self.reload_settings()
-                self.load_sponsorblock_segments()
             dialog.destroy()
+            if after_response is not None:
+                after_response()
 
         dialog.connect("response", response)
         dialog.present()
+        return True
 
     def update_player_metadata(self, video: Video) -> None:
         self.player_title.set_text(video.title)
@@ -423,6 +439,12 @@ class PlayerMixin:
                 osc=True,
                 vo="libmpv",
                 ytdl=True,
+                cache="yes",
+                cache_secs=60,
+                demuxer_readahead_secs=20,
+                demuxer_max_bytes="300MiB",
+                demuxer_max_back_bytes="100MiB",
+                demuxer_seekable_cache="yes",
                 ytdl_format=os.environ.get(
                     "GTKTUBE_YTDLP_FORMAT",
                     QUALITY_FORMATS.get(playable.quality, QUALITY_FORMATS["720p"]),
