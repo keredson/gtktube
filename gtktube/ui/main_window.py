@@ -6,6 +6,7 @@ import locale
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,10 +33,12 @@ class VideoObject(GObject.Object):
 
 
 from gtktube import __version__
+from gtktube.db.repositories import SPONSORBLOCK_CATEGORIES, SPONSORBLOCK_CATEGORY_LABELS
 from gtktube.extractors.youtube import ExtractorError, QUALITY_FORMATS
-from gtktube.models import Channel, PlayableVideo, SearchResults, Video
+from gtktube.models import Channel, PlayableVideo, SearchResults, SponsorBlockSegment, Video
 from gtktube.paths import AppPaths
 from gtktube.services.library import LibraryService
+from gtktube.sponsorblock import SponsorBlockClient, SponsorBlockError
 from gtktube.update_check import UpdateInfo, check_for_update, upgrade_command
 
 
@@ -115,6 +118,10 @@ APP_CSS = """
   min-height: 3px;
 }
 
+.timeline-overlay {
+  background: transparent;
+}
+
 .video-tile {
   background: transparent;
   border: none;
@@ -189,6 +196,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.video_queue = Gio.ListStore(item_type=VideoObject)
         self.dragging_index = -1
         self.current_playable: PlayableVideo | None = None
+        self.sponsorblock = SponsorBlockClient()
+        self.sponsorblock_segments: list[SponsorBlockSegment] = []
+        self.suppressed_sponsorblock_segments: set[str] = set()
+        self.last_auto_skipped_segment: str | None = None
+        self.pending_sponsorblock_skip: dict[str, object] | None = None
         self.player: Any | None = None
         self.mpv_module: Any | None = None
         self.mpv_render_context: Any | None = None
@@ -1336,6 +1348,47 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         quality_row.append(self.default_quality_combo)
 
+        sponsor_title = Gtk.Label(label="SponsorBlock", xalign=0)
+        sponsor_title.add_css_class("heading")
+        page.append(sponsor_title)
+
+        sponsor_help = Gtk.Label(
+            label=(
+                "Optional. When enabled, GTKTube sends the current YouTube "
+                "video ID to SponsorBlock to look up community segment ranges."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        sponsor_help.add_css_class("dim-label")
+        page.append(sponsor_help)
+
+        self.sponsorblock_enabled_check = Gtk.CheckButton(label="Enable SponsorBlock")
+        self.sponsorblock_enabled_check.connect(
+            "toggled",
+            self.on_sponsorblock_setting_changed,
+        )
+        page.append(self.sponsorblock_enabled_check)
+
+        category_label = Gtk.Label(label="Auto-skip categories", xalign=0)
+        category_label.add_css_class("dim-label")
+        page.append(category_label)
+
+        self.sponsorblock_category_checks: dict[str, Gtk.CheckButton] = {}
+        category_grid = Gtk.FlowBox()
+        category_grid.set_selection_mode(Gtk.SelectionMode.NONE)
+        category_grid.set_max_children_per_line(4)
+        category_grid.set_column_spacing(8)
+        category_grid.set_row_spacing(4)
+        for category in SPONSORBLOCK_CATEGORIES:
+            check = Gtk.CheckButton(
+                label=SPONSORBLOCK_CATEGORY_LABELS.get(category, category)
+            )
+            check.connect("toggled", self.on_sponsorblock_setting_changed)
+            self.sponsorblock_category_checks[category] = check
+            category_grid.append(check)
+        page.append(category_grid)
+
         self.stack.add_named(page, "settings")
 
     def reload_settings(self) -> None:
@@ -1351,6 +1404,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self.default_quality_reset_button.set_visible(
             self.service.repository.has_default_video_quality_override()
         )
+        self.sponsorblock_enabled_check.set_active(
+            self.service.repository.sponsorblock_enabled()
+        )
+        enabled_categories = set(self.service.repository.sponsorblock_categories())
+        for category, check in self.sponsorblock_category_checks.items():
+            check.set_active(category in enabled_categories)
         self.updating_settings = False
 
     def on_feed_daily_limit_changed(self, spin: Gtk.SpinButton) -> None:
@@ -1389,6 +1448,21 @@ class MainWindow(Gtk.ApplicationWindow):
         self.updating_quality = True
         self.quality_combo.set_active_id(self.preferred_quality)
         self.updating_quality = False
+
+    def on_sponsorblock_setting_changed(self, _widget: Gtk.Widget) -> None:
+        if self.updating_settings:
+            return
+        self.service.repository.set_sponsorblock_enabled(
+            self.sponsorblock_enabled_check.get_active()
+        )
+        self.service.repository.set_sponsorblock_categories(
+            [
+                category
+                for category, check in self.sponsorblock_category_checks.items()
+                if check.get_active()
+            ]
+        )
+        self.load_sponsorblock_segments()
 
     def build_history_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -1548,11 +1622,18 @@ class MainWindow(Gtk.ApplicationWindow):
         self.elapsed_label = Gtk.Label(label="0:00")
         self.player_controls.append(self.elapsed_label)
 
+        self.timeline_overlay = Gtk.Overlay(hexpand=True)
+        self.sponsorblock_timeline = Gtk.DrawingArea(hexpand=True)
+        self.sponsorblock_timeline.add_css_class("timeline-overlay")
+        self.sponsorblock_timeline.set_draw_func(self.draw_sponsorblock_timeline)
+        self.timeline_overlay.set_child(self.sponsorblock_timeline)
+
         self.scrubber = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 1, 1)
         self.scrubber.set_hexpand(True)
         self.scrubber.set_draw_value(False)
         self.scrubber.connect("change-value", self.on_scrub_changed)
-        self.player_controls.append(self.scrubber)
+        self.timeline_overlay.add_overlay(self.scrubber)
+        self.player_controls.append(self.timeline_overlay)
 
         self.duration_label = Gtk.Label(label="0:00")
         self.player_controls.append(self.duration_label)
@@ -2899,6 +2980,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.update_subscribe_check(playable.video)
         self.update_player_share_button()
         self.reload_channels()
+        self.load_sponsorblock_segments()
 
         player = self.create_player(playable)
         if player is None:
@@ -3514,7 +3596,11 @@ class MainWindow(Gtk.ApplicationWindow):
         if self.pending_seek_seconds is None:
             return False
         self.pending_seek_attempts += 1
-        if self.seek_media_impl(self.pending_seek_seconds, defer_until_ready=False):
+        if self.seek_media_impl(
+            self.pending_seek_seconds,
+            defer_until_ready=False,
+            user_initiated=False,
+        ):
             self.pending_seek_seconds = None
             return False
         if self.pending_seek_attempts >= 40:
@@ -3523,10 +3609,26 @@ class MainWindow(Gtk.ApplicationWindow):
             return False
         return True
 
-    def seek_media(self, seconds: int) -> bool:
-        return self.seek_media_impl(seconds, defer_until_ready=True)
+    def seek_media(
+        self,
+        seconds: int,
+        user_initiated: bool = True,
+        precision: str = "keyframes",
+    ) -> bool:
+        return self.seek_media_impl(
+            seconds,
+            defer_until_ready=True,
+            user_initiated=user_initiated,
+            precision=precision,
+        )
 
-    def seek_media_impl(self, seconds: int, defer_until_ready: bool) -> bool:
+    def seek_media_impl(
+        self,
+        seconds: int,
+        defer_until_ready: bool,
+        user_initiated: bool = False,
+        precision: str = "keyframes",
+    ) -> bool:
         if self.player is not None:
             self.flush_watch_range()
             duration = self.current_duration_seconds()
@@ -3537,13 +3639,15 @@ class MainWindow(Gtk.ApplicationWindow):
             if duration > 0:
                 seconds = max(0, min(seconds, duration))
             try:
-                self.player.seek(seconds, reference="absolute", precision="keyframes")
+                self.player.seek(seconds, reference="absolute", precision=precision)
             except Exception as exc:
                 if defer_until_ready:
                     self.queue_seek_media(seconds)
                 else:
                     self.log(f"mpv seek failed: {exc}")
                 return False
+            if user_initiated:
+                self.suppress_sponsorblock_for_seek(seconds)
             self.range_start_seconds = seconds
             self.update_playback_controls()
             return True
@@ -3632,7 +3736,163 @@ class MainWindow(Gtk.ApplicationWindow):
         self.elapsed_label.set_text(self.format_time(current))
         self.duration_label.set_text(self.format_time(duration))
         self.update_play_pause_button()
+        self.maybe_log_sponsorblock_skip_ready(current)
+        self.maybe_skip_sponsorblock_segment(current)
         return True
+
+    def load_sponsorblock_segments(self) -> None:
+        self.sponsorblock_segments = []
+        self.suppressed_sponsorblock_segments = set()
+        self.last_auto_skipped_segment = None
+        self.pending_sponsorblock_skip = None
+        self.sponsorblock_timeline.queue_draw()
+        if self.current_playable is None:
+            return
+        if not self.service.repository.sponsorblock_enabled():
+            return
+        video_id = self.current_playable.video.id
+        categories = self.service.repository.sponsorblock_categories()
+        cached_segments, fresh = self.service.repository.cached_sponsorblock_segments(
+            video_id,
+            categories,
+        )
+        self.sponsorblock_segments = cached_segments
+        self.sponsorblock_timeline.queue_draw()
+        if fresh:
+            return
+
+        future = self.executor.submit(
+            self.sponsorblock.segments,
+            video_id,
+            categories,
+        )
+
+        def done() -> bool:
+            try:
+                segments = future.result()
+            except SponsorBlockError as exc:
+                self.log(f"SponsorBlock lookup failed: {exc}")
+                return False
+            if (
+                self.current_playable is None
+                or self.current_playable.video.id != video_id
+            ):
+                return False
+            self.service.repository.store_sponsorblock_segments(
+                video_id,
+                categories,
+                segments,
+            )
+            self.sponsorblock_segments = segments
+            self.sponsorblock_timeline.queue_draw()
+            return False
+
+        future.add_done_callback(lambda _future: GLib.idle_add(done))
+
+    def draw_sponsorblock_timeline(
+        self,
+        _area: Gtk.DrawingArea,
+        context: object,
+        width: int,
+        height: int,
+    ) -> None:
+        duration = self.current_duration_seconds()
+        if duration <= 0 or not self.sponsorblock_segments:
+            return
+        trough_inset = 12
+        drawable_width = max(1, width - (trough_inset * 2))
+        bar_height = 2
+        y = max(0, int(height/2 - bar_height + 5))
+        for segment in self.sponsorblock_segments:
+            start = max(0.0, min(segment.start_seconds, float(duration)))
+            end = max(0.0, min(segment.end_seconds, float(duration)))
+            if end <= start:
+                continue
+            x = trough_inset + int(drawable_width * start / duration)
+            segment_width = max(2, int(drawable_width * (end - start) / duration))
+            red, green, blue = self.sponsorblock_segment_color(segment.category)
+            context.set_source_rgba(red, green, blue, 0.85)
+            context.rectangle(x, y, segment_width, bar_height)
+            context.fill()
+
+    def sponsorblock_segment_color(self, category: str) -> tuple[float, float, float]:
+        colors = {
+            "sponsor": (1.0, 0.72, 0.2),
+            "selfpromo": (0.55, 0.8, 1.0),
+            "interaction": (0.65, 0.55, 1.0),
+            "intro": (0.45, 0.9, 0.55),
+            "outro": (0.95, 0.45, 0.55),
+            "preview": (0.95, 0.65, 0.95),
+            "music_offtopic": (0.45, 0.9, 0.85),
+            "filler": (0.75, 0.75, 0.75),
+        }
+        return colors.get(category, (1.0, 0.72, 0.2))
+
+    def suppress_sponsorblock_for_seek(self, seconds: int) -> None:
+        for segment in self.sponsorblock_segments:
+            if segment.start_seconds - 5 <= seconds < segment.end_seconds:
+                self.suppressed_sponsorblock_segments.add(segment.key)
+
+    def maybe_skip_sponsorblock_segment(self, current: int) -> None:
+        if self.player is None:
+            return
+        if not self.service.repository.sponsorblock_enabled():
+            return
+        if bool(getattr(self.player, "pause", False)):
+            return
+        for segment in self.sponsorblock_segments:
+            if not segment.start_seconds <= current < segment.end_seconds:
+                continue
+            if segment.key in self.suppressed_sponsorblock_segments:
+                return
+            if segment.key == self.last_auto_skipped_segment:
+                return
+            self.last_auto_skipped_segment = segment.key
+            self.set_status(f"Skipped SponsorBlock {segment.category}")
+            target = int(segment.end_seconds)
+            self.pending_sponsorblock_skip = {
+                "category": segment.category,
+                "target": target,
+                "started": time.monotonic(),
+                "reported": False,
+            }
+            self.log(
+                "SponsorBlock skip start "
+                f"category={segment.category} "
+                f"current={current} "
+                f"segment={segment.start_seconds:.3f}-{segment.end_seconds:.3f} "
+                f"target={target}"
+            )
+            call_started = time.monotonic()
+            self.seek_media(target, user_initiated=False)
+            self.log(
+                "SponsorBlock seek command returned "
+                f"category={segment.category} "
+                f"target={target} "
+                f"elapsed={time.monotonic() - call_started:.3f}s"
+            )
+            return
+
+    def maybe_log_sponsorblock_skip_ready(self, current: int) -> None:
+        pending = self.pending_sponsorblock_skip
+        if pending is None or bool(pending.get("reported")):
+            return
+        target = pending.get("target")
+        started = pending.get("started")
+        if not isinstance(target, int) or not isinstance(started, float):
+            self.pending_sponsorblock_skip = None
+            return
+        if current < target:
+            return
+        pending["reported"] = True
+        elapsed = time.monotonic() - started
+        self.log(
+            "SponsorBlock skip reached target "
+            f"category={pending.get('category')} "
+            f"target={target} "
+            f"current={current} "
+            f"elapsed={elapsed:.3f}s"
+        )
 
     def format_time(self, seconds: int | None) -> str:
         if not seconds:

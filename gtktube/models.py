@@ -43,3 +43,19 @@ class PlayableVideo:
     quality: str
     audio_url: str | None = None
     resolved_quality: str | None = None
+
+
+@dataclass(frozen=True)
+class SponsorBlockSegment:
+    video_id: str
+    category: str
+    start_seconds: float
+    end_seconds: float
+    action_type: str | None = None
+    uuid: str | None = None
+
+    @property
+    def key(self) -> str:
+        if self.uuid:
+            return self.uuid
+        return f"{self.category}:{self.start_seconds:.3f}:{self.end_seconds:.3f}"

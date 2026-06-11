@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def migrate(connection: sqlite3.Connection) -> None:
@@ -32,6 +32,9 @@ def migrate(connection: sqlite3.Connection) -> None:
         current = 6
     if current < 7:
         _migrate_7(connection)
+        current = 7
+    if current < 8:
+        _migrate_8(connection)
 
 
 def _migrate_1(connection: sqlite3.Connection) -> None:
@@ -388,5 +391,35 @@ def _migrate_7(connection: sqlite3.Connection) -> None:
             ON videos(channel_id, discovered_at DESC);
 
             PRAGMA user_version = 7;
+            """
+        )
+
+
+def _migrate_8(connection: sqlite3.Connection) -> None:
+    with connection:
+        connection.executescript(
+            """
+            CREATE TABLE sponsorblock_segments (
+                video_id TEXT NOT NULL,
+                category TEXT NOT NULL,
+                action_type TEXT,
+                start_seconds REAL NOT NULL,
+                end_seconds REAL NOT NULL,
+                uuid TEXT,
+                fetched_at TEXT NOT NULL,
+                PRIMARY KEY (video_id, category, start_seconds, end_seconds)
+            );
+
+            CREATE INDEX idx_sponsorblock_segments_video
+            ON sponsorblock_segments(video_id);
+
+            CREATE TABLE sponsorblock_segment_fetches (
+                video_id TEXT NOT NULL,
+                categories_key TEXT NOT NULL,
+                fetched_at TEXT NOT NULL,
+                PRIMARY KEY (video_id, categories_key)
+            );
+
+            PRAGMA user_version = 8;
             """
         )

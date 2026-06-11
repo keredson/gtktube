@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from gtktube.db.connection import connect
 from gtktube.db.migrations import SCHEMA_VERSION, migrate
 from gtktube.db.repositories import LibraryRepository
-from gtktube.models import Channel, Video
+from gtktube.models import Channel, SponsorBlockSegment, Video
 
 
 class DatabaseTests(unittest.TestCase):
@@ -321,6 +321,63 @@ class DatabaseTests(unittest.TestCase):
         self.repository.record_play_started("new_video")
 
         self.assertEqual(self.repository.new_video_counts_by_channel(), {})
+
+    def test_sponsorblock_defaults_are_disabled_and_sponsor_only(self) -> None:
+        self.assertFalse(self.repository.sponsorblock_enabled())
+        self.assertEqual(self.repository.sponsorblock_categories(), ["sponsor"])
+
+    def test_sponsorblock_settings_round_trip(self) -> None:
+        self.repository.set_sponsorblock_enabled(True)
+        self.repository.set_sponsorblock_categories(["sponsor", "intro", "bad"])
+
+        self.assertTrue(self.repository.sponsorblock_enabled())
+        self.assertEqual(
+            self.repository.sponsorblock_categories(),
+            ["sponsor", "intro"],
+        )
+
+    def test_sponsorblock_segment_cache_tracks_empty_fetches(self) -> None:
+        segments, fresh = self.repository.cached_sponsorblock_segments(
+            "vid1",
+            ["sponsor"],
+        )
+        self.assertEqual(segments, [])
+        self.assertFalse(fresh)
+
+        self.repository.store_sponsorblock_segments("vid1", ["sponsor"], [])
+
+        segments, fresh = self.repository.cached_sponsorblock_segments(
+            "vid1",
+            ["sponsor"],
+        )
+        self.assertEqual(segments, [])
+        self.assertTrue(fresh)
+
+    def test_sponsorblock_segment_cache_round_trips_segments(self) -> None:
+        self.repository.store_sponsorblock_segments(
+            "vid1",
+            ["sponsor"],
+            [
+                SponsorBlockSegment(
+                    video_id="vid1",
+                    category="sponsor",
+                    start_seconds=10.5,
+                    end_seconds=20.25,
+                    action_type="skip",
+                    uuid="segment-1",
+                )
+            ],
+        )
+
+        segments, fresh = self.repository.cached_sponsorblock_segments(
+            "vid1",
+            ["sponsor"],
+        )
+
+        self.assertTrue(fresh)
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0].uuid, "segment-1")
+        self.assertEqual(segments[0].start_seconds, 10.5)
 
 
 class ConnectionTests(unittest.TestCase):

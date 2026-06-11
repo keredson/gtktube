@@ -1,12 +1,36 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from datetime import UTC, datetime, timedelta
 from typing import Iterable
 
 from gtktube.extractors.youtube import QUALITY_FORMATS
-from gtktube.models import Channel, Video
+from gtktube.models import Channel, SponsorBlockSegment, Video
+
+
+SPONSORBLOCK_CATEGORIES = [
+    "sponsor",
+    "selfpromo",
+    "interaction",
+    "intro",
+    "outro",
+    "preview",
+    "music_offtopic",
+    "filler",
+]
+DEFAULT_SPONSORBLOCK_CATEGORIES = ["sponsor"]
+SPONSORBLOCK_CATEGORY_LABELS = {
+    "sponsor": "Sponsors",
+    "selfpromo": "Self-promotion",
+    "interaction": "Interaction reminders",
+    "intro": "Intros",
+    "outro": "Outros",
+    "preview": "Previews",
+    "music_offtopic": "Music / off-topic",
+    "filler": "Filler",
+}
 
 
 def utcnow() -> str:
@@ -213,6 +237,10 @@ class LibraryRepository:
         except ValueError:
             return default
 
+    def bool_setting(self, key: str, default: bool) -> bool:
+        value = self.setting(key, "1" if default else "0").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
     def set_setting(self, key: str, value: str) -> None:
         now = utcnow()
         with self._lock, self.connection:
@@ -256,6 +284,132 @@ class LibraryRepository:
 
     def clear_default_video_quality(self) -> None:
         self.clear_setting("default_video_quality")
+
+    def sponsorblock_enabled(self) -> bool:
+        return self.bool_setting("sponsorblock_enabled", False)
+
+    def set_sponsorblock_enabled(self, enabled: bool) -> None:
+        self.set_setting("sponsorblock_enabled", "1" if enabled else "0")
+
+    def sponsorblock_categories(self) -> list[str]:
+        try:
+            raw_categories = json.loads(
+                self.setting(
+                    "sponsorblock_categories",
+                    json.dumps(DEFAULT_SPONSORBLOCK_CATEGORIES),
+                )
+            )
+        except json.JSONDecodeError:
+            return list(DEFAULT_SPONSORBLOCK_CATEGORIES)
+        if not isinstance(raw_categories, list):
+            return list(DEFAULT_SPONSORBLOCK_CATEGORIES)
+        categories = [
+            str(category)
+            for category in raw_categories
+            if category in SPONSORBLOCK_CATEGORIES
+        ]
+        return categories or list(DEFAULT_SPONSORBLOCK_CATEGORIES)
+
+    def set_sponsorblock_categories(self, categories: list[str]) -> None:
+        filtered = [
+            category for category in categories if category in SPONSORBLOCK_CATEGORIES
+        ]
+        self.set_setting(
+            "sponsorblock_categories",
+            json.dumps(filtered or DEFAULT_SPONSORBLOCK_CATEGORIES),
+        )
+
+    def sponsorblock_cache_days(self) -> int:
+        return max(1, self.int_setting("sponsorblock_cache_days", 30))
+
+    def sponsorblock_categories_key(self, categories: list[str]) -> str:
+        return json.dumps(sorted(categories), separators=(",", ":"))
+
+    def cached_sponsorblock_segments(
+        self, video_id: str, categories: list[str], cache_days: int | None = None
+    ) -> tuple[list[SponsorBlockSegment], bool]:
+        categories_key = self.sponsorblock_categories_key(categories)
+        cache_days = cache_days or self.sponsorblock_cache_days()
+        with self._lock:
+            fetch = self.connection.execute(
+                """
+                SELECT fetched_at
+                FROM sponsorblock_segment_fetches
+                WHERE video_id = ?
+                  AND categories_key = ?
+                """,
+                (video_id, categories_key),
+            ).fetchone()
+            rows = self.connection.execute(
+                """
+                SELECT video_id, category, action_type, start_seconds, end_seconds, uuid
+                FROM sponsorblock_segments
+                WHERE video_id = ?
+                  AND category IN ({placeholders})
+                ORDER BY start_seconds, end_seconds
+                """.format(placeholders=",".join("?" for _ in categories)),
+                (video_id, *categories),
+            ).fetchall()
+        fresh = False
+        if fetch is not None:
+            try:
+                fetched_at = datetime.fromisoformat(
+                    str(fetch["fetched_at"]).replace("Z", "+00:00")
+                )
+                if fetched_at.tzinfo is None:
+                    fetched_at = fetched_at.replace(tzinfo=UTC)
+                fresh = datetime.now(UTC) - fetched_at <= timedelta(days=cache_days)
+            except ValueError:
+                fresh = False
+        return ([self._sponsorblock_segment_from_row(row) for row in rows], fresh)
+
+    def store_sponsorblock_segments(
+        self,
+        video_id: str,
+        categories: list[str],
+        segments: list[SponsorBlockSegment],
+    ) -> None:
+        now = utcnow()
+        categories_key = self.sponsorblock_categories_key(categories)
+        with self._lock, self.connection:
+            self.connection.execute(
+                """
+                DELETE FROM sponsorblock_segments
+                WHERE video_id = ?
+                  AND category IN ({placeholders})
+                """.format(placeholders=",".join("?" for _ in categories)),
+                (video_id, *categories),
+            )
+            for segment in segments:
+                self.connection.execute(
+                    """
+                    INSERT INTO sponsorblock_segments (
+                        video_id, category, action_type, start_seconds,
+                        end_seconds, uuid, fetched_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        video_id,
+                        segment.category,
+                        segment.action_type,
+                        segment.start_seconds,
+                        segment.end_seconds,
+                        segment.uuid,
+                        now,
+                    ),
+                )
+            self.connection.execute(
+                """
+                INSERT INTO sponsorblock_segment_fetches (
+                    video_id, categories_key, fetched_at
+                )
+                VALUES (?, ?, ?)
+                ON CONFLICT(video_id, categories_key) DO UPDATE SET
+                    fetched_at = excluded.fetched_at
+                """,
+                (video_id, categories_key, now),
+            )
 
     def new_video_counts_by_channel(self) -> dict[str, int]:
         with self._lock:
@@ -626,4 +780,16 @@ class LibraryRepository:
             handle=row["handle"],
             thumbnail_url=row["thumbnail_url"],
             is_subscribed=bool(row["is_subscribed"]),
+        )
+
+    def _sponsorblock_segment_from_row(
+        self, row: sqlite3.Row
+    ) -> SponsorBlockSegment:
+        return SponsorBlockSegment(
+            video_id=row["video_id"],
+            category=row["category"],
+            action_type=row["action_type"],
+            start_seconds=float(row["start_seconds"]),
+            end_seconds=float(row["end_seconds"]),
+            uuid=row["uuid"],
         )
