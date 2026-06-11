@@ -16,6 +16,10 @@ from gtktube.update_check import UpdateInfo, check_for_update, upgrade_command
 
 
 class ChromeMixin:
+    def release_nav_selection_suppression(self) -> bool:
+        self.suppress_nav_selection = False
+        return False
+
     def on_nav_selected(self, _listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         if row is None:
             return
@@ -206,12 +210,11 @@ class ChromeMixin:
 
     def select_nav_page(self, page: str) -> None:
         row = self.page_rows.get(page)
+        if row is None:
+            return
         self.suppress_nav_selection = True
-        if row is not None:
-            self.nav.select_row(row)
-        else:
-            self.nav.unselect_all()
-        self.suppress_nav_selection = False
+        self.nav.select_row(row)
+        GLib.idle_add(self.release_nav_selection_suppression)
 
     def select_nav_channel(self, channel_id: str) -> None:
         row = self.channel_rows.get(channel_id)
@@ -220,7 +223,7 @@ class ChromeMixin:
             self.nav.select_row(row)
         else:
             self.nav.select_row(self.page_rows["feed"])
-        self.suppress_nav_selection = False
+        GLib.idle_add(self.release_nav_selection_suppression)
 
     def update_navigation_buttons(self) -> None:
         self.back_button.set_sensitive(bool(self.back_stack))

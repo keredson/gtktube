@@ -59,7 +59,7 @@ class PlayerMixin:
         self, playable: PlayableVideo, resume_position: int | None = None
     ) -> None:
         self.flush_watch_range()
-        self.stop_pipeline()
+        self.stop_pipeline(restore_stack=False)
         self.current_playable = playable
         self.update_header_subtitle(ViewState("player"))
         self.updating_quality = True
@@ -73,6 +73,7 @@ class PlayerMixin:
 
         player = self.create_player(playable)
         if player is None:
+            self.hide_miniplayer()
             return
         self.player = player
         try:
@@ -96,6 +97,58 @@ class PlayerMixin:
         self.show_full_player()
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
+        self.maybe_show_sponsorblock_prompt()
+
+    def maybe_show_sponsorblock_prompt(self) -> None:
+        repository = self.service.repository
+        if repository.sponsorblock_enabled() or repository.sponsorblock_prompt_shown():
+            return
+        repository.set_sponsorblock_prompt_shown()
+
+        dialog = Gtk.Dialog(
+            title="Enable SponsorBlock?",
+            transient_for=self,
+            modal=True,
+        )
+        dialog.set_default_size(480, -1)
+        content = dialog.get_content_area()
+        content.set_spacing(10)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+
+        title = Gtk.Label(label="Skip sponsor segments automatically?", xalign=0)
+        title.add_css_class("heading")
+        content.append(title)
+
+        message = Gtk.Label(
+            label=(
+                "GTKTube can use SponsorBlock, a community-maintained database, "
+                "to find sponsor segments in videos and skip them while you watch.\n\n"
+                "If you enable it, GTKTube will send the current YouTube video ID "
+                "to SponsorBlock when loading a video. It does not send your "
+                "account information or watch history. You can change this later "
+                "in Settings."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        content.append(message)
+
+        dialog.add_button("Not now", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Enable SponsorBlock", Gtk.ResponseType.ACCEPT)
+        dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+
+        def response(_dialog: Gtk.Dialog, response_id: int) -> None:
+            if response_id == Gtk.ResponseType.ACCEPT:
+                repository.set_sponsorblock_enabled(True)
+                self.reload_settings()
+                self.load_sponsorblock_segments()
+            dialog.destroy()
+
+        dialog.connect("response", response)
+        dialog.present()
 
     def update_player_metadata(self, video: Video) -> None:
         self.player_title.set_text(video.title)
@@ -401,10 +454,13 @@ class PlayerMixin:
             self.queue_pane.set_visible(self.video_queue.get_n_items() > 0)
             self.play_video(item.video)
 
-    def stop_pipeline(self) -> None:
+    def stop_pipeline(self, restore_stack: bool = True) -> None:
         if self.video_fullscreen:
             self.close_video_fullscreen()
-        self.hide_miniplayer()
+        if restore_stack:
+            self.hide_miniplayer()
+        else:
+            self.miniplayer.set_visible(False)
         if self.player is None:
             self.free_mpv_render_context()
             return
@@ -828,4 +884,3 @@ class PlayerMixin:
         self.maybe_log_sponsorblock_skip_ready(current)
         self.maybe_skip_sponsorblock_segment(current)
         return True
-

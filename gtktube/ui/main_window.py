@@ -1312,9 +1312,10 @@ class MainWindow(
             self.channel_nav_rows.append(row)
             self.nav.append(row)
 
-        self.suppress_nav_selection = False
         if self.current_view and self.current_view.channel_id is not None:
             self.select_nav_channel(self.current_view.channel_id)
+        else:
+            GLib.idle_add(self.release_nav_selection_suppression)
 
     def channel_tile(self, channel: Channel) -> Gtk.Widget:
         tile = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)

@@ -324,13 +324,16 @@ class DatabaseTests(unittest.TestCase):
 
     def test_sponsorblock_defaults_are_disabled_and_sponsor_only(self) -> None:
         self.assertFalse(self.repository.sponsorblock_enabled())
+        self.assertFalse(self.repository.sponsorblock_prompt_shown())
         self.assertEqual(self.repository.sponsorblock_categories(), ["sponsor"])
 
     def test_sponsorblock_settings_round_trip(self) -> None:
         self.repository.set_sponsorblock_enabled(True)
         self.repository.set_sponsorblock_categories(["sponsor", "intro", "bad"])
+        self.repository.set_sponsorblock_prompt_shown()
 
         self.assertTrue(self.repository.sponsorblock_enabled())
+        self.assertTrue(self.repository.sponsorblock_prompt_shown())
         self.assertEqual(
             self.repository.sponsorblock_categories(),
             ["sponsor", "intro"],

@@ -291,6 +291,12 @@ class LibraryRepository:
     def set_sponsorblock_enabled(self, enabled: bool) -> None:
         self.set_setting("sponsorblock_enabled", "1" if enabled else "0")
 
+    def sponsorblock_prompt_shown(self) -> bool:
+        return self.bool_setting("sponsorblock_prompt_shown", False)
+
+    def set_sponsorblock_prompt_shown(self) -> None:
+        self.set_setting("sponsorblock_prompt_shown", "1")
+
     def sponsorblock_categories(self) -> list[str]:
         try:
             raw_categories = json.loads(
