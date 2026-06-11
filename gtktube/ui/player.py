@@ -49,6 +49,10 @@ class PlayerMixin:
     def play_video(self, video: Video) -> None:
         self.navigate_to(ViewState("player"))
         quality = self.selected_quality()
+        self.log(
+            "playback requested "
+            f"video={video.id} quality={quality} url={video.url}"
+        )
         self.run_task(
             "Resolving video...",
             lambda: self.service.play_video(video, quality=quality),
@@ -58,6 +62,13 @@ class PlayerMixin:
     def load_playable(
         self, playable: PlayableVideo, resume_position: int | None = None
     ) -> None:
+        self.log(
+            "playback resolved "
+            f"video={playable.video.id} requested_quality={playable.quality} "
+            f"resolved_quality={playable.resolved_quality or 'unknown'} "
+            f"has_video_stream={bool(playable.stream_url)} "
+            f"has_audio_stream={bool(playable.audio_url)}"
+        )
         self.flush_watch_range()
         self.stop_pipeline(restore_stack=False)
         self.current_playable = playable
@@ -82,6 +93,11 @@ class PlayerMixin:
     def start_playback(
         self, playable: PlayableVideo, resume_position: int | None = None
     ) -> None:
+        self.log(
+            "playback starting "
+            f"video={playable.video.id} quality={playable.quality} "
+            f"resume={resume_position if resume_position is not None else 'auto'}"
+        )
         self.load_sponsorblock_segments()
 
         player = self.create_player(playable)
@@ -93,6 +109,7 @@ class PlayerMixin:
             self.player.play(playable.video.url)
             self.player.pause = False
             self.player.speed = self.playback_rate
+            self.log(f"mpv play command accepted video={playable.video.id}")
         except Exception as exc:
             self.set_status(f"Playback error: {exc}")
             self.log(f"mpv playback start failed: {exc}")
@@ -105,6 +122,7 @@ class PlayerMixin:
             else self.service.repository.resume_position(playable.video.id)
         )
         if resume > 0:
+            self.log(f"queueing resume seek video={playable.video.id} seconds={resume}")
             self.queue_seek_media(resume)
         self.range_start_seconds = self.current_position_seconds()
         self.show_full_player()
@@ -432,6 +450,10 @@ class PlayerMixin:
             self.log(f"mpv import failed: {exc}")
             return None
 
+        ytdl_format = os.environ.get(
+            "GTKTUBE_YTDLP_FORMAT",
+            QUALITY_FORMATS.get(playable.quality, QUALITY_FORMATS["720p"]),
+        )
         try:
             player = mpv.MPV(
                 input_default_bindings=True,
@@ -445,14 +467,19 @@ class PlayerMixin:
                 demuxer_max_bytes="300MiB",
                 demuxer_max_back_bytes="100MiB",
                 demuxer_seekable_cache="yes",
-                ytdl_format=os.environ.get(
-                    "GTKTUBE_YTDLP_FORMAT",
-                    QUALITY_FORMATS.get(playable.quality, QUALITY_FORMATS["720p"]),
-                ),
+                ytdl_format=ytdl_format,
+                log_handler=self.on_mpv_log,
+                loglevel="warn",
             )
             self.mpv_module = mpv
+            self.log(
+                "mpv player created "
+                f"version={getattr(player, 'mpv_version', 'unknown')} "
+                f"video={playable.video.id} ytdl_format={ytdl_format!r}"
+            )
             player.register_event_callback(self.on_mpv_event)
             if not self.create_mpv_render_context(player, mpv):
+                self.log(f"mpv renderer unavailable video={playable.video.id}")
                 player.terminate()
                 return None
             return player
@@ -461,8 +488,25 @@ class PlayerMixin:
             self.log(f"mpv player creation failed: {exc}")
             return None
 
+    def on_mpv_log(self, level: str, prefix: str, text: str) -> None:
+        message = text.strip()
+        if message:
+            self.log(f"mpv[{level}][{prefix}] {message}")
+
     def on_mpv_event(self, event: Any) -> None:
-        if event.event_id == self.mpv_module.MpvEventID.END_FILE:
+        if self.mpv_module is None:
+            return
+        event_id = event.event_id
+        if event_id == self.mpv_module.MpvEventID.START_FILE:
+            self.log("mpv event start-file")
+        elif event_id == self.mpv_module.MpvEventID.FILE_LOADED:
+            self.log("mpv event file-loaded")
+        elif event_id == self.mpv_module.MpvEventID.END_FILE:
+            self.log(
+                "mpv event end-file "
+                f"reason={getattr(event, 'reason', 'unknown')} "
+                f"error={getattr(event, 'error', None)}"
+            )
             GLib.idle_add(self.on_mpv_end_file)
 
     def on_mpv_end_file(self) -> None:

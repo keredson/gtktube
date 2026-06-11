@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import traceback
 from ctypes import CDLL, POINTER, c_char_p, c_int, c_void_p
 from ctypes.util import find_library
 from concurrent.futures import ThreadPoolExecutor
@@ -409,14 +410,35 @@ class MainWindow(
                 result = future.result()
             except ExtractorError as exc:
                 self.set_status(str(exc))
+                self.log(f"{label} failed: {exc}")
             except Exception as exc:
                 self.set_status(f"Error: {exc}")
+                self.log(
+                    f"{label} failed with unexpected exception:\n"
+                    f"{traceback.format_exc()}"
+                )
             else:
                 if done is not None:
-                    done(result)
-                self.set_status("Ready")
+                    try:
+                        done(result)
+                    except Exception as exc:
+                        self.set_status(f"Error: {exc}")
+                        self.log(
+                            f"{label} completion callback failed:\n"
+                            f"{traceback.format_exc()}"
+                        )
+                    else:
+                        self.set_status("Ready")
+                else:
+                    self.set_status("Ready")
             if finished is not None:
-                finished()
+                try:
+                    finished()
+                except Exception:
+                    self.log(
+                        f"{label} finished callback failed:\n"
+                        f"{traceback.format_exc()}"
+                    )
             return False
 
         future.add_done_callback(lambda _future: GLib.idle_add(finish))
