@@ -39,12 +39,18 @@ def is_newer_version(current_version: str, latest_version: str) -> bool:
 
 
 def upgrade_command(prefix: str | None = None, executable: str | None = None) -> str:
+    return " ".join(upgrade_command_args(prefix=prefix, executable=executable))
+
+
+def upgrade_command_args(
+    prefix: str | None = None, executable: str | None = None
+) -> list[str]:
     prefix_path = Path(prefix or sys.prefix)
     executable_path = Path(executable or sys.executable)
     paths = [prefix_path, executable_path]
     if any("pipx" in path.parts and "venvs" in path.parts for path in paths):
-        return "pipx upgrade gtktube"
-    return "python3 -m pip install --upgrade gtktube"
+        return ["pipx", "upgrade", "gtktube"]
+    return ["python3", "-m", "pip", "install", "--upgrade", "gtktube"]
 
 
 def check_for_update(current_version: str, force: bool = False) -> UpdateInfo | None:

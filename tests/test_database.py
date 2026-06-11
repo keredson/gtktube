@@ -170,6 +170,27 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(self.repository.default_video_quality(), "720p")
         self.assertFalse(self.repository.has_default_video_quality_override())
 
+    def test_refresh_worker_count_uses_code_default_until_overridden(self) -> None:
+        self.assertEqual(self.repository.refresh_worker_count(), 10)
+        self.assertFalse(self.repository.has_refresh_worker_count_override())
+
+        self.repository.set_refresh_worker_count(5)
+
+        self.assertEqual(self.repository.refresh_worker_count(), 5)
+        self.assertTrue(self.repository.has_refresh_worker_count_override())
+
+        self.repository.clear_refresh_worker_count()
+
+        self.assertEqual(self.repository.refresh_worker_count(), 10)
+        self.assertFalse(self.repository.has_refresh_worker_count_override())
+
+    def test_refresh_worker_count_is_clamped(self) -> None:
+        self.repository.set_refresh_worker_count(99)
+        self.assertEqual(self.repository.refresh_worker_count(), 20)
+
+        self.repository.set_refresh_worker_count(0)
+        self.assertEqual(self.repository.refresh_worker_count(), 1)
+
     def test_channel_needs_refresh_when_never_successfully_checked(self) -> None:
         self.assertTrue(self.repository.channel_needs_refresh("chan1"))
 

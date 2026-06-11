@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import random
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from gtktube.db.repositories import LibraryRepository
 from gtktube.extractors.youtube import ExtractorError, YoutubeExtractor
 from gtktube.models import Channel, PlayableVideo, SearchResults, Video
@@ -110,8 +114,31 @@ class LibraryService:
         self.repository.mark_channel_refresh(channel.id, success=True)
         return videos
 
-    def refresh_subscriptions(self, limit_per_channel: int = 30) -> None:
-        for channel in self.repository.subscribed_channels():
+    def refresh_subscriptions(
+        self,
+        limit_per_channel: int = 30,
+        max_workers: int | None = None,
+        progress: Callable[[Channel, bool], None] | None = None,
+    ) -> None:
+        channels = self.repository.subscribed_channels()
+        if not channels:
+            return
+        channels = [
+            channel
+            for channel in channels
+            if self.repository.channel_needs_refresh(channel.id)
+        ]
+        if not channels:
+            return
+        random.shuffle(channels)
+        worker_count = min(
+            len(channels),
+            max(1, max_workers or self.repository.refresh_worker_count()),
+        )
+
+        def refresh(channel: Channel) -> None:
+            if progress is not None:
+                progress(channel, True)
             try:
                 is_initial_import = not self.repository.channel_videos(channel.id, 1)
                 self.refresh_channel(
@@ -122,6 +149,20 @@ class LibraryService:
             except Exception:
                 self.repository.mark_channel_refresh(channel.id, success=False)
                 raise
+            finally:
+                if progress is not None:
+                    progress(channel, False)
+
+        errors: list[BaseException] = []
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(refresh, channel) for channel in channels]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except BaseException as exc:
+                    errors.append(exc)
+        if errors:
+            raise errors[0]
 
     def search(self, query: str, limit: int = 20) -> SearchResults:
         self.repository.add_search_history(query)

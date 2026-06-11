@@ -19,23 +19,28 @@ The feed has no algorithm. It just shows recent videos from the channels you sub
 - Choose playback quality and speed, including speeds up to 4x.
 - Use normal playback shortcuts for play/pause, seeking, fullscreen, and speed changes.
 - Keep watching while browsing with a mini-player.
+- Save videos to Watch Later.
 - Track watch history locally, including watched time ranges rather than only a last position.
 - Search and review local watch history.
+- Optionally use SponsorBlock to show and skip community-maintained segment ranges.
+- Limit how many videos a single channel can put in each feed day.
+- Refresh subscriptions in parallel with per-channel progress in the sidebar.
+- Check PyPI for updates and upgrade/restart from inside the app.
 - Store thumbnails on disk and app data in SQLite.
 
 ## Screenshots
 
 ### Channel Browsing
 
-![Channel grid with mini-player](https://raw.githubusercontent.com/keredson/gtktube/main/screenshots/Screenshot%20From%202026-06-10%2012-41-20.png)
+![Channel grid](https://raw.githubusercontent.com/keredson/gtktube/main/screenshots/channel.png)
 
 ### Player
 
-![Video player](https://raw.githubusercontent.com/keredson/gtktube/main/screenshots/Screenshot%20From%202026-06-10%2012-42-24.png)
+![Video player](https://raw.githubusercontent.com/keredson/gtktube/main/screenshots/player.png)
 
-### Queue And Mini-Player
+### Mini-Player
 
-![Channel view with queue and mini-player](https://raw.githubusercontent.com/keredson/gtktube/main/screenshots/Screenshot%20From%202026-06-10%2012-43-41.png)
+![Mini-player while browsing](https://raw.githubusercontent.com/keredson/gtktube/main/screenshots/miniplayer.png)
 
 ## Install
 
@@ -70,6 +75,13 @@ Useful startup flags:
 - `gtktube --install-desktop` installs the desktop launcher entry and exits.
 
 Development runs with `python -m gtktube` do not auto-install a desktop launcher or check PyPI for upgrades.
+
+## Updates
+
+When launched from an installed `gtktube` command, GTKTube checks PyPI for newer
+releases. If an update is available, the app can run the appropriate upgrade
+command and restart itself. Pipx installs use `pipx upgrade gtktube`; other
+installs use `python3 -m pip install --upgrade gtktube`.
 
 ## Data Storage
 

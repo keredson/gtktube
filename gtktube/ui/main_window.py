@@ -132,6 +132,7 @@ class MainWindow(
         self.feed_limit = 100
         self.channel_video_limits: dict[str, int] = {}
         self.loading_more_videos = False
+        self.refreshing_channel_ids: set[str] = set()
         self.grid_generations: dict[int, int] = {}
         self.cleaned_up = False
         self.gl = CDLL("libepoxy.so.0")
@@ -249,6 +250,8 @@ class MainWindow(
         self.page_rows: dict[str, Gtk.ListBoxRow] = {}
         self.channel_rows: dict[str, Gtk.ListBoxRow] = {}
         self.channel_nav_rows: list[Gtk.ListBoxRow] = []
+        self.channel_nav_status_boxes: dict[str, Gtk.Box] = {}
+        self.channel_nav_status_channels: dict[str, Channel] = {}
 
         self.content_pane = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL, spacing=0, hexpand=True, vexpand=True
@@ -988,12 +991,20 @@ class MainWindow(
             self.reload_feed()
 
         def finished() -> None:
+            self.refreshing_channel_ids.clear()
+            self.reload_channels()
             self.set_context_refresh_loading(False)
+
+        def progress(channel: Channel, active: bool) -> None:
+            GLib.idle_add(self.set_channel_refreshing, channel.id, active)
 
         self.set_context_refresh_loading(True)
         self.run_task(
             "Refreshing subscriptions...",
-            self.service.refresh_subscriptions,
+            lambda: self.service.refresh_subscriptions(
+                max_workers=self.service.repository.refresh_worker_count(),
+                progress=progress,
+            ),
             done,
             finished=finished,
         )
@@ -1266,6 +1277,8 @@ class MainWindow(
         self.channel_nav_rows = []
         self.nav_channels = {}
         self.channel_rows = {}
+        self.channel_nav_status_boxes = {}
+        self.channel_nav_status_channels = {}
         new_video_counts = self.service.repository.new_video_counts_by_channel()
 
         for channel in channels:
@@ -1290,13 +1303,15 @@ class MainWindow(
             label.add_css_class("dim-label")
             label.set_ellipsize(Pango.EllipsizeMode.END)
             box.append(label)
-            new_video_count = new_video_counts.get(channel.id, 0)
-            if new_video_count:
-                badge = Gtk.Label(label=str(new_video_count))
-                badge.add_css_class("caption")
-                badge.add_css_class("accent")
-                badge.set_tooltip_text(f"{new_video_count} new videos")
-                box.append(badge)
+            status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+            box.append(status_box)
+            self.channel_nav_status_boxes[channel.id] = status_box
+            self.channel_nav_status_channels[channel.id] = channel
+            self.update_channel_nav_status(
+                channel,
+                status_box,
+                new_video_counts.get(channel.id, 0),
+            )
             row.set_child(box)
             right_click = Gtk.GestureClick()
             right_click.set_button(3)
@@ -1316,6 +1331,50 @@ class MainWindow(
             self.select_nav_channel(self.current_view.channel_id)
         else:
             GLib.idle_add(self.release_nav_selection_suppression)
+
+    def set_channel_refreshing(self, channel_id: str, active: bool) -> bool:
+        if active:
+            self.refreshing_channel_ids.add(channel_id)
+        else:
+            self.refreshing_channel_ids.discard(channel_id)
+        status_box = self.channel_nav_status_boxes.get(channel_id)
+        channel = self.channel_nav_status_channels.get(channel_id)
+        if status_box is not None and channel is not None:
+            self.update_channel_nav_status(channel, status_box)
+        return False
+
+    def update_channel_nav_status(
+        self,
+        channel: Channel,
+        status_box: Gtk.Box,
+        new_video_count: int | None = None,
+    ) -> None:
+        self.clear_box(status_box)
+        if channel.id in self.refreshing_channel_ids:
+            spinner = Gtk.Spinner()
+            spinner.set_tooltip_text(f"Refreshing {channel.title}")
+            spinner.start()
+            status_box.append(spinner)
+            return
+        if new_video_count is None:
+            new_video_count = self.service.repository.new_video_counts_by_channel().get(
+                channel.id,
+                0,
+            )
+        if not new_video_count:
+            return
+        badge = Gtk.Label(label=str(new_video_count))
+        badge.add_css_class("caption")
+        badge.add_css_class("accent")
+        badge.set_tooltip_text(f"{new_video_count} new videos")
+        status_box.append(badge)
+
+    def clear_box(self, box: Gtk.Box) -> None:
+        child = box.get_first_child()
+        while child is not None:
+            next_child = child.get_next_sibling()
+            box.remove(child)
+            child = next_child
 
     def channel_tile(self, channel: Channel) -> Gtk.Widget:
         tile = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -1489,10 +1548,12 @@ class MainWindow(
                 self.apply_view_state(self.current_view)
 
         def finished() -> None:
+            self.set_channel_refreshing(channel.id, False)
             if self.current_view and self.current_view.channel_id == channel.id:
                 self.set_feed_loading(False)
             self.set_context_refresh_loading(False)
 
+        self.set_channel_refreshing(channel.id, True)
         if self.current_view and self.current_view.channel_id == channel.id:
             self.set_feed_loading(True, "Loading videos...")
             self.set_context_refresh_loading(True)

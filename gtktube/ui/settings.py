@@ -71,6 +71,58 @@ class SettingsMixin:
         )
         row.append(self.feed_daily_limit_spin)
 
+        refresh_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        refresh_row.set_valign(Gtk.Align.CENTER)
+        page.append(refresh_row)
+
+        refresh_labels = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True
+        )
+        refresh_row.append(refresh_labels)
+        refresh_label = Gtk.Label(label="Concurrent channel refreshes", xalign=0)
+        refresh_labels.append(refresh_label)
+        refresh_help = Gtk.Label(
+            label=(
+                "How many subscribed channels to pull at once when refreshing "
+                "the feed."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        refresh_help.add_css_class("dim-label")
+        refresh_labels.append(refresh_help)
+
+        refresh_adjustment = Gtk.Adjustment(
+            value=10,
+            lower=1,
+            upper=20,
+            step_increment=1,
+            page_increment=5,
+        )
+        self.refresh_workers_reset_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("edit-undo-symbolic")
+        )
+        self.refresh_workers_reset_button.set_tooltip_text(
+            "Reset to the app default"
+        )
+        self.refresh_workers_reset_button.connect(
+            "clicked",
+            self.on_refresh_workers_reset_clicked,
+        )
+        refresh_row.append(self.refresh_workers_reset_button)
+
+        self.refresh_workers_spin = Gtk.SpinButton(
+            adjustment=refresh_adjustment,
+            climb_rate=1,
+            digits=0,
+        )
+        self.refresh_workers_spin.set_numeric(True)
+        self.refresh_workers_spin.connect(
+            "value-changed",
+            self.on_refresh_workers_changed,
+        )
+        refresh_row.append(self.refresh_workers_spin)
+
         playback_title = Gtk.Label(label="Playback", xalign=0)
         playback_title.add_css_class("heading")
         page.append(playback_title)
@@ -165,6 +217,12 @@ class SettingsMixin:
         self.feed_daily_limit_reset_button.set_visible(
             self.service.repository.has_feed_daily_channel_limit_override()
         )
+        self.refresh_workers_spin.set_value(
+            self.service.repository.refresh_worker_count()
+        )
+        self.refresh_workers_reset_button.set_visible(
+            self.service.repository.has_refresh_worker_count_override()
+        )
         self.preferred_quality = self.service.repository.default_video_quality()
         self.default_quality_combo.set_active_id(self.preferred_quality)
         self.default_quality_reset_button.set_visible(
@@ -194,6 +252,16 @@ class SettingsMixin:
         self.feed_limit = 100
         if self.current_view and self.current_view.page == "feed":
             self.reload_feed()
+
+    def on_refresh_workers_changed(self, spin: Gtk.SpinButton) -> None:
+        if self.updating_settings:
+            return
+        self.service.repository.set_refresh_worker_count(spin.get_value_as_int())
+        self.refresh_workers_reset_button.set_visible(True)
+
+    def on_refresh_workers_reset_clicked(self, _button: Gtk.Button) -> None:
+        self.service.repository.clear_refresh_worker_count()
+        self.reload_settings()
 
     def on_default_quality_changed(self, combo: Gtk.ComboBoxText) -> None:
         if self.updating_settings:

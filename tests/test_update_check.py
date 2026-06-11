@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from gtktube.update_check import is_newer_version, upgrade_command
+from gtktube.update_check import (
+    is_newer_version,
+    upgrade_command,
+    upgrade_command_args,
+)
 
 
 class UpdateCheckTests(unittest.TestCase):
@@ -25,6 +29,13 @@ class UpdateCheckTests(unittest.TestCase):
             executable="/home/derek/.local/share/pipx/venvs/gtktube/bin/python",
         )
         self.assertEqual(command, "pipx upgrade gtktube")
+        self.assertEqual(
+            upgrade_command_args(
+                prefix="/home/derek/.local/share/pipx/venvs/gtktube",
+                executable="/home/derek/.local/share/pipx/venvs/gtktube/bin/python",
+            ),
+            ["pipx", "upgrade", "gtktube"],
+        )
 
     def test_uses_pip_upgrade_outside_pipx_environment(self) -> None:
         command = upgrade_command(
@@ -32,6 +43,13 @@ class UpdateCheckTests(unittest.TestCase):
             executable="/home/derek/projects/gtktube/.venv/bin/python",
         )
         self.assertEqual(command, "python3 -m pip install --upgrade gtktube")
+        self.assertEqual(
+            upgrade_command_args(
+                prefix="/home/derek/projects/gtktube/.venv",
+                executable="/home/derek/projects/gtktube/.venv/bin/python",
+            ),
+            ["python3", "-m", "pip", "install", "--upgrade", "gtktube"],
+        )
 
 
 if __name__ == "__main__":

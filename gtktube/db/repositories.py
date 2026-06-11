@@ -21,6 +21,7 @@ SPONSORBLOCK_CATEGORIES = [
     "filler",
 ]
 DEFAULT_SPONSORBLOCK_CATEGORIES = ["sponsor"]
+DEFAULT_REFRESH_WORKERS = 10
 SPONSORBLOCK_CATEGORY_LABELS = {
     "sponsor": "Sponsors",
     "selfpromo": "Self-promotion",
@@ -284,6 +285,21 @@ class LibraryRepository:
 
     def clear_default_video_quality(self) -> None:
         self.clear_setting("default_video_quality")
+
+    def refresh_worker_count(self) -> int:
+        return min(
+            20,
+            max(1, self.int_setting("refresh_worker_count", DEFAULT_REFRESH_WORKERS)),
+        )
+
+    def has_refresh_worker_count_override(self) -> bool:
+        return self.has_setting("refresh_worker_count")
+
+    def set_refresh_worker_count(self, worker_count: int) -> None:
+        self.set_setting("refresh_worker_count", str(min(20, max(1, worker_count))))
+
+    def clear_refresh_worker_count(self) -> None:
+        self.clear_setting("refresh_worker_count")
 
     def sponsorblock_enabled(self) -> bool:
         return self.bool_setting("sponsorblock_enabled", False)
