@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import unittest
+from datetime import UTC, datetime, timedelta
 
 from gtktube.db.connection import connect
 from gtktube.db.migrations import SCHEMA_VERSION, migrate
@@ -149,6 +150,57 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(self.repository.feed_daily_channel_limit(), 3)
         self.assertFalse(self.repository.has_feed_daily_channel_limit_override())
 
+    def test_default_video_quality_uses_code_default_until_overridden(self) -> None:
+        self.assertEqual(self.repository.default_video_quality(), "720p")
+        self.assertFalse(self.repository.has_default_video_quality_override())
+
+        self.repository.set_default_video_quality("1080p")
+
+        self.assertEqual(self.repository.default_video_quality(), "1080p")
+        self.assertTrue(self.repository.has_default_video_quality_override())
+
+        self.repository.clear_default_video_quality()
+
+        self.assertEqual(self.repository.default_video_quality(), "720p")
+        self.assertFalse(self.repository.has_default_video_quality_override())
+
+    def test_default_video_quality_ignores_unknown_quality(self) -> None:
+        self.repository.set_default_video_quality("potato")
+
+        self.assertEqual(self.repository.default_video_quality(), "720p")
+        self.assertFalse(self.repository.has_default_video_quality_override())
+
+    def test_channel_needs_refresh_when_never_successfully_checked(self) -> None:
+        self.assertTrue(self.repository.channel_needs_refresh("chan1"))
+
+    def test_channel_needs_refresh_after_max_age(self) -> None:
+        checked_at = (datetime.now(UTC) - timedelta(hours=7)).isoformat(
+            timespec="seconds"
+        )
+        self.connection.execute(
+            """
+            UPDATE channels
+            SET last_successful_check_at = ?
+            WHERE id = ?
+            """,
+            (checked_at, "chan1"),
+        )
+
+        self.assertTrue(self.repository.channel_needs_refresh("chan1"))
+
+    def test_channel_does_not_need_refresh_when_recently_checked(self) -> None:
+        checked_at = datetime.now(UTC).isoformat(timespec="seconds")
+        self.connection.execute(
+            """
+            UPDATE channels
+            SET last_successful_check_at = ?
+            WHERE id = ?
+            """,
+            (checked_at, "chan1"),
+        )
+
+        self.assertFalse(self.repository.channel_needs_refresh("chan1"))
+
     def test_feed_daily_channel_limit_prefers_unwatched_high_view_videos(self) -> None:
         self.connection.execute(
             "UPDATE videos SET published_at = ? WHERE id = ?",
@@ -230,6 +282,45 @@ class DatabaseTests(unittest.TestCase):
         feed = self.repository.subscription_feed(daily_channel_limit=1)
 
         self.assertEqual([video.id for video in feed], ["replacement"])
+
+    def test_new_video_counts_ignore_initial_subscription_baseline(self) -> None:
+        self.repository.upsert_video(
+            Video(
+                id="new_video",
+                channel_id="chan1",
+                title="New Video",
+                url="https://example.test/new_video",
+            )
+        )
+
+        self.repository.clear_new_video_indicator("chan1")
+
+        self.assertEqual(self.repository.new_video_counts_by_channel(), {})
+
+    def test_new_video_counts_clear_when_video_is_watched(self) -> None:
+        self.connection.execute(
+            """
+            UPDATE channels
+            SET new_videos_cleared_at = ?
+            WHERE id = ?
+            """,
+            ("2000-01-01T00:00:00+00:00", "chan1"),
+        )
+        self.repository.record_play_started("vid1")
+        self.repository.upsert_video(
+            Video(
+                id="new_video",
+                channel_id="chan1",
+                title="New Video",
+                url="https://example.test/new_video",
+            )
+        )
+
+        self.assertEqual(self.repository.new_video_counts_by_channel(), {"chan1": 1})
+
+        self.repository.record_play_started("new_video")
+
+        self.assertEqual(self.repository.new_video_counts_by_channel(), {})
 
 
 class ConnectionTests(unittest.TestCase):

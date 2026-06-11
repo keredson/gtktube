@@ -154,6 +154,11 @@ subscription.
 The feed never includes recommendations from unsubscribed channels unless the
 user explicitly searches for them.
 
+On first launch, if there are no subscribed channels, the app should open the
+Search view instead of the Feed view. With no subscriptions the feed is
+necessarily empty, and Search is the most direct path to finding a channel or
+video to start from.
+
 ### Browse One Channel
 
 1. User selects a subscribed channel.
@@ -205,6 +210,23 @@ user interacts with them.
 
 Watch-history search is separate from YouTube search. It only searches local
 viewing data.
+
+## UI Conventions
+
+Views that present list or grid content must include an empty-state placeholder.
+This applies to new features by default, especially feed, search, history,
+watch-later, channel, and subscription-management views.
+
+Empty states should distinguish between:
+
+- First-use or truly empty data, such as no subscribed channels or no watch
+  history.
+- Filtered or searched empty results, such as no channels matching a local
+  search or no YouTube results matching a query.
+
+The placeholder should be inside the same scrollable content area as the normal
+results so spacing, margins, and navigation remain consistent when content
+appears.
 
 ## Data Model
 

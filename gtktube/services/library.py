@@ -36,6 +36,18 @@ class LibraryService:
         self.repository.upsert_channel(channel, subscribed=True)
         return channel
 
+    def subscribe_with_initial_videos(
+        self, url: str, limit: int = 30
+    ) -> Channel:
+        channel = self.subscribe(url)
+        self.refresh_channel(
+            channel,
+            limit=limit,
+            refresh_metadata=False,
+            clear_new_indicator=True,
+        )
+        return self.repository.channel(channel.id) or channel
+
     def subscribe_to_video_channel(self, video: Video) -> Channel:
         if video.channel_id and video.channel_title:
             channel = Channel(
@@ -76,22 +88,37 @@ class LibraryService:
         )
         return self.repository.channel(channel.id) or channel
 
-    def refresh_channel(self, channel: Channel, limit: int = 30) -> list[Video]:
+    def refresh_channel(
+        self,
+        channel: Channel,
+        limit: int = 30,
+        start: int = 1,
+        refresh_metadata: bool = True,
+        clear_new_indicator: bool = False,
+    ) -> list[Video]:
         was_subscribed = self.repository.is_subscribed(channel.id)
-        try:
-            channel = self.extractor.resolve_channel(channel.url)
-            self.repository.upsert_channel(channel, subscribed=was_subscribed)
-        except ExtractorError:
-            pass
-        videos = self.extractor.channel_uploads(channel, limit=limit)
+        if refresh_metadata:
+            try:
+                channel = self.extractor.resolve_channel(channel.url)
+                self.repository.upsert_channel(channel, subscribed=was_subscribed)
+            except ExtractorError:
+                pass
+        videos = self.extractor.channel_uploads(channel, limit=limit, start=start)
         self.repository.upsert_videos(videos)
+        if clear_new_indicator:
+            self.repository.clear_new_video_indicator(channel.id)
         self.repository.mark_channel_refresh(channel.id, success=True)
         return videos
 
     def refresh_subscriptions(self, limit_per_channel: int = 30) -> None:
         for channel in self.repository.subscribed_channels():
             try:
-                self.refresh_channel(channel, limit=limit_per_channel)
+                is_initial_import = not self.repository.channel_videos(channel.id, 1)
+                self.refresh_channel(
+                    channel,
+                    limit=limit_per_channel,
+                    clear_new_indicator=is_initial_import,
+                )
             except Exception:
                 self.repository.mark_channel_refresh(channel.id, success=False)
                 raise

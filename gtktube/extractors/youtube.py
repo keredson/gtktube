@@ -72,6 +72,7 @@ class YoutubeExtractor:
         *,
         flat: bool = False,
         limit: int | None = None,
+        start: int | None = None,
         ignore_errors: bool = False,
     ) -> dict[str, Any]:
         options: dict[str, Any] = {
@@ -84,8 +85,10 @@ class YoutubeExtractor:
             options["ignoreerrors"] = True
         if flat:
             options["extract_flat"] = "in_playlist"
+        if start is not None:
+            options["playliststart"] = start
         if limit is not None:
-            options["playlistend"] = limit
+            options["playlistend"] = limit if start is None else start + limit - 1
         try:
             with self._youtube_dl()(options) as ydl:
                 return ydl.extract_info(target, download=False)
@@ -158,11 +161,19 @@ class YoutubeExtractor:
             thumbnail_url=thumbnail_url,
         )
 
-    def channel_uploads(self, channel: Channel, limit: int = 30) -> list[Video]:
+    def channel_uploads(
+        self, channel: Channel, limit: int = 30, start: int = 1
+    ) -> list[Video]:
         target = channel.url.rstrip("/")
         if not target.endswith("/videos"):
             target = f"{target}/videos"
-        info = self._extract(target, flat=False, limit=limit, ignore_errors=True)
+        info = self._extract(
+            target,
+            flat=True,
+            limit=limit,
+            start=start,
+            ignore_errors=True,
+        )
         entries = info.get("entries") or []
         videos: list[Video] = []
         for entry in entries:

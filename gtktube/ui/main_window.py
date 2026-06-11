@@ -203,7 +203,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.updating_speed = False
         self.updating_settings = False
         self.playback_rate = 1.0
-        self.preferred_quality = "720p"
+        self.preferred_quality = self.service.repository.default_video_quality()
         self.description_link_generation = 0
         self.current_channel_url: str | None = None
         self.video_fullscreen = False
@@ -372,7 +372,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.build_player_page()
 
         self.reload_all_local()
-        self.navigate_to(ViewState("feed"), record=False)
+        self.navigate_to(self.initial_view_state(), record=False)
         GLib.timeout_add_seconds(5, self.flush_watch_range)
         GLib.timeout_add_seconds(1, self.update_playback_controls)
         if self.enable_update_check:
@@ -721,6 +721,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 "A GPLv3 local privacy-first Python/GTK4 YouTube player."
             ),
             website="https://github.com/keredson/gtktube",
+            website_label="https://github.com/keredson/gtktube",
             license_type=Gtk.License.GPL_3_0,
         )
         try:
@@ -935,6 +936,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.reload_watch_later()
         self.reload_recent_searches()
 
+    def initial_view_state(self) -> ViewState:
+        if not self.service.repository.subscribed_channels():
+            return ViewState("search")
+        return ViewState("feed")
+
     def reload_watch_later(self) -> None:
         videos = self.service.watch_later_videos()
         self.clear_flowbox(self.watch_later_grid)
@@ -1071,8 +1077,14 @@ class MainWindow(Gtk.ApplicationWindow):
         page.append(search_box)
         self.channel_search_entry = Gtk.Entry(hexpand=True)
         self.channel_search_entry.set_placeholder_text("Search subscribed channels")
-        self.channel_search_entry.connect("changed", self.on_channel_search_changed)
+        self.channel_search_entry.connect("activate", self.on_channel_search_clicked)
         search_box.append(self.channel_search_entry)
+        channel_search_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("system-search-symbolic")
+        )
+        channel_search_button.set_tooltip_text("Search channels")
+        channel_search_button.connect("clicked", self.on_channel_search_clicked)
+        search_box.append(channel_search_button)
 
         channel_results = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         channel_results.set_margin_bottom(12)
@@ -1281,6 +1293,49 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         row.append(self.feed_daily_limit_spin)
 
+        playback_title = Gtk.Label(label="Playback", xalign=0)
+        playback_title.add_css_class("heading")
+        page.append(playback_title)
+
+        quality_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        quality_row.set_valign(Gtk.Align.CENTER)
+        page.append(quality_row)
+
+        quality_labels = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True
+        )
+        quality_row.append(quality_labels)
+        quality_label = Gtk.Label(label="Default video quality", xalign=0)
+        quality_labels.append(quality_label)
+        quality_help = Gtk.Label(
+            label="Used when opening videos before choosing a quality in the player.",
+            xalign=0,
+            wrap=True,
+        )
+        quality_help.add_css_class("dim-label")
+        quality_labels.append(quality_help)
+
+        self.default_quality_reset_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("edit-undo-symbolic")
+        )
+        self.default_quality_reset_button.set_tooltip_text(
+            "Reset to the app default"
+        )
+        self.default_quality_reset_button.connect(
+            "clicked",
+            self.on_default_quality_reset_clicked,
+        )
+        quality_row.append(self.default_quality_reset_button)
+
+        self.default_quality_combo = Gtk.ComboBoxText()
+        for quality in QUALITY_FORMATS:
+            self.default_quality_combo.append(quality, quality)
+        self.default_quality_combo.connect(
+            "changed",
+            self.on_default_quality_changed,
+        )
+        quality_row.append(self.default_quality_combo)
+
         self.stack.add_named(page, "settings")
 
     def reload_settings(self) -> None:
@@ -1290,6 +1345,11 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         self.feed_daily_limit_reset_button.set_visible(
             self.service.repository.has_feed_daily_channel_limit_override()
+        )
+        self.preferred_quality = self.service.repository.default_video_quality()
+        self.default_quality_combo.set_active_id(self.preferred_quality)
+        self.default_quality_reset_button.set_visible(
+            self.service.repository.has_default_video_quality_override()
         )
         self.updating_settings = False
 
@@ -1309,6 +1369,26 @@ class MainWindow(Gtk.ApplicationWindow):
         self.feed_limit = 100
         if self.current_view and self.current_view.page == "feed":
             self.reload_feed()
+
+    def on_default_quality_changed(self, combo: Gtk.ComboBoxText) -> None:
+        if self.updating_settings:
+            return
+        quality = combo.get_active_id()
+        if not quality:
+            return
+        self.preferred_quality = quality
+        self.service.repository.set_default_video_quality(quality)
+        self.default_quality_reset_button.set_visible(True)
+        self.updating_quality = True
+        self.quality_combo.set_active_id(quality)
+        self.updating_quality = False
+
+    def on_default_quality_reset_clicked(self, _button: Gtk.Button) -> None:
+        self.service.repository.clear_default_video_quality()
+        self.reload_settings()
+        self.updating_quality = True
+        self.quality_combo.set_active_id(self.preferred_quality)
+        self.updating_quality = False
 
     def build_history_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -1634,12 +1714,22 @@ class MainWindow(Gtk.ApplicationWindow):
     def load_more_channel_videos(self, channel: Channel) -> None:
         current_limit = self.channel_video_limits.get(channel.id, 30)
         next_limit = current_limit + 30
-        self.channel_video_limits[channel.id] = next_limit
         self.loading_more_videos = True
         self.set_feed_loading(True, "Loading more...")
 
+        cached_videos = self.service.repository.channel_videos(channel.id, next_limit)
+        if len(cached_videos) > current_limit:
+            self.channel_video_limits[channel.id] = next_limit
+            self.append_video_grid_batched(
+                self.feed_grid,
+                cached_videos[current_limit:next_limit],
+                self.finish_local_feed_load,
+            )
+            return
+
         def done(_videos: list[Video]) -> None:
             if self.current_view and self.current_view.channel_id == channel.id:
+                self.channel_video_limits[channel.id] = next_limit
                 videos = self.service.repository.channel_videos(channel.id, next_limit)
                 self.append_video_grid_batched(
                     self.feed_grid,
@@ -1656,7 +1746,12 @@ class MainWindow(Gtk.ApplicationWindow):
 
         def work() -> list[Video]:
             try:
-                return self.service.refresh_channel(channel, limit=next_limit)
+                return self.service.refresh_channel(
+                    channel,
+                    limit=30,
+                    start=current_limit + 1,
+                    refresh_metadata=False,
+                )
             except Exception:
                 GLib.idle_add(failed_done)
                 raise
@@ -1694,7 +1789,7 @@ class MainWindow(Gtk.ApplicationWindow):
     def on_history_search_changed(self, _widget: Gtk.Widget) -> None:
         self.reload_history()
 
-    def on_channel_search_changed(self, _widget: Gtk.Widget) -> None:
+    def on_channel_search_clicked(self, _widget: Gtk.Widget) -> None:
         self.reload_channels()
 
     def on_player_subscribe_toggled(self, _button: Gtk.CheckButton) -> None:
@@ -1741,13 +1836,19 @@ class MainWindow(Gtk.ApplicationWindow):
         if button.get_active():
             def done_subscribe(_channel: Channel) -> None:
                 self.reload_channels()
+                self.reload_feed()
                 if self.current_view is not None:
                     self.update_channel_header(self.current_view)
                     self.update_context_unsubscribe_button(self.current_view)
+                    if self.current_view.channel_id == channel.id:
+                        self.apply_view_state(self.current_view)
 
             self.run_task(
                 f"Subscribing to {channel.title}...",
-                lambda: self.service.subscribe(channel.url),
+                lambda: self.service.subscribe_with_initial_videos(
+                    channel.url,
+                    limit=self.channel_video_limits.get(channel.id, 30),
+                ),
                 done_subscribe,
             )
         else:
@@ -1843,6 +1944,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.channel_nav_rows = []
         self.nav_channels = {}
         self.channel_rows = {}
+        new_video_counts = self.service.repository.new_video_counts_by_channel()
 
         for channel in channels:
             row = Gtk.ListBoxRow()
@@ -1866,7 +1968,23 @@ class MainWindow(Gtk.ApplicationWindow):
             label.add_css_class("dim-label")
             label.set_ellipsize(Pango.EllipsizeMode.END)
             box.append(label)
+            new_video_count = new_video_counts.get(channel.id, 0)
+            if new_video_count:
+                badge = Gtk.Label(label=str(new_video_count))
+                badge.add_css_class("caption")
+                badge.add_css_class("accent")
+                badge.set_tooltip_text(f"{new_video_count} new videos")
+                box.append(badge)
             row.set_child(box)
+            right_click = Gtk.GestureClick()
+            right_click.set_button(3)
+            right_click.connect(
+                "pressed",
+                lambda _gesture, _n_press, x, y, channel=channel, row=row: (
+                    self.show_channel_context_menu(row, channel, x, y)
+                ),
+            )
+            row.add_controller(right_click)
             self.nav_channels[row] = channel
             self.channel_rows[channel.id] = row
             self.channel_nav_rows.append(row)
@@ -2039,7 +2157,9 @@ class MainWindow(Gtk.ApplicationWindow):
         self.feed_loading_label.set_text(label)
         self.feed_loading_box.set_visible(loading)
 
-    def refresh_one_channel(self, channel: Channel) -> None:
+    def refresh_one_channel(
+        self, channel: Channel, clear_initial_new_indicator: bool = False
+    ) -> None:
         def done(_videos: list[Video]) -> None:
             self.reload_channels()
             if self.current_view and self.current_view.channel_id == channel.id:
@@ -2059,6 +2179,7 @@ class MainWindow(Gtk.ApplicationWindow):
             lambda: self.service.refresh_channel(
                 channel,
                 limit=self.channel_video_limits.get(channel.id, 30),
+                clear_new_indicator=clear_initial_new_indicator,
             ),
             done,
             finished=finished,
@@ -2067,8 +2188,12 @@ class MainWindow(Gtk.ApplicationWindow):
     def show_channel_videos(self, channel: Channel) -> None:
         self.channel_video_limits.setdefault(channel.id, 30)
         self.navigate_to(ViewState("feed", channel.id, channel.title))
-        if not self.service.repository.channel_videos(channel.id, 1):
-            self.refresh_one_channel(channel)
+        has_local_videos = bool(self.service.repository.channel_videos(channel.id, 1))
+        if self.service.repository.channel_needs_refresh(channel.id):
+            self.refresh_one_channel(
+                channel,
+                clear_initial_new_indicator=not has_local_videos,
+            )
 
     def run_recent_search(self, query: str) -> None:
         self.search_entry.set_text(query)
@@ -2409,6 +2534,15 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         actions.append(copy_url)
 
+        clear_new = Gtk.Button(label="Clear new videos")
+        clear_new.add_css_class("flat")
+        clear_new.set_halign(Gtk.Align.FILL)
+        clear_new.connect(
+            "clicked",
+            lambda _button: self.activate_channel_menu(popover, channel, "clear_new"),
+        )
+        actions.append(clear_new)
+
         rectangle = Gdk.Rectangle()
         rectangle.x = int(x)
         rectangle.y = int(y)
@@ -2431,14 +2565,23 @@ class MainWindow(Gtk.ApplicationWindow):
         if action == "unsubscribe":
             self.unsubscribe_channel(channel)
             return
+        if action == "clear_new":
+            self.service.repository.clear_new_video_indicator(channel.id)
+            self.reload_channels()
+            return
         if action == "subscribe":
             def done(_channel: Channel) -> None:
                 self.reload_channels()
                 self.reload_feed()
+                if self.current_view and self.current_view.channel_id == channel.id:
+                    self.apply_view_state(self.current_view)
 
             self.run_task(
                 f"Subscribing to {channel.title}...",
-                lambda: self.service.subscribe(channel.url),
+                lambda: self.service.subscribe_with_initial_videos(
+                    channel.url,
+                    limit=self.channel_video_limits.get(channel.id, 30),
+                ),
                 done,
             )
 
@@ -2570,6 +2713,7 @@ class MainWindow(Gtk.ApplicationWindow):
         elif action == "played":
             self.service.repository.mark_played(video.id, video.duration_seconds)
             self.reload_history()
+            self.reload_channels()
             self.reload_visible_video_grid()
         elif action == "not_interested":
             self.service.repository.hide_video(video.id)
@@ -2754,6 +2898,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.update_player_metadata(playable.video)
         self.update_subscribe_check(playable.video)
         self.update_player_share_button()
+        self.reload_channels()
 
         player = self.create_player(playable)
         if player is None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def migrate(connection: sqlite3.Connection) -> None:
@@ -29,6 +29,9 @@ def migrate(connection: sqlite3.Connection) -> None:
         current = 5
     if current < 6:
         _migrate_6(connection)
+        current = 6
+    if current < 7:
+        _migrate_7(connection)
 
 
 def _migrate_1(connection: sqlite3.Connection) -> None:
@@ -365,5 +368,25 @@ def _migrate_6(connection: sqlite3.Connection) -> None:
             ON hidden_videos(hidden_at DESC);
 
             PRAGMA user_version = 6;
+            """
+        )
+
+
+def _migrate_7(connection: sqlite3.Connection) -> None:
+    with connection:
+        connection.executescript(
+            """
+            ALTER TABLE channels
+            ADD COLUMN new_videos_cleared_at TEXT;
+
+            UPDATE channels
+            SET new_videos_cleared_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE is_subscribed = 1
+              AND new_videos_cleared_at IS NULL;
+
+            CREATE INDEX idx_videos_channel_discovered
+            ON videos(channel_id, discovered_at DESC);
+
+            PRAGMA user_version = 7;
             """
         )

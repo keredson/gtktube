@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Iterable
 
+from gtktube.extractors.youtube import QUALITY_FORMATS
 from gtktube.models import Channel, Video
 
 
@@ -24,9 +25,9 @@ class LibraryRepository:
                 """
                 INSERT INTO channels (
                     id, title, url, handle, thumbnail_url, is_subscribed,
-                    subscribed_at, created_at, updated_at
+                    subscribed_at, new_videos_cleared_at, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     url = excluded.url,
@@ -41,6 +42,11 @@ class LibraryRepository:
                         THEN COALESCE(channels.subscribed_at, excluded.subscribed_at)
                         ELSE channels.subscribed_at
                     END,
+                    new_videos_cleared_at = CASE
+                        WHEN excluded.is_subscribed = 1
+                        THEN COALESCE(channels.new_videos_cleared_at, excluded.new_videos_cleared_at)
+                        ELSE channels.new_videos_cleared_at
+                    END,
                     unsubscribed_at = CASE
                         WHEN excluded.is_subscribed = 1 THEN NULL
                         ELSE channels.unsubscribed_at
@@ -54,6 +60,7 @@ class LibraryRepository:
                     channel.handle,
                     channel.thumbnail_url,
                     1 if subscribed else 0,
+                    now if subscribed else None,
                     now if subscribed else None,
                     now,
                     now,
@@ -118,6 +125,28 @@ class LibraryRepository:
                 """,
                 (now, 1 if success else 0, now, now, channel_id),
             )
+
+    def channel_needs_refresh(self, channel_id: str, max_age_hours: int = 6) -> bool:
+        with self._lock:
+            row = self.connection.execute(
+                """
+                SELECT last_successful_check_at
+                FROM channels
+                WHERE id = ?
+                """,
+                (channel_id,),
+            ).fetchone()
+        if row is None or row["last_successful_check_at"] is None:
+            return True
+        try:
+            checked_at = datetime.fromisoformat(
+                str(row["last_successful_check_at"]).replace("Z", "+00:00")
+            )
+        except ValueError:
+            return True
+        if checked_at.tzinfo is None:
+            checked_at = checked_at.replace(tzinfo=UTC)
+        return datetime.now(UTC) - checked_at > timedelta(hours=max_age_hours)
 
     def upsert_video(self, video: Video) -> None:
         now = utcnow()
@@ -213,6 +242,51 @@ class LibraryRepository:
 
     def clear_feed_daily_channel_limit(self) -> None:
         self.clear_setting("feed_daily_channel_limit")
+
+    def default_video_quality(self) -> str:
+        quality = self.setting("default_video_quality", "720p")
+        return quality if quality in QUALITY_FORMATS else "720p"
+
+    def has_default_video_quality_override(self) -> bool:
+        return self.has_setting("default_video_quality")
+
+    def set_default_video_quality(self, quality: str) -> None:
+        if quality in QUALITY_FORMATS:
+            self.set_setting("default_video_quality", quality)
+
+    def clear_default_video_quality(self) -> None:
+        self.clear_setting("default_video_quality")
+
+    def new_video_counts_by_channel(self) -> dict[str, int]:
+        with self._lock:
+            rows = self.connection.execute(
+                """
+                SELECT
+                    c.id AS channel_id,
+                    COUNT(v.id) AS count
+                FROM channels c
+                JOIN videos v ON v.channel_id = c.id
+                LEFT JOIN watch_history wh ON wh.video_id = v.id
+                WHERE c.is_subscribed = 1
+                  AND c.new_videos_cleared_at IS NOT NULL
+                  AND v.discovered_at > c.new_videos_cleared_at
+                  AND wh.video_id IS NULL
+                GROUP BY c.id
+                """
+            ).fetchall()
+        return {row["channel_id"]: int(row["count"]) for row in rows}
+
+    def clear_new_video_indicator(self, channel_id: str) -> None:
+        now = utcnow()
+        with self._lock, self.connection:
+            self.connection.execute(
+                """
+                UPDATE channels
+                SET new_videos_cleared_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, channel_id),
+            )
 
     def subscription_feed(
         self,
