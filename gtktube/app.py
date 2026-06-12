@@ -53,12 +53,14 @@ class StartupOptions:
         show_deps_installer: bool = False,
         database_path: Path | None = None,
         install_desktop: bool = False,
+        verbose: bool = False,
     ):
         self.gtk_argv = gtk_argv
         self.show_upgrade = show_upgrade
         self.show_deps_installer = show_deps_installer
         self.database_path = database_path
         self.install_desktop = install_desktop
+        self.verbose = verbose
 
 
 def parse_startup_options(argv: list[str]) -> StartupOptions:
@@ -67,6 +69,7 @@ def parse_startup_options(argv: list[str]) -> StartupOptions:
     show_deps_installer = False
     database_path: Path | None = None
     install_desktop = False
+    verbose = False
     index = 1
     while index < len(argv):
         arg = argv[index]
@@ -76,6 +79,8 @@ def parse_startup_options(argv: list[str]) -> StartupOptions:
             show_deps_installer = True
         elif arg == "--install-desktop":
             install_desktop = True
+        elif arg in {"-v", "--verbose"}:
+            verbose = True
         elif arg == "--db":
             index += 1
             if index >= len(argv):
@@ -92,6 +97,7 @@ def parse_startup_options(argv: list[str]) -> StartupOptions:
         show_deps_installer=show_deps_installer,
         database_path=database_path,
         install_desktop=install_desktop,
+        verbose=verbose,
     )
 
 
@@ -239,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         paths,
         force_update_dialog=options.show_upgrade,
         enable_update_check=installed_command or options.show_upgrade,
+        verbose=options.verbose,
     )
     previous_sigint = signal.getsignal(signal.SIGINT)
 

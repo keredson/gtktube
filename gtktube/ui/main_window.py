@@ -44,6 +44,7 @@ class GTKTubeApplication(Gtk.Application):
         paths: AppPaths,
         force_update_dialog: bool = False,
         enable_update_check: bool = True,
+        verbose: bool = False,
     ):
         super().__init__(
             application_id="local.gtktube.GTKTube",
@@ -53,6 +54,7 @@ class GTKTubeApplication(Gtk.Application):
         self.paths = paths
         self.force_update_dialog = force_update_dialog
         self.enable_update_check = enable_update_check
+        self.verbose = verbose
 
     def do_activate(self) -> None:
         window = MainWindow(
@@ -61,6 +63,7 @@ class GTKTubeApplication(Gtk.Application):
             self.paths,
             force_update_dialog=self.force_update_dialog,
             enable_update_check=self.enable_update_check,
+            verbose=self.verbose,
         )
         window.present()
 
@@ -88,12 +91,14 @@ class MainWindow(
         paths: AppPaths,
         force_update_dialog: bool = False,
         enable_update_check: bool = True,
+        verbose: bool = False,
     ):
         super().__init__(application=app, title="GTKTube")
         self.service = service
         self.paths = paths
         self.force_update_dialog = force_update_dialog
         self.enable_update_check = enable_update_check
+        self.verbose = verbose
         self.thumbnail_dir = paths.cache_dir / "thumbnails"
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
         self.executor = ThreadPoolExecutor(max_workers=3)
@@ -394,6 +399,10 @@ class MainWindow(
     def log(self, message: str) -> None:
         timestamp = datetime.now().isoformat(timespec="seconds")
         print(f"{timestamp} gtktube: {message}", file=sys.stderr)
+
+    def verbose_log(self, message: str) -> None:
+        if self.verbose:
+            self.log(message)
 
     def run_task(
         self,

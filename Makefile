@@ -6,6 +6,7 @@ REMOTE ?= origin
 BRANCH ?= main
 
 .PHONY: check deploy-new-point-release deploy-new-minor-release deploy-new-major-release _deploy-release
+.SILENT: _deploy-release
 
 check:
 	$(PYTHON) -m py_compile $$(git ls-files '*.py')
@@ -22,24 +23,37 @@ deploy-new-major-release: BUMP=major
 deploy-new-major-release: _deploy-release
 
 _deploy-release:
+	bump_script="$$(mktemp)"; \
+	update_script="$$(mktemp)"; \
+	trap 'rm -f "$$bump_script" "$$update_script"' EXIT; \
+	printf '%s\n' \
+		'import sys' \
+		'kind, version = sys.argv[1:3]' \
+		'parts = version.split(".")' \
+		'assert len(parts) == 3 and all(part.isdigit() for part in parts), f"expected X.Y.Z, got {version!r}"' \
+		'major, minor, patch = map(int, parts)' \
+		'next_version = {' \
+		'    "point": (major, minor, patch + 1),' \
+		'    "minor": (major, minor + 1, 0),' \
+		'    "major": (major + 1, 0, 0),' \
+		'}[kind]' \
+		'print(".".join(map(str, next_version)))' \
+		> "$$bump_script"; \
+	printf '%s\n' \
+		'import pathlib' \
+		'import re' \
+		'import sys' \
+		'path = pathlib.Path("pyproject.toml")' \
+		'version = sys.argv[1]' \
+		'text = path.read_text(encoding="utf-8")' \
+		'text, count = re.subn(r"^version = \"[^\"]+\"", f"version = \"{version}\"", text, count=1, flags=re.MULTILINE)' \
+		'assert count == 1, "could not update pyproject.toml version"' \
+		'path.write_text(text, encoding="utf-8")' \
+		> "$$update_script"; \
 	current="$$( \
 		$(PYTHON) -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])' \
 	)"; \
-	next="$$( \
-		$(PYTHON) -c ' \
-import sys; \
-kind, version = sys.argv[1:3]; \
-parts = version.split("."); \
-assert len(parts) == 3 and all(part.isdigit() for part in parts), f"expected X.Y.Z, got {version!r}"; \
-major, minor, patch = map(int, parts); \
-next_version = { \
-    "point": (major, minor, patch + 1), \
-    "minor": (major, minor + 1, 0), \
-    "major": (major + 1, 0, 0), \
-}[kind]; \
-print(".".join(map(str, next_version)))' \
-		"$(BUMP)" "$$current" \
-	)"; \
+	next="$$( $(PYTHON) "$$bump_script" "$(BUMP)" "$$current" )"; \
 	tag="v$$next"; \
 	echo "Current version: $$current"; \
 	echo "Next version:    $$next"; \
@@ -74,15 +88,8 @@ print(".".join(map(str, next_version)))' \
 	git diff --check; \
 	backup="$$(mktemp)"; \
 	cp pyproject.toml "$$backup"; \
-	trap 'mv "$$backup" pyproject.toml 2>/dev/null || true' EXIT; \
-	$(PYTHON) -c ' \
-import pathlib, re, sys; \
-path = pathlib.Path("pyproject.toml"); \
-version = sys.argv[1]; \
-text = path.read_text(encoding="utf-8"); \
-text, count = re.subn(r"^version = \"[^\"]+\"", f"version = \"{version}\"", text, count=1, flags=re.MULTILINE); \
-assert count == 1, "could not update pyproject.toml version"; \
-path.write_text(text, encoding="utf-8")' "$$next"; \
+	trap 'mv "$$backup" pyproject.toml 2>/dev/null || true; rm -f "$$bump_script" "$$update_script"' EXIT; \
+	$(PYTHON) "$$update_script" "$$next"; \
 	git diff --check; \
 	echo; \
 	git diff -- pyproject.toml; \

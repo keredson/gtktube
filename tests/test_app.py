@@ -23,6 +23,7 @@ class StartupOptionTests(unittest.TestCase):
                 "--show-upgrade",
                 "--show-deps-installer",
                 "--install-desktop",
+                "-v",
                 "--gapplication-service",
             ]
         )
@@ -30,7 +31,14 @@ class StartupOptionTests(unittest.TestCase):
         self.assertTrue(options.show_upgrade)
         self.assertTrue(options.show_deps_installer)
         self.assertTrue(options.install_desktop)
+        self.assertTrue(options.verbose)
         self.assertEqual(options.gtk_argv, ["gtktube", "--gapplication-service"])
+
+    def test_parses_verbose_long_option(self) -> None:
+        options = parse_startup_options(["gtktube", "--verbose"])
+
+        self.assertTrue(options.verbose)
+        self.assertEqual(options.gtk_argv, ["gtktube"])
 
     def test_parses_database_path_option(self) -> None:
         options = parse_startup_options(["gtktube", "--db", "~/tmp/gtktube.sqlite3"])

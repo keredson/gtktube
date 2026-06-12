@@ -73,6 +73,7 @@ Useful startup flags:
 - `gtktube --show-deps-installer` opens the system dependency installer even when GTKTube thinks dependencies are present.
 - `gtktube --db /path/to/gtktube.sqlite3` uses a specific SQLite database file.
 - `gtktube --install-desktop` installs the desktop launcher entry and exits.
+- `gtktube -v` or `gtktube --verbose` prints detailed playback diagnostics to stderr.
 
 Development runs with `python -m gtktube` do not auto-install a desktop launcher or check PyPI for upgrades.
 
