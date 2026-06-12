@@ -105,14 +105,28 @@ class PlayerMixin:
             self.hide_miniplayer()
             return
         self.player = player
+        stream_context = (
+            f"video={playable.video.id} quality={playable.quality} "
+            f"separate_audio={bool(playable.audio_url)}"
+        )
         try:
-            self.player.play(playable.video.url)
+            self.verbose_log(f"mpv starting playback {stream_context}")
+            load_options = {}
+            if playable.audio_url:
+                load_options["audio_file"] = playable.audio_url
+            self.player.loadfile(playable.stream_url, **load_options)
+        except Exception as exc:
+            self.set_status(f"Playback error: {exc}")
+            self.log(f"mpv loadfile failed {stream_context}: {exc}")
+            self.stop_pipeline()
+            return
+        try:
             self.player.pause = False
             self.player.speed = self.playback_rate
             self.verbose_log(f"mpv play command accepted video={playable.video.id}")
         except Exception as exc:
             self.set_status(f"Playback error: {exc}")
-            self.log(f"mpv playback start failed: {exc}")
+            self.log(f"mpv playback option failed {stream_context}: {exc}")
             self.stop_pipeline()
             return
 
@@ -123,9 +137,10 @@ class PlayerMixin:
         )
         if resume > 0:
             self.verbose_log(
-                f"queueing resume seek video={playable.video.id} seconds={resume}"
+                "queueing resume seek after file-loaded "
+                f"video={playable.video.id} seconds={resume}"
             )
-            self.queue_seek_media(resume)
+            self.queue_seek_after_file_loaded(resume)
         self.range_start_seconds = self.current_position_seconds()
         self.show_full_player()
         self.select_nav_page("player")
@@ -462,7 +477,7 @@ class PlayerMixin:
                 input_vo_keyboard=True,
                 osc=True,
                 vo="libmpv",
-                ytdl=True,
+                ytdl=False,
                 cache="yes",
                 cache_secs=60,
                 demuxer_readahead_secs=20,
@@ -470,8 +485,8 @@ class PlayerMixin:
                 demuxer_max_back_bytes="100MiB",
                 demuxer_seekable_cache="yes",
                 ytdl_format=ytdl_format,
-                log_handler=self.on_mpv_log if self.verbose else None,
-                loglevel="warn" if self.verbose else None,
+                log_handler=self.on_mpv_log,
+                loglevel="warn" if self.verbose else "error",
             )
             self.mpv_module = mpv
             self.verbose_log(
@@ -492,8 +507,13 @@ class PlayerMixin:
 
     def on_mpv_log(self, level: str, prefix: str, text: str) -> None:
         message = text.strip()
-        if message:
-            self.verbose_log(f"mpv[{level}][{prefix}] {message}")
+        if not message:
+            return
+        log_message = f"mpv[{level}][{prefix}] {message}"
+        if level in {"error", "fatal"}:
+            self.log(log_message)
+        else:
+            self.verbose_log(log_message)
 
     def on_mpv_event(self, event: Any) -> None:
         if self.mpv_module is None:
@@ -503,6 +523,8 @@ class PlayerMixin:
             self.verbose_log("mpv event start-file")
         elif event_id == self.mpv_module.MpvEventID.FILE_LOADED:
             self.verbose_log("mpv event file-loaded")
+            if self.pending_seek_seconds is not None:
+                self.start_pending_seek_timer(delay_ms=100)
         elif event_id == self.mpv_module.MpvEventID.END_FILE:
             message = (
                 "mpv event end-file "
@@ -803,14 +825,23 @@ class PlayerMixin:
         self.load_playable(playable, resume_position=position)
 
     def queue_seek_media(self, seconds: int) -> None:
-        start_timer = self.pending_seek_seconds is None
         self.pending_seek_seconds = seconds
         self.pending_seek_attempts = 0
-        if start_timer:
-            GLib.timeout_add(250, self.flush_pending_seek)
+        self.start_pending_seek_timer()
+
+    def queue_seek_after_file_loaded(self, seconds: int) -> None:
+        self.pending_seek_seconds = seconds
+        self.pending_seek_attempts = 0
+
+    def start_pending_seek_timer(self, delay_ms: int = 250) -> None:
+        if self.pending_seek_timer_active:
+            return
+        self.pending_seek_timer_active = True
+        GLib.timeout_add(delay_ms, self.flush_pending_seek)
 
     def flush_pending_seek(self) -> bool:
         if self.pending_seek_seconds is None:
+            self.pending_seek_timer_active = False
             return False
         self.pending_seek_attempts += 1
         if self.seek_media_impl(
@@ -819,10 +850,12 @@ class PlayerMixin:
             user_initiated=False,
         ):
             self.pending_seek_seconds = None
+            self.pending_seek_timer_active = False
             return False
         if self.pending_seek_attempts >= 40:
             self.log(f"mpv deferred seek abandoned: {self.pending_seek_seconds}")
             self.pending_seek_seconds = None
+            self.pending_seek_timer_active = False
             return False
         return True
 

@@ -117,6 +117,7 @@ class MainWindow(
         self.range_start_seconds: int | None = None
         self.pending_seek_seconds: int | None = None
         self.pending_seek_attempts = 0
+        self.pending_seek_timer_active = False
         self.updating_scrubber = False
         self.updating_subscribe_check = False
         self.updating_channel_subscribe_check = False
