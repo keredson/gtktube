@@ -10,6 +10,11 @@ from packaging.version import InvalidVersion, Version
 
 
 PYPI_JSON_URL = "https://pypi.org/pypi/gtktube/json"
+ONE_SHOT_RESTART_FLAGS = {
+    "--show-upgrade",
+    "--show-deps-installer",
+    "--install-desktop",
+}
 
 
 @dataclass(frozen=True)
@@ -45,12 +50,42 @@ def upgrade_command(prefix: str | None = None, executable: str | None = None) ->
 def upgrade_command_args(
     prefix: str | None = None, executable: str | None = None
 ) -> list[str]:
+    if installed_with_pipx(prefix=prefix, executable=executable):
+        return ["pipx", "upgrade", "gtktube"]
+    return ["python3", "-m", "pip", "install", "--upgrade", "gtktube"]
+
+
+def installed_with_pipx(
+    prefix: str | None = None, executable: str | None = None
+) -> bool:
     prefix_path = Path(prefix or sys.prefix)
     executable_path = Path(executable or sys.executable)
     paths = [prefix_path, executable_path]
-    if any("pipx" in path.parts and "venvs" in path.parts for path in paths):
-        return ["pipx", "upgrade", "gtktube"]
-    return ["python3", "-m", "pip", "install", "--upgrade", "gtktube"]
+    return any("pipx" in path.parts and "venvs" in path.parts for path in paths)
+
+
+def restart_command_args(
+    argv: list[str] | None = None,
+    prefix: str | None = None,
+    executable: str | None = None,
+) -> list[str]:
+    argv = list(argv or sys.argv)
+    restart_args = restart_startup_args(argv[1:])
+    if installed_with_pipx(prefix=prefix, executable=executable):
+        command = argv[0] if argv and Path(argv[0]).name == "gtktube" else "gtktube"
+        return [command, *restart_args]
+    if argv:
+        return [executable or sys.executable, argv[0], *restart_args]
+    return [executable or sys.executable]
+
+
+def restart_startup_args(args: list[str]) -> list[str]:
+    restart_args: list[str] = []
+    for arg in args:
+        if arg in ONE_SHOT_RESTART_FLAGS:
+            continue
+        restart_args.append(arg)
+    return restart_args
 
 
 def check_for_update(current_version: str, force: bool = False) -> UpdateInfo | None:

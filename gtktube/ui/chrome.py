@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import urllib.parse
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from gtktube.ui.types import ViewState
 from gtktube.update_check import (
     UpdateInfo,
     check_for_update,
+    restart_command_args,
     upgrade_command,
     upgrade_command_args,
 )
@@ -445,8 +445,12 @@ class ChromeMixin:
         future.add_done_callback(lambda _future: GLib.idle_add(finish))
 
     def restart_application(self) -> None:
+        command = restart_command_args()
         self.cleanup()
-        os.execv(sys.executable, [sys.executable, *sys.argv])
+        executable = command[0]
+        if os.path.sep in executable:
+            os.execv(executable, command)
+        os.execvp(executable, command)
 
     def on_channel_header_share_clicked(self, _button: Gtk.Button) -> None:
         if not self.current_channel_url:

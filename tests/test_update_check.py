@@ -4,6 +4,7 @@ import unittest
 
 from gtktube.update_check import (
     is_newer_version,
+    restart_command_args,
     upgrade_command,
     upgrade_command_args,
 )
@@ -49,6 +50,35 @@ class UpdateCheckTests(unittest.TestCase):
                 executable="/home/derek/projects/gtktube/.venv/bin/python",
             ),
             ["python3", "-m", "pip", "install", "--upgrade", "gtktube"],
+        )
+
+    def test_restarts_pipx_install_through_gtktube_command(self) -> None:
+        self.assertEqual(
+            restart_command_args(
+                argv=[
+                    "/home/derek/.local/bin/gtktube",
+                    "--show-upgrade",
+                    "--db",
+                    "/tmp/test.sqlite3",
+                ],
+                prefix="/home/derek/.local/share/pipx/venvs/gtktube",
+                executable="/home/derek/.local/share/pipx/venvs/gtktube/bin/python",
+            ),
+            ["/home/derek/.local/bin/gtktube", "--db", "/tmp/test.sqlite3"],
+        )
+
+    def test_restarts_non_pipx_install_with_python_executable(self) -> None:
+        self.assertEqual(
+            restart_command_args(
+                argv=["/app/gtktube/__main__.py", "--show-upgrade", "--verbose"],
+                prefix="/home/derek/projects/gtktube/.venv",
+                executable="/home/derek/projects/gtktube/.venv/bin/python",
+            ),
+            [
+                "/home/derek/projects/gtktube/.venv/bin/python",
+                "/app/gtktube/__main__.py",
+                "--verbose",
+            ],
         )
 
 

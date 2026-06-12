@@ -20,7 +20,8 @@ class VideoGridMixin:
         grid.set_max_children_per_line(16)
         grid.set_column_spacing(12)
         grid.set_row_spacing(12)
-        grid.set_halign(Gtk.Align.CENTER)
+        grid.set_hexpand(True)
+        grid.set_halign(Gtk.Align.FILL)
         grid.set_valign(Gtk.Align.START)
         grid.set_margin_top(4)
         grid.set_margin_bottom(4)
@@ -189,4 +190,3 @@ class VideoGridMixin:
             w = ((end - start) / video.duration_seconds) * width
             cr.rectangle(x, 0, max(w, 1), height)
             cr.fill()
-
