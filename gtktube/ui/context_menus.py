@@ -244,6 +244,80 @@ class ContextMenuMixin:
             self.service.remove_watch_later(video)
             self.reload_watch_later()
 
+    def show_history_context_menu(
+        self, parent: Gtk.Widget, video: Video, x: float, y: float
+    ) -> None:
+        popover = Gtk.Popover()
+        popover.set_parent(parent)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        actions.set_margin_top(6)
+        actions.set_margin_bottom(6)
+        actions.set_margin_start(6)
+        actions.set_margin_end(6)
+        popover.set_child(actions)
+
+        open_video = Gtk.Button(label="Open video")
+        open_video.add_css_class("flat")
+        open_video.set_halign(Gtk.Align.FILL)
+        open_video.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "video")
+        )
+        actions.append(open_video)
+
+        if video.channel_id and video.channel_title:
+            open_channel = Gtk.Button(label="Open channel")
+            open_channel.add_css_class("flat")
+            open_channel.set_halign(Gtk.Align.FILL)
+            open_channel.connect(
+                "clicked",
+                lambda _button: self.activate_video_menu(popover, video, "channel"),
+            )
+            actions.append(open_channel)
+
+        add_queue = Gtk.Button(label="Add to queue")
+        add_queue.add_css_class("flat")
+        add_queue.set_halign(Gtk.Align.FILL)
+        add_queue.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "queue")
+        )
+        actions.append(add_queue)
+
+        add_watch_later = Gtk.Button(label="Add to watch later")
+        add_watch_later.add_css_class("flat")
+        add_watch_later.set_halign(Gtk.Align.FILL)
+        add_watch_later.connect(
+            "clicked",
+            lambda _button: self.activate_video_menu(popover, video, "watch_later"),
+        )
+        actions.append(add_watch_later)
+
+        remove_history = Gtk.Button(label="Remove from history")
+        remove_history.add_css_class("flat")
+        remove_history.set_halign(Gtk.Align.FILL)
+        remove_history.connect(
+            "clicked",
+            lambda _button: self.activate_history_menu(popover, video, "remove"),
+        )
+        actions.append(remove_history)
+
+        rectangle = Gdk.Rectangle()
+        rectangle.x = int(x)
+        rectangle.y = int(y)
+        rectangle.width = 1
+        rectangle.height = 1
+        popover.set_pointing_to(rectangle)
+        popover.popup()
+
+    def activate_history_menu(
+        self, popover: Gtk.Popover, video: Video, action: str
+    ) -> None:
+        popover.popdown()
+        popover.unparent()
+        if action == "remove":
+            self.service.repository.remove_watch_history(video.id)
+            self.reload_history()
+
     def show_queue_context_menu(
         self, row: Gtk.ListBoxRow, video: Video, x: float, y: float
     ) -> None:

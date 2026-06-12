@@ -1555,7 +1555,14 @@ class MainWindow(
     def reload_history(self) -> None:
         query = self.history_entry.get_text().strip() if hasattr(self, "history_entry") else ""
         videos = self.service.repository.watch_history(query)
-        self.populate_video_grid(self.history_grid, videos)
+        self.clear_flowbox(self.history_grid)
+        self.grid_generations[id(self.history_grid)] = (
+            self.grid_generations.get(id(self.history_grid), 0) + 1
+        )
+        for video in videos:
+            self.history_grid.append(
+                self.video_tile(video, on_context_menu=self.show_history_context_menu)
+            )
         has_videos = bool(videos)
         self.history_grid.set_visible(has_videos)
         self.history_empty_box.set_visible(not has_videos)

@@ -120,6 +120,25 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual([video.id for video in by_video], ["vid1"])
         self.assertEqual([video.id for video in by_channel], ["vid1"])
 
+    def test_remove_watch_history_clears_ranges_and_summary(self) -> None:
+        self.repository.add_watch_range("vid1", 0, 10)
+        self.repository.mark_played("vid1", 100)
+
+        self.repository.remove_watch_history("vid1")
+
+        self.assertEqual(self.repository.watch_history(), [])
+        self.assertIsNone(
+            self.connection.execute(
+                "SELECT 1 FROM watch_history WHERE video_id = 'vid1'"
+            ).fetchone()
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM watch_ranges WHERE video_id = 'vid1'"
+            ).fetchone()[0],
+            0,
+        )
+
     def test_video_metadata_round_trips_through_feed(self) -> None:
         feed = self.repository.subscription_feed()
 

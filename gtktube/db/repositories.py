@@ -696,6 +696,15 @@ class LibraryRepository:
                 (video_id, now, now, now, now),
             )
 
+    def remove_watch_history(self, video_id: str) -> None:
+        with self._lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM watch_ranges WHERE video_id = ?", (video_id,)
+            )
+            self.connection.execute(
+                "DELETE FROM watch_history WHERE video_id = ?", (video_id,)
+            )
+
     def hide_video(self, video_id: str, reason: str = "not_interested") -> None:
         now = utcnow()
         with self._lock, self.connection:
