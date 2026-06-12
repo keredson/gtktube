@@ -394,12 +394,14 @@ class PlayerMixin:
     def on_video_unrealize(self, _area: Gtk.GLArea) -> None:
         self.free_mpv_render_context()
 
-    def queue_video_render(self) -> bool:
+    def queue_video_render(self, generation: int) -> bool:
+        if generation != self.mpv_render_generation:
+            return False
         self.video.queue_render()
         return False
 
-    def on_mpv_render_update(self) -> None:
-        GLib.idle_add(self.queue_video_render)
+    def on_mpv_render_update(self, generation: int) -> None:
+        GLib.idle_add(self.queue_video_render, generation)
 
     def get_gl_proc_address(self, _ctx: object, name: bytes) -> int:
         if self.libgl is not None:
@@ -429,6 +431,8 @@ class PlayerMixin:
             self.get_gl_proc_address
         )
         try:
+            self.mpv_render_generation += 1
+            generation = self.mpv_render_generation
             self.mpv_render_context = mpv.MpvRenderContext(
                 player,
                 "opengl",
@@ -437,7 +441,9 @@ class PlayerMixin:
                 },
                 advanced_control=True,
             )
-            self.mpv_render_context.update_cb = self.on_mpv_render_update
+            self.mpv_render_context.update_cb = lambda: self.on_mpv_render_update(
+                generation
+            )
         except Exception as exc:
             self.set_status(f"Could not create mpv renderer: {exc}")
             self.log(f"mpv render context creation failed: {exc}")
@@ -448,8 +454,11 @@ class PlayerMixin:
     def free_mpv_render_context(self) -> None:
         if self.mpv_render_context is None:
             return
+        self.mpv_render_generation += 1
         try:
             self.mpv_render_context.update_cb = None
+            if self.video.get_realized():
+                self.video.make_current()
             self.mpv_render_context.free()
         except Exception as exc:
             self.log(f"mpv render context free failed: {exc}")
@@ -559,6 +568,10 @@ class PlayerMixin:
             self.free_mpv_render_context()
             return
         self.free_mpv_render_context()
+        try:
+            self.player.unregister_event_callback(self.on_mpv_event)
+        except (ValueError, AttributeError) as exc:
+            self.verbose_log(f"mpv event callback unregister skipped: {exc}")
         try:
             self.player.terminate()
         except Exception as exc:

@@ -219,9 +219,17 @@ class ChromeMixin:
     def select_nav_page(self, page: str) -> None:
         row = self.page_rows.get(page)
         if row is None:
+            self.clear_nav_selection()
             return
         self.suppress_nav_selection = True
         self.nav.select_row(row)
+        GLib.idle_add(self.release_nav_selection_suppression)
+
+    def clear_nav_selection(self) -> None:
+        self.suppress_nav_selection = True
+        selected = self.nav.get_selected_row()
+        if selected is not None:
+            self.nav.unselect_row(selected)
         GLib.idle_add(self.release_nav_selection_suppression)
 
     def select_nav_channel(self, channel_id: str) -> None:

@@ -113,6 +113,7 @@ class MainWindow(
         self.player: Any | None = None
         self.mpv_module: Any | None = None
         self.mpv_render_context: Any | None = None
+        self.mpv_render_generation = 0
         self.mpv_get_proc_address: Any | None = None
         self.range_start_seconds: int | None = None
         self.pending_seek_seconds: int | None = None
