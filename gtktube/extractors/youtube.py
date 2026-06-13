@@ -236,6 +236,22 @@ class YoutubeExtractor:
                 continue
         return channels
 
+    def recommended_videos(self, cookies_browser: str) -> list[Video]:
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "extract_flat": True,
+            "cookiesfrombrowser": (cookies_browser,),
+        }
+        try:
+            with self._youtube_dl()(options) as ydl:
+                info = ydl.extract_info(":ytrec", download=False)
+                entries = info.get("entries") or []
+                return [self._video_from_info(entry) for entry in entries if entry]
+        except Exception as exc:
+            raise ExtractorError(str(exc)) from exc
+
     def _channel_from_info(self, info: dict[str, Any]) -> Channel:
         channel_id = (
             info.get("channel_id")

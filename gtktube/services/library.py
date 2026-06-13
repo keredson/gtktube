@@ -200,3 +200,7 @@ class LibraryService:
                 subscribed=self.repository.is_subscribed(video.channel_id),
             )
         self.repository.upsert_video(video)
+
+    def recommended_videos(self) -> list[Video]:
+        browser = self.repository.yt_dlp_cookies_browser()
+        return self.extractor.recommended_videos(browser)

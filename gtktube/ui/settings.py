@@ -11,7 +11,8 @@ from gtktube.extractors.youtube import QUALITY_FORMATS
 
 class SettingsMixin:
     def build_settings_page(self) -> None:
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        self.settings_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        page = self.settings_page
         page.set_margin_top(18)
         page.set_margin_bottom(18)
         page.set_margin_start(18)
@@ -202,6 +203,29 @@ class SettingsMixin:
         )
         self.privacy_row.append(self.cookies_mode_combo)
 
+        self.recommended_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.recommended_row.set_valign(Gtk.Align.CENTER)
+        page.append(self.recommended_row)
+
+        recommended_labels = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True
+        )
+        self.recommended_row.append(recommended_labels)
+        recommended_label = Gtk.Label(label="Show YouTube recommended videos", xalign=0)
+        recommended_labels.append(recommended_label)
+        recommended_help = Gtk.Label(
+            label="Requires browser cookies to fetch your personalized home feed.",
+            xalign=0,
+            wrap=True,
+        )
+        recommended_help.add_css_class("dim-label")
+        recommended_labels.append(recommended_help)
+
+        self.recommended_switch = Gtk.Switch()
+        self.recommended_switch.set_valign(Gtk.Align.CENTER)
+        self.recommended_switch.connect("state-set", self.on_recommended_setting_changed)
+        self.recommended_row.append(self.recommended_switch)
+
         self.browser_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.browser_row.set_valign(Gtk.Align.CENTER)
         page.append(self.browser_row)
@@ -280,6 +304,7 @@ class SettingsMixin:
         self.stack.add_named(scrolled, "settings")
 
     def reload_settings(self) -> None:
+        self.update_settings_layout()
         self.updating_settings = True
         self.feed_daily_limit_spin.set_value(
             self.service.repository.feed_daily_channel_limit()
@@ -304,6 +329,8 @@ class SettingsMixin:
         self.cookies_browser_combo.set_active_id(
             self.service.repository.yt_dlp_cookies_browser()
         )
+        show_recommended = self.service.repository.show_recommended_videos()
+        self.recommended_switch.set_active(show_recommended is True)
         self._update_privacy_help()
         self.sponsorblock_enabled_check.set_active(
             self.service.repository.sponsorblock_enabled()
@@ -362,26 +389,26 @@ class SettingsMixin:
 
     def _update_privacy_help(self) -> None:
         mode = self.cookies_mode_combo.get_active_id()
+        show_recommended = self.recommended_switch.get_active()
+        needs_cookies = (mode != "never") or show_recommended
+        self.browser_row.set_sensitive(needs_cookies)
+
         if mode == "never":
             self.privacy_help.set_label(
                 "Never using cookies gives you the most privacy, but your watch history will not appear on youtube.com and you'll be blocked from watching restricted videos."
             )
-            self.browser_row.set_sensitive(False)
         elif mode == "restricted_prompt":
             self.privacy_help.set_label(
                 "You will be prompted to use cookies when an age-restricted or members-only video is encountered. Your watch history won't appear on youtube.com for most videos."
             )
-            self.browser_row.set_sensitive(True)
         elif mode == "restricted_auto":
             self.privacy_help.set_label(
                 "Cookies will be used automatically to play age-restricted and members-only videos. Your watch history won't appear on youtube.com for most videos."
             )
-            self.browser_row.set_sensitive(True)
         elif mode == "always":
             self.privacy_help.set_label(
                 "Always using cookies means your watch history will appear on youtube.com and you can watch restricted videos, but YouTube can track your viewing habits."
             )
-            self.browser_row.set_sensitive(True)
 
     def on_cookies_mode_changed(self, combo: Gtk.ComboBoxText) -> None:
         if self.updating_settings:
@@ -399,6 +426,23 @@ class SettingsMixin:
             self.service.repository.set_yt_dlp_cookies_browser(browser)
             self._update_privacy_help()
 
+    def on_recommended_setting_changed(self, switch: Gtk.Switch, state: bool) -> bool:
+        if self.updating_settings:
+            return False
+        self.service.repository.set_show_recommended_videos(state)
+        self._update_privacy_help()
+        if hasattr(self, "update_recommended_nav_visibility"):
+            getattr(self, "update_recommended_nav_visibility")()
+        
+        # If we just enabled it from null state, transition UI
+        if state is True and hasattr(self, "reload_recommended"):
+            # Move widgets back to settings page immediately
+            self.update_settings_layout()
+            # If we are on the recommended page, it will auto-reload
+            if hasattr(self, "current_view") and getattr(self, "current_view").page == "recommended":
+                getattr(self, "reload_recommended")()
+        return False
+
     def on_sponsorblock_setting_changed(self, _widget: Gtk.Widget) -> None:
         if self.updating_settings:
             return
@@ -413,3 +457,9 @@ class SettingsMixin:
             ]
         )
         self.load_sponsorblock_segments()
+
+    def update_settings_layout(self) -> None:
+        if self.recommended_row.get_parent() != self.settings_page:
+            self.settings_page.insert_child_after(self.recommended_row, self.privacy_row)
+        if self.browser_row.get_parent() != self.settings_page:
+            self.settings_page.insert_child_after(self.browser_row, self.recommended_row)

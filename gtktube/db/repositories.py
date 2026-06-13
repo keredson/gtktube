@@ -329,6 +329,17 @@ class LibraryRepository:
     def set_yt_dlp_cookies_browser(self, browser: str) -> None:
         self.set_setting("yt_dlp_cookies_browser", browser)
 
+    def show_recommended_videos(self) -> bool | None:
+        if not self.has_setting("show_recommended_videos"):
+            return None
+        return self.bool_setting("show_recommended_videos", False)
+
+    def set_show_recommended_videos(self, show: bool | None) -> None:
+        if show is None:
+            self.clear_setting("show_recommended_videos")
+        else:
+            self.set_setting("show_recommended_videos", "1" if show else "0")
+
     def sponsorblock_categories(self) -> list[str]:
         try:
             raw_categories = json.loads(

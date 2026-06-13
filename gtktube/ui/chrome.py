@@ -34,7 +34,12 @@ class ChromeMixin:
         if self.suppress_nav_selection:
             return
         if row in self.nav_pages:
-            self.navigate_to(ViewState(self.nav_pages[row]))
+            page = self.nav_pages[row]
+            if page == "recommended" and hasattr(self, "update_settings_layout"):
+                # Ensure the settings widgets are in the onboarding box
+                # before we navigate and trigger reload_recommended
+                getattr(self, "update_recommended_onboarding_layout")()
+            self.navigate_to(ViewState(page))
             return
         channel = self.nav_channels.get(row)
         if channel is not None:
@@ -178,6 +183,9 @@ class ChromeMixin:
         self.channel_header.set_visible(False)
         if view.page == "feed":
             self.reload_feed()
+        elif view.page == "recommended":
+            if hasattr(self, "reload_recommended"):
+                getattr(self, "reload_recommended")()
         elif view.page == "channels":
             self.reload_channels()
         elif view.page == "history":
@@ -199,6 +207,8 @@ class ChromeMixin:
             self.header_subtitle.set_text(view.channel_title or "Channel")
         elif view.page == "feed":
             self.header_subtitle.set_text("Feed")
+        elif view.page == "recommended":
+            self.header_subtitle.set_text("Recommended")
         elif view.page == "search":
             self.header_subtitle.set_text("Search")
         elif view.page == "history":

@@ -275,6 +275,7 @@ class MainWindow(
         self.pages: dict[str, Gtk.Widget] = {}
         for key, title in [
             ("feed", "Feed"),
+            ("recommended", "Recommended"),
             ("search", "Search"),
             ("history", "History"),
             ("watch_later", "Watch Later"),
@@ -290,6 +291,7 @@ class MainWindow(
         nav.connect("row-selected", self.on_nav_selected)
 
         self.build_feed_page()
+        self.build_recommended_page()
         self.build_watch_later_page()
         self.build_settings_page()
         self.build_channels_page()
@@ -298,6 +300,7 @@ class MainWindow(
         self.build_player_page()
 
         self.reload_all_local()
+        self.update_recommended_nav_visibility()
         self.navigate_to(self.initial_view_state(), record=False)
         GLib.timeout_add_seconds(5, self.flush_watch_range)
         GLib.timeout_add_seconds(1, self.update_playback_controls)
@@ -319,6 +322,7 @@ class MainWindow(
     def nav_page_widget(self, key: str, title: str) -> Gtk.Widget:
         icons = {
             "feed": "view-list-symbolic",
+            "recommended": "view-paged-symbolic",
             "search": "system-search-symbolic",
             "history": "document-open-recent-symbolic",
             "watch_later": "clock-symbolic",
@@ -332,6 +336,22 @@ class MainWindow(
         label = Gtk.Label(label=title, xalign=0, hexpand=True)
         box.append(label)
         return box
+
+    def update_recommended_nav_visibility(self) -> None:
+        show = self.service.repository.show_recommended_videos()
+        row = self.page_rows.get("recommended")
+        if row:
+            row.set_visible(show is not False)
+
+    def update_recommended_onboarding_layout(self) -> None:
+        show = self.service.repository.show_recommended_videos()
+        if show is None:
+            if self.recommended_row.get_parent() != self.recommended_onboarding_settings:
+                self.recommended_onboarding_settings.append(self.recommended_row)
+            if self.browser_row.get_parent() != self.recommended_onboarding_settings:
+                self.recommended_onboarding_settings.append(self.browser_row)
+        else:
+            self.update_settings_layout()
 
     def load_library(self, name: str) -> Any | None:
         path = find_library(name)
@@ -541,6 +561,81 @@ class MainWindow(
         page.append(scroller)
 
         self.stack.add_named(page, "feed")
+
+    def build_recommended_page(self) -> None:
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+
+        self.recommended_stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
+        page.append(self.recommended_stack)
+
+        # Onboarding UI
+        self.recommended_onboarding_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        self.recommended_onboarding_box.set_valign(Gtk.Align.CENTER)
+        self.recommended_onboarding_box.set_halign(Gtk.Align.CENTER)
+        self.recommended_onboarding_box.set_margin_top(80)
+        self.recommended_onboarding_box.set_margin_start(40)
+        self.recommended_onboarding_box.set_margin_end(40)
+
+        title = Gtk.Label(label="Recommended Videos")
+        title.add_css_class("title-2")
+        self.recommended_onboarding_box.append(title)
+
+        desc = Gtk.Label(
+            label=(
+                "Personalized recommendations from YouTube based on your viewing history. "
+                "This requires extracting cookies from your browser to identify your account."
+            ),
+            wrap=True,
+            max_width_chars=60,
+            halign=Gtk.Align.CENTER,
+            xalign=0.5
+        )
+        desc.add_css_class("dim-label")
+        self.recommended_onboarding_box.append(desc)
+
+        # Settings container
+        self.recommended_onboarding_settings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.recommended_onboarding_settings.set_margin_top(12)
+        self.recommended_onboarding_box.append(self.recommended_onboarding_settings)
+
+        dismiss_btn = Gtk.Button(label="Hide Recommended")
+        dismiss_btn.connect("clicked", self.on_recommended_dismiss_clicked)
+        dismiss_btn.set_halign(Gtk.Align.CENTER)
+        self.recommended_onboarding_box.append(dismiss_btn)
+
+        self.recommended_stack.add_named(self.recommended_onboarding_box, "onboarding")
+
+        # Grid UI
+        grid_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        grid_content.set_margin_top(12)
+        grid_content.set_margin_start(12)
+        grid_content.set_margin_end(12)
+        self.recommended_grid = self.create_video_grid()
+        grid_content.append(self.recommended_grid)
+
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_child(grid_content)
+
+        self.recommended_stack.add_named(scroller, "grid")
+
+        self.stack.add_named(page, "recommended")
+
+        # Grid UI
+        grid_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        grid_content.set_margin_top(12)
+        grid_content.set_margin_start(12)
+        grid_content.set_margin_end(12)
+        self.recommended_grid = self.create_video_grid()
+        grid_content.append(self.recommended_grid)
+
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_child(grid_content)
+
+        self.recommended_stack.add_named(scroller, "grid")
+
+        self.stack.add_named(page, "recommended")
 
     def build_channel_header(self) -> Gtk.Widget:
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
@@ -1151,6 +1246,31 @@ class MainWindow(
             done,
             finished=finished,
         )
+
+    def on_recommended_dismiss_clicked(self, _btn: Gtk.Button) -> None:
+        self.service.repository.set_show_recommended_videos(False)
+        self.update_recommended_nav_visibility()
+        self.reload_settings()
+        self.navigate_to(ViewState("feed"))
+
+    def reload_recommended(self) -> None:
+        show = self.service.repository.show_recommended_videos()
+        if show is True:
+            self.recommended_stack.set_visible_child_name("grid")
+            self.clear_flowbox(self.recommended_grid)
+
+            def done(videos: list[Video]) -> None:
+                self.populate_video_grid(self.recommended_grid, videos)
+
+            self.run_task(
+                "Fetching recommendations...",
+                self.service.recommended_videos,
+                done,
+            )
+        else:
+            self.recommended_stack.set_visible_child_name("onboarding")
+            # Widgets are already managed by update_recommended_onboarding_layout
+            # which is called during nav selection.
 
     def on_history_search_changed(self, _widget: Gtk.Widget) -> None:
         self.reload_history()
