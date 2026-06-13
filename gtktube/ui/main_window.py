@@ -1340,7 +1340,7 @@ class MainWindow(
 
             self.run_task(
                 "Fetching recommendations...",
-                self.service.recommended_videos,
+                lambda: self.service.recommended_videos(limit=100),
                 done,
                 error=failed,
             )

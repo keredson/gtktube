@@ -201,6 +201,6 @@ class LibraryService:
             )
         self.repository.upsert_video(video)
 
-    def recommended_videos(self) -> list[Video]:
+    def recommended_videos(self, limit: int = 100) -> list[Video]:
         browser = self.repository.yt_dlp_cookies_browser()
-        return self.extractor.recommended_videos(browser)
+        return self.extractor.recommended_videos(browser, limit=limit)

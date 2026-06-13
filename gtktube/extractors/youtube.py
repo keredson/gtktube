@@ -236,13 +236,14 @@ class YoutubeExtractor:
                 continue
         return channels
 
-    def recommended_videos(self, cookies_browser: str) -> list[Video]:
+    def recommended_videos(self, cookies_browser: str, limit: int = 100) -> list[Video]:
         options = {
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
             "extract_flat": "in_playlist",
             "cookiesfrombrowser": (cookies_browser,),
+            "playlistend": limit,
         }
         try:
             with self._youtube_dl()(options) as ydl:
