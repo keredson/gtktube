@@ -142,6 +142,7 @@ class MainWindow(
         self.loading_more_videos = False
         self.refreshing_channel_ids: set[str] = set()
         self.grid_generations: dict[int, int] = {}
+        self.loaded_local_sections: set[str] = set()
         self.cleaned_up = False
         self.gl = CDLL("libepoxy.so.0")
         self.libgl = self.load_library("GL")
@@ -299,9 +300,10 @@ class MainWindow(
         self.build_history_page()
         self.build_player_page()
 
-        self.reload_all_local()
         self.update_recommended_nav_visibility()
-        self.navigate_to(self.initial_view_state(), record=False)
+        initial_view = self.initial_view_state()
+        self.navigate_to(initial_view, record=False)
+        self.schedule_deferred_local_reloads(initial_view)
         GLib.timeout_add_seconds(5, self.flush_watch_range)
         GLib.timeout_add_seconds(1, self.update_playback_controls)
         if self.enable_update_check:
@@ -487,12 +489,38 @@ class MainWindow(
         self.reload_watch_later()
         self.reload_recent_searches()
 
+    def schedule_deferred_local_reloads(self, initial_view: ViewState) -> None:
+        sections = ["feed", "channels", "history", "watch_later", "recent_searches"]
+        if initial_view.page in sections:
+            sections.remove(initial_view.page)
+
+        def load_next() -> bool:
+            while sections:
+                section = sections.pop(0)
+                if section in self.loaded_local_sections:
+                    continue
+                if section == "feed":
+                    self.reload_feed()
+                elif section == "channels":
+                    self.reload_channels()
+                elif section == "history":
+                    self.reload_history()
+                elif section == "watch_later":
+                    self.reload_watch_later()
+                elif section == "recent_searches":
+                    self.reload_recent_searches()
+                return bool(sections)
+            return False
+
+        GLib.timeout_add(250, load_next)
+
     def initial_view_state(self) -> ViewState:
         if not self.service.repository.subscribed_channels():
             return ViewState("search")
         return ViewState("feed")
 
     def reload_watch_later(self) -> None:
+        self.loaded_local_sections.add("watch_later")
         videos = self.service.watch_later_videos()
         self.clear_flowbox(self.watch_later_grid)
         self.grid_generations[id(self.watch_later_grid)] = (
@@ -1401,6 +1429,7 @@ class MainWindow(
             )
 
     def reload_feed(self) -> None:
+        self.loaded_local_sections.add("feed")
         videos = self.service.repository.subscription_feed(self.feed_limit)
         self.populate_video_grid(self.feed_grid, videos)
         has_videos = bool(videos)
@@ -1430,6 +1459,7 @@ class MainWindow(
             self.search_grid.append(self.video_tile(video))
 
     def reload_channels(self) -> None:
+        self.loaded_local_sections.add("channels")
         channels = self.service.repository.subscribed_channels()
         query = (
             self.channel_search_entry.get_text().strip()
@@ -1702,6 +1732,7 @@ class MainWindow(
         )
 
     def reload_recent_searches(self) -> None:
+        self.loaded_local_sections.add("recent_searches")
         self.updating_recent_searches = True
         current_text = self.search_entry.get_text()
         current_position = self.search_entry.get_position()
@@ -1723,6 +1754,7 @@ class MainWindow(
             self.run_recent_search(query)
 
     def reload_history(self) -> None:
+        self.loaded_local_sections.add("history")
         query = self.history_entry.get_text().strip() if hasattr(self, "history_entry") else ""
         videos = self.service.repository.watch_history(query)
         self.clear_flowbox(self.history_grid)
