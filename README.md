@@ -22,6 +22,7 @@ The feed has no algorithm. It just shows recent videos from the channels you sub
 - Save videos to Watch Later.
 - Track watch history locally, including watched time ranges rather than only a last position.
 - Search and review local watch history.
+- Optionally configure yt-dlp to extract browser cookies to play age-restricted and members-only videos.
 - Optionally use SponsorBlock to show and skip community-maintained segment ranges.
 - Limit how many videos a single channel can put in each feed day.
 - Refresh subscriptions in parallel with per-channel progress in the sidebar.

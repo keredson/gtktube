@@ -11,6 +11,9 @@ class ExtractorError(RuntimeError):
     pass
 
 
+class RestrictedVideoError(ExtractorError):
+    pass
+
 def is_restricted_video_error(message: str) -> bool:
     text = message.lower()
     return (
@@ -95,7 +98,13 @@ class YoutubeExtractor:
         except Exception as exc:
             raise ExtractorError(str(exc)) from exc
 
-    def resolve_video(self, url: str, quality: str = "720p") -> PlayableVideo:
+    def resolve_video(
+        self,
+        url: str,
+        quality: str = "720p",
+        cookies_mode: str = "never",
+        cookies_browser: str = "firefox",
+    ) -> PlayableVideo:
         selected_quality = quality if quality in QUALITY_FORMATS else "720p"
         options = {
             "quiet": True,
@@ -107,13 +116,28 @@ class YoutubeExtractor:
                 QUALITY_FORMATS[selected_quality],
             ),
         }
+        
+        if cookies_mode == "always" and cookies_browser:
+            options["cookiesfrombrowser"] = (cookies_browser,)
+
         try:
             with self._youtube_dl()(options) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as exc:
             if is_restricted_video_error(str(exc)):
-                raise ExtractorError("Video is members-only or otherwise restricted.") from exc
-            raise ExtractorError(str(exc)) from exc
+                if cookies_mode == "restricted_auto" and cookies_browser:
+                    options["cookiesfrombrowser"] = (cookies_browser,)
+                    try:
+                        with self._youtube_dl()(options) as ydl:
+                            info = ydl.extract_info(url, download=False)
+                    except Exception as retry_exc:
+                        raise ExtractorError(f"Video is restricted and cookies failed: {retry_exc}") from retry_exc
+                elif cookies_mode == "restricted_prompt" and cookies_browser:
+                    raise RestrictedVideoError("Video is members-only or otherwise restricted.") from exc
+                else:
+                    raise ExtractorError("Video is members-only or otherwise restricted.") from exc
+            else:
+                raise ExtractorError(str(exc)) from exc
 
         stream_url, audio_url = self._stream_urls(info)
         if not stream_url:

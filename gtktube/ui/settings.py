@@ -125,6 +125,7 @@ class SettingsMixin:
 
         playback_title = Gtk.Label(label="Playback", xalign=0)
         playback_title.add_css_class("heading")
+        playback_title.set_margin_top(24)
         page.append(playback_title)
 
         quality_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -166,8 +167,75 @@ class SettingsMixin:
         )
         quality_row.append(self.default_quality_combo)
 
+        privacy_title = Gtk.Label(label="Privacy & Cookies", xalign=0)
+        privacy_title.add_css_class("heading")
+        privacy_title.set_margin_top(24)
+        page.append(privacy_title)
+
+        self.privacy_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.privacy_row.set_valign(Gtk.Align.CENTER)
+        page.append(self.privacy_row)
+
+        privacy_labels = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True
+        )
+        self.privacy_row.append(privacy_labels)
+        privacy_label = Gtk.Label(label="Use browser cookies to watch videos...", xalign=0)
+        privacy_labels.append(privacy_label)
+        self.privacy_help = Gtk.Label(
+            label="",
+            xalign=0,
+            wrap=True,
+        )
+        self.privacy_help.add_css_class("dim-label")
+        privacy_labels.append(self.privacy_help)
+
+        self.cookies_mode_combo = Gtk.ComboBoxText()
+        self.cookies_mode_combo.set_valign(Gtk.Align.CENTER)
+        self.cookies_mode_combo.append("never", "never")
+        self.cookies_mode_combo.append("restricted_prompt", "when a video is restricted (prompt)")
+        self.cookies_mode_combo.append("restricted_auto", "when a video is restricted (automatic)")
+        self.cookies_mode_combo.append("always", "always")
+        self.cookies_mode_combo.connect(
+            "changed",
+            self.on_cookies_mode_changed,
+        )
+        self.privacy_row.append(self.cookies_mode_combo)
+
+        self.browser_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.browser_row.set_valign(Gtk.Align.CENTER)
+        page.append(self.browser_row)
+        
+        browser_labels = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True
+        )
+        self.browser_row.append(browser_labels)
+        browser_label = Gtk.Label(label="Browser Cookies", xalign=0)
+        browser_labels.append(browser_label)
+        browser_help = Gtk.Label(
+            label=(
+                "Using cookies allows you to watch age-restricted and members-only videos, "
+                "but allows YouTube to track your viewing history."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        browser_help.add_css_class("dim-label")
+        browser_labels.append(browser_help)
+
+        self.cookies_browser_combo = Gtk.ComboBoxText()
+        self.cookies_browser_combo.set_valign(Gtk.Align.CENTER)
+        for browser in ["brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi"]:
+            self.cookies_browser_combo.append(browser, browser.capitalize())
+        self.cookies_browser_combo.connect(
+            "changed",
+            self.on_cookies_browser_changed,
+        )
+        self.browser_row.append(self.cookies_browser_combo)
+
         sponsor_title = Gtk.Label(label="SponsorBlock", xalign=0)
         sponsor_title.add_css_class("heading")
+        sponsor_title.set_margin_top(24)
         page.append(sponsor_title)
 
         sponsor_help = Gtk.Label(
@@ -207,7 +275,9 @@ class SettingsMixin:
             category_grid.append(check)
         page.append(category_grid)
 
-        self.stack.add_named(page, "settings")
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_child(page)
+        self.stack.add_named(scrolled, "settings")
 
     def reload_settings(self) -> None:
         self.updating_settings = True
@@ -228,6 +298,13 @@ class SettingsMixin:
         self.default_quality_reset_button.set_visible(
             self.service.repository.has_default_video_quality_override()
         )
+        self.cookies_mode_combo.set_active_id(
+            self.service.repository.yt_dlp_cookies_mode()
+        )
+        self.cookies_browser_combo.set_active_id(
+            self.service.repository.yt_dlp_cookies_browser()
+        )
+        self._update_privacy_help()
         self.sponsorblock_enabled_check.set_active(
             self.service.repository.sponsorblock_enabled()
         )
@@ -282,6 +359,45 @@ class SettingsMixin:
         self.updating_quality = True
         self.quality_combo.set_active_id(self.preferred_quality)
         self.updating_quality = False
+
+    def _update_privacy_help(self) -> None:
+        mode = self.cookies_mode_combo.get_active_id()
+        if mode == "never":
+            self.privacy_help.set_label(
+                "Never using cookies gives you the most privacy, but your watch history will not appear on youtube.com and you'll be blocked from watching restricted videos."
+            )
+            self.browser_row.set_sensitive(False)
+        elif mode == "restricted_prompt":
+            self.privacy_help.set_label(
+                "You will be prompted to use cookies when an age-restricted or members-only video is encountered. Your watch history won't appear on youtube.com for most videos."
+            )
+            self.browser_row.set_sensitive(True)
+        elif mode == "restricted_auto":
+            self.privacy_help.set_label(
+                "Cookies will be used automatically to play age-restricted and members-only videos. Your watch history won't appear on youtube.com for most videos."
+            )
+            self.browser_row.set_sensitive(True)
+        elif mode == "always":
+            self.privacy_help.set_label(
+                "Always using cookies means your watch history will appear on youtube.com and you can watch restricted videos, but YouTube can track your viewing habits."
+            )
+            self.browser_row.set_sensitive(True)
+
+    def on_cookies_mode_changed(self, combo: Gtk.ComboBoxText) -> None:
+        if self.updating_settings:
+            return
+        mode = combo.get_active_id()
+        if mode:
+            self.service.repository.set_yt_dlp_cookies_mode(mode)
+            self._update_privacy_help()
+
+    def on_cookies_browser_changed(self, combo: Gtk.ComboBoxText) -> None:
+        if self.updating_settings:
+            return
+        browser = combo.get_active_id()
+        if browser is not None:
+            self.service.repository.set_yt_dlp_cookies_browser(browser)
+            self._update_privacy_help()
 
     def on_sponsorblock_setting_changed(self, _widget: Gtk.Widget) -> None:
         if self.updating_settings:

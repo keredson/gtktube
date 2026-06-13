@@ -313,6 +313,22 @@ class LibraryRepository:
     def set_sponsorblock_prompt_shown(self) -> None:
         self.set_setting("sponsorblock_prompt_shown", "1")
 
+    def yt_dlp_cookies_mode(self) -> str:
+        mode = self.setting("yt_dlp_cookies_mode", "never")
+        if mode == "restricted":
+            return "restricted_auto"
+        return mode
+
+    def set_yt_dlp_cookies_mode(self, mode: str) -> None:
+        if mode in ("never", "restricted_prompt", "restricted_auto", "always"):
+            self.set_setting("yt_dlp_cookies_mode", mode)
+
+    def yt_dlp_cookies_browser(self) -> str:
+        return self.setting("yt_dlp_cookies_browser", "firefox")
+
+    def set_yt_dlp_cookies_browser(self, browser: str) -> None:
+        self.set_setting("yt_dlp_cookies_browser", browser)
+
     def sponsorblock_categories(self) -> list[str]:
         try:
             raw_categories = json.loads(

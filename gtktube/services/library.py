@@ -17,7 +17,12 @@ class LibraryService:
     def play_url(
         self, url: str, quality: str = "720p", record_play: bool = True
     ) -> PlayableVideo:
-        playable = self.extractor.resolve_video(url, quality=quality)
+        playable = self.extractor.resolve_video(
+            url,
+            quality=quality,
+            cookies_mode=self.repository.yt_dlp_cookies_mode(),
+            cookies_browser=self.repository.yt_dlp_cookies_browser(),
+        )
         self._store_video_and_channel(playable.video)
         if record_play:
             self.repository.record_play_started(playable.video.id)
@@ -26,7 +31,12 @@ class LibraryService:
     def play_video(
         self, video: Video, quality: str = "720p", record_play: bool = True
     ) -> PlayableVideo:
-        playable = self.extractor.resolve_video(video.url, quality=quality)
+        playable = self.extractor.resolve_video(
+            video.url,
+            quality=quality,
+            cookies_mode=self.repository.yt_dlp_cookies_mode(),
+            cookies_browser=self.repository.yt_dlp_cookies_browser(),
+        )
         self._store_video_and_channel(playable.video)
         if record_play:
             self.repository.record_play_started(playable.video.id)
