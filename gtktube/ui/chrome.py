@@ -33,12 +33,9 @@ class ChromeMixin:
             return
         if self.suppress_nav_selection:
             return
+
         if row in self.nav_pages:
             page = self.nav_pages[row]
-            if page == "recommended" and hasattr(self, "update_settings_layout"):
-                # Ensure the settings widgets are in the onboarding box
-                # before we navigate and trigger reload_recommended
-                getattr(self, "update_recommended_onboarding_layout")()
             self.navigate_to(ViewState(page))
             return
         channel = self.nav_channels.get(row)

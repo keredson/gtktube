@@ -236,7 +236,7 @@ class SettingsMixin:
         self.browser_row.append(browser_labels)
         browser_label = Gtk.Label(label="Browser Cookies", xalign=0)
         browser_labels.append(browser_label)
-        browser_help = Gtk.Label(
+        self.browser_help = Gtk.Label(
             label=(
                 "Using cookies allows you to watch age-restricted and members-only videos, "
                 "but allows YouTube to track your viewing history."
@@ -244,11 +244,12 @@ class SettingsMixin:
             xalign=0,
             wrap=True,
         )
-        browser_help.add_css_class("dim-label")
-        browser_labels.append(browser_help)
+        self.browser_help.add_css_class("dim-label")
+        browser_labels.append(self.browser_help)
 
         self.cookies_browser_combo = Gtk.ComboBoxText()
         self.cookies_browser_combo.set_valign(Gtk.Align.CENTER)
+        self.cookies_browser_combo.append("", "None")
         for browser in ["brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi"]:
             self.cookies_browser_combo.append(browser, browser.capitalize())
         self.cookies_browser_combo.connect(
@@ -304,7 +305,6 @@ class SettingsMixin:
         self.stack.add_named(scrolled, "settings")
 
     def reload_settings(self) -> None:
-        self.update_settings_layout()
         self.updating_settings = True
         self.feed_daily_limit_spin.set_value(
             self.service.repository.feed_daily_channel_limit()
@@ -426,6 +426,10 @@ class SettingsMixin:
             self.service.repository.set_yt_dlp_cookies_browser(browser)
             self._update_privacy_help()
 
+            if browser and self.service.repository.show_recommended_videos() is True:
+                if hasattr(self, "reload_recommended"):
+                    getattr(self, "reload_recommended")()
+
     def on_recommended_setting_changed(self, switch: Gtk.Switch, state: bool) -> bool:
         if self.updating_settings:
             return False
@@ -433,14 +437,6 @@ class SettingsMixin:
         self._update_privacy_help()
         if hasattr(self, "update_recommended_nav_visibility"):
             getattr(self, "update_recommended_nav_visibility")()
-        
-        # If we just enabled it from null state, transition UI
-        if state is True and hasattr(self, "reload_recommended"):
-            # Move widgets back to settings page immediately
-            self.update_settings_layout()
-            # If we are on the recommended page, it will auto-reload
-            if hasattr(self, "current_view") and getattr(self, "current_view").page == "recommended":
-                getattr(self, "reload_recommended")()
         return False
 
     def on_sponsorblock_setting_changed(self, _widget: Gtk.Widget) -> None:
@@ -457,9 +453,3 @@ class SettingsMixin:
             ]
         )
         self.load_sponsorblock_segments()
-
-    def update_settings_layout(self) -> None:
-        if self.recommended_row.get_parent() != self.settings_page:
-            self.settings_page.insert_child_after(self.recommended_row, self.privacy_row)
-        if self.browser_row.get_parent() != self.settings_page:
-            self.settings_page.insert_child_after(self.browser_row, self.recommended_row)

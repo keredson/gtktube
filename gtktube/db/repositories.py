@@ -324,7 +324,7 @@ class LibraryRepository:
             self.set_setting("yt_dlp_cookies_mode", mode)
 
     def yt_dlp_cookies_browser(self) -> str:
-        return self.setting("yt_dlp_cookies_browser", "firefox")
+        return self.setting("yt_dlp_cookies_browser", "")
 
     def set_yt_dlp_cookies_browser(self, browser: str) -> None:
         self.set_setting("yt_dlp_cookies_browser", browser)

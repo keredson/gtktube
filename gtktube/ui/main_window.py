@@ -343,15 +343,11 @@ class MainWindow(
         if row:
             row.set_visible(show is not False)
 
-    def update_recommended_onboarding_layout(self) -> None:
-        show = self.service.repository.show_recommended_videos()
-        if show is None:
-            if self.recommended_row.get_parent() != self.recommended_onboarding_settings:
-                self.recommended_onboarding_settings.append(self.recommended_row)
-            if self.browser_row.get_parent() != self.recommended_onboarding_settings:
-                self.recommended_onboarding_settings.append(self.browser_row)
-        else:
-            self.update_settings_layout()
+    def on_recommended_show_clicked(self, _btn: Gtk.Button) -> None:
+        self.service.repository.set_show_recommended_videos(True)
+        self.update_recommended_nav_visibility()
+        self.reload_settings()
+        self.reload_recommended()
 
     def load_library(self, name: str) -> Any | None:
         path = find_library(name)
@@ -432,6 +428,7 @@ class MainWindow(
         work: Callable[[], T],
         done: Callable[[T], None] | None = None,
         finished: Callable[[], None] | None = None,
+        error: Callable[[Exception], None] | None = None,
     ) -> None:
         self.set_status(label)
         future = self.executor.submit(work)
@@ -439,15 +436,24 @@ class MainWindow(
         def finish() -> bool:
             try:
                 result = future.result()
-            except ExtractorError as exc:
-                self.set_status(str(exc))
-                self.log(f"{label} failed: {exc}")
             except Exception as exc:
                 self.set_status(f"Error: {exc}")
-                self.log(
-                    f"{label} failed with unexpected exception:\n"
-                    f"{traceback.format_exc()}"
-                )
+                if error is not None:
+                    try:
+                        error(exc)
+                    except Exception:
+                        self.log(
+                            f"{label} error callback failed:\n"
+                            f"{traceback.format_exc()}"
+                        )
+                
+                if isinstance(exc, ExtractorError):
+                    self.log(f"{label} failed: {exc}")
+                else:
+                    self.log(
+                        f"{label} failed with unexpected exception:\n"
+                        f"{traceback.format_exc()}"
+                    )
             else:
                 if done is not None:
                     try:
@@ -569,21 +575,22 @@ class MainWindow(
         page.append(self.recommended_stack)
 
         # Onboarding UI
-        self.recommended_onboarding_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
-        self.recommended_onboarding_box.set_valign(Gtk.Align.CENTER)
-        self.recommended_onboarding_box.set_halign(Gtk.Align.CENTER)
-        self.recommended_onboarding_box.set_margin_top(80)
-        self.recommended_onboarding_box.set_margin_start(40)
-        self.recommended_onboarding_box.set_margin_end(40)
+        onboarding = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        onboarding.set_valign(Gtk.Align.CENTER)
+        onboarding.set_halign(Gtk.Align.CENTER)
+        onboarding.set_margin_top(80)
+        onboarding.set_margin_start(40)
+        onboarding.set_margin_end(40)
 
         title = Gtk.Label(label="Recommended Videos")
         title.add_css_class("title-2")
-        self.recommended_onboarding_box.append(title)
+        onboarding.append(title)
 
         desc = Gtk.Label(
             label=(
                 "Personalized recommendations from YouTube based on your viewing history. "
-                "This requires extracting cookies from your browser to identify your account."
+                "This requires extracting cookies from your browser to identify your account.\n\n"
+                "You can also adjust these in Settings."
             ),
             wrap=True,
             max_width_chars=60,
@@ -591,35 +598,51 @@ class MainWindow(
             xalign=0.5
         )
         desc.add_css_class("dim-label")
-        self.recommended_onboarding_box.append(desc)
+        onboarding.append(desc)
 
-        # Settings container
-        self.recommended_onboarding_settings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        self.recommended_onboarding_settings.set_margin_top(12)
-        self.recommended_onboarding_box.append(self.recommended_onboarding_settings)
+        # Settings
+        settings_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        settings_box.set_margin_top(12)
+        onboarding.append(settings_box)
+
+        # Browser
+        browser_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        browser_row.set_valign(Gtk.Align.CENTER)
+        settings_box.append(browser_row)
+        
+        browser_label = Gtk.Label(label="Which browser should GTKTube get cookies from?", xalign=0, hexpand=True)
+        browser_row.append(browser_label)
+
+        self.recommended_onboarding_browser_combo = Gtk.ComboBoxText()
+        self.recommended_onboarding_browser_combo.set_valign(Gtk.Align.CENTER)
+        self.recommended_onboarding_browser_combo.append("", "None")
+        for b in ["brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi"]:
+            self.recommended_onboarding_browser_combo.append(b, b.capitalize())
+        
+        # Initialize from repository
+        self.recommended_onboarding_browser_combo.set_active_id(self.service.repository.yt_dlp_cookies_browser())
+        
+        self.recommended_onboarding_browser_combo.connect("changed", self.on_recommended_onboarding_browser_changed)
+        browser_row.append(self.recommended_onboarding_browser_combo)
+
+        # Buttons
+        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, halign=Gtk.Align.CENTER)
+        button_box.set_margin_top(12)
+        onboarding.append(button_box)
+
+        self.recommended_show_btn = Gtk.Button(label="Show recommendations")
+        self.recommended_show_btn.add_css_class("suggested-action")
+        self.recommended_show_btn.connect("clicked", self.on_recommended_show_clicked)
+        button_box.append(self.recommended_show_btn)
 
         dismiss_btn = Gtk.Button(label="Hide Recommended")
         dismiss_btn.connect("clicked", self.on_recommended_dismiss_clicked)
-        dismiss_btn.set_halign(Gtk.Align.CENTER)
-        self.recommended_onboarding_box.append(dismiss_btn)
+        button_box.append(dismiss_btn)
 
-        self.recommended_stack.add_named(self.recommended_onboarding_box, "onboarding")
+        # Initial state
+        self.recommended_show_btn.set_sensitive(bool(self.recommended_onboarding_browser_combo.get_active_id()))
 
-        # Grid UI
-        grid_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        grid_content.set_margin_top(12)
-        grid_content.set_margin_start(12)
-        grid_content.set_margin_end(12)
-        self.recommended_grid = self.create_video_grid()
-        grid_content.append(self.recommended_grid)
-
-        scroller = Gtk.ScrolledWindow(vexpand=True)
-        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_child(grid_content)
-
-        self.recommended_stack.add_named(scroller, "grid")
-
-        self.stack.add_named(page, "recommended")
+        self.recommended_stack.add_named(onboarding, "onboarding")
 
         # Grid UI
         grid_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -1247,6 +1270,19 @@ class MainWindow(
             finished=finished,
         )
 
+    def on_recommended_onboarding_browser_changed(self, combo: Gtk.ComboBoxText) -> None:
+        browser = combo.get_active_id()
+        self.recommended_show_btn.set_sensitive(bool(browser))
+        if browser is not None:
+            self.service.repository.set_yt_dlp_cookies_browser(browser)
+            self.reload_settings()
+
+    def on_recommended_show_clicked(self, _btn: Gtk.Button) -> None:
+        self.service.repository.set_show_recommended_videos(True)
+        self.update_recommended_nav_visibility()
+        self.reload_settings()
+        self.reload_recommended()
+
     def on_recommended_dismiss_clicked(self, _btn: Gtk.Button) -> None:
         self.service.repository.set_show_recommended_videos(False)
         self.update_recommended_nav_visibility()
@@ -1255,22 +1291,36 @@ class MainWindow(
 
     def reload_recommended(self) -> None:
         show = self.service.repository.show_recommended_videos()
-        if show is True:
+        browser = self.service.repository.yt_dlp_cookies_browser()
+
+        if show is True and browser:
             self.recommended_stack.set_visible_child_name("grid")
             self.clear_flowbox(self.recommended_grid)
 
             def done(videos: list[Video]) -> None:
                 self.populate_video_grid(self.recommended_grid, videos)
 
+            def failed(exc: Exception) -> None:
+                msg = f"Failed to load recommendations: {exc}"
+                print(msg, file=sys.stderr)
+                self.notify(msg)
+                # Show onboarding again so they can check browser settings
+                self.recommended_stack.set_visible_child_name("onboarding")
+                self.recommended_onboarding_browser_combo.set_active_id(
+                    self.service.repository.yt_dlp_cookies_browser()
+                )
+
             self.run_task(
                 "Fetching recommendations...",
                 self.service.recommended_videos,
                 done,
+                error=failed,
             )
         else:
             self.recommended_stack.set_visible_child_name("onboarding")
-            # Widgets are already managed by update_recommended_onboarding_layout
-            # which is called during nav selection.
+            self.recommended_onboarding_browser_combo.set_active_id(
+                self.service.repository.yt_dlp_cookies_browser()
+            )
 
     def on_history_search_changed(self, _widget: Gtk.Widget) -> None:
         self.reload_history()

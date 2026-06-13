@@ -241,7 +241,7 @@ class YoutubeExtractor:
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
-            "extract_flat": True,
+            "extract_flat": "in_playlist",
             "cookiesfrombrowser": (cookies_browser,),
         }
         try:
