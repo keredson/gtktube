@@ -250,8 +250,12 @@ class SettingsMixin:
         self.cookies_browser_combo = Gtk.ComboBoxText()
         self.cookies_browser_combo.set_valign(Gtk.Align.CENTER)
         self.cookies_browser_combo.append("", "None")
-        for browser in ["brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi"]:
-            self.cookies_browser_combo.append(browser, browser.capitalize())
+        try:
+            for browser in self.service.supported_browsers():
+                self.cookies_browser_combo.append(browser, browser.capitalize())
+        except ExtractorError as exc:
+            if hasattr(self, "log"):
+                getattr(self, "log")(str(exc))
         self.cookies_browser_combo.connect(
             "changed",
             self.on_cookies_browser_changed,

@@ -204,3 +204,6 @@ class LibraryService:
     def recommended_videos(self, limit: int = 100) -> list[Video]:
         browser = self.repository.yt_dlp_cookies_browser()
         return self.extractor.recommended_videos(browser, limit=limit)
+
+    def supported_browsers(self) -> list[str]:
+        return self.extractor.supported_browsers()

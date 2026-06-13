@@ -57,6 +57,13 @@ class YoutubeExtractor:
     def __init__(self) -> None:
         self._ydl_cls: type[Any] | None = None
 
+    def supported_browsers(self) -> list[str]:
+        try:
+            from yt_dlp.cookies import SUPPORTED_BROWSERS
+            return sorted(list(SUPPORTED_BROWSERS))
+        except (ImportError, AttributeError) as exc:
+            raise ExtractorError(f"Could not retrieve supported browsers from yt-dlp: {exc}") from exc
+
     def _youtube_dl(self) -> type[Any]:
         if self._ydl_cls is None:
             try:

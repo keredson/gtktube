@@ -263,6 +263,11 @@ class ChromeMixin:
         elif view.page in {"feed", "channels"}:
             self.context_refresh_button.set_tooltip_text("Refresh subscriptions")
             self.context_refresh_button.set_visible(True)
+        elif view.page == "recommended":
+            show = self.service.repository.show_recommended_videos()
+            browser = self.service.repository.yt_dlp_cookies_browser()
+            self.context_refresh_button.set_tooltip_text("Refresh recommendations")
+            self.context_refresh_button.set_visible(show is True and bool(browser))
         else:
             self.set_context_refresh_loading(False)
             self.context_refresh_button.set_visible(False)
@@ -278,6 +283,10 @@ class ChromeMixin:
             return
         if self.current_view and self.current_view.page in {"feed", "channels"}:
             self.on_refresh_subscriptions(self.context_refresh_button)
+            return
+        if self.current_view and self.current_view.page == "recommended":
+            if hasattr(self, "reload_recommended"):
+                getattr(self, "reload_recommended")()
 
     def on_context_unsubscribe_clicked(self, _button: Gtk.Button) -> None:
         channel = self.current_channel()

@@ -644,8 +644,11 @@ class MainWindow(
         self.recommended_onboarding_browser_combo = Gtk.ComboBoxText()
         self.recommended_onboarding_browser_combo.set_valign(Gtk.Align.CENTER)
         self.recommended_onboarding_browser_combo.append("", "None")
-        for b in ["brave", "chrome", "chromium", "edge", "firefox", "opera", "safari", "vivaldi"]:
-            self.recommended_onboarding_browser_combo.append(b, b.capitalize())
+        try:
+            for b in self.service.supported_browsers():
+                self.recommended_onboarding_browser_combo.append(b, b.capitalize())
+        except ExtractorError as exc:
+            self.log(str(exc))
         
         # Initialize from repository
         self.recommended_onboarding_browser_combo.set_active_id(self.service.repository.yt_dlp_cookies_browser())
