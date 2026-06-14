@@ -155,6 +155,62 @@ class VideoGridMixin:
 
         return tile
 
+    def queue_video_tile(
+        self,
+        video: Video,
+        on_clicked: Callable[[Gtk.Widget], None] | None = None,
+        on_context_menu: Callable[[Gtk.Widget, Video, float, float], None] | None = None,
+    ) -> Gtk.Widget:
+        tile = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        tile.add_css_class("video-tile")
+        tile.set_halign(Gtk.Align.FILL)
+        tile.set_hexpand(True)
+        tile.set_focusable(True)
+
+        left_click = Gtk.GestureClick()
+        left_click.set_button(1)
+        left_click.connect(
+            "released",
+            lambda _gesture, _n_press, _x, _y: (
+                on_clicked(tile) if on_clicked else self.play_video(video)
+            ),
+        )
+        tile.add_controller(left_click)
+
+        key_controller = Gtk.EventControllerKey()
+        key_controller.connect(
+            "key-pressed",
+            lambda _controller, keyval, _keycode, _state: self.activate_video_tile(
+                tile,
+                video,
+                on_clicked,
+                keyval,
+            ),
+        )
+        tile.add_controller(key_controller)
+
+        right_click = Gtk.GestureClick()
+        right_click.set_button(3)
+        right_click.connect(
+            "pressed",
+            lambda _gesture, _n_press, x, y: (
+                on_context_menu(tile, video, x, y)
+                if on_context_menu
+                else self.show_video_context_menu(tile, video, x, y)
+            ),
+        )
+        tile.add_controller(right_click)
+
+        thumbnail = Gtk.Picture()
+        thumbnail.set_hexpand(True)
+        thumbnail.set_vexpand(True)
+        thumbnail.set_content_fit(Gtk.ContentFit.COVER)
+        thumbnail.set_can_shrink(False)
+        self.load_thumbnail(video, thumbnail)
+        tile.append(thumbnail)
+
+        return tile
+
     def activate_video_tile(
         self,
         tile: Gtk.Widget,

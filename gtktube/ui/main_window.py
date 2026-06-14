@@ -1941,15 +1941,14 @@ class MainWindow(
         row = Gtk.ListBoxRow()
         row.add_css_class("queue-row")
 
-        tile = self.video_tile(
+        tile = self.queue_video_tile(
             video,
             on_clicked=lambda _: self.play_from_queue_index(row.get_index()),
             on_context_menu=lambda _w, _v, x, y: self.show_queue_context_menu(
                 row, video, x, y
             ),
         )
-        tile.set_halign(Gtk.Align.CENTER)
-        tile.set_margin_bottom(12)
+        tile.set_halign(Gtk.Align.FILL)
         row.set_child(tile)
 
         # Setup Drag and Drop
