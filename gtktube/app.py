@@ -203,6 +203,17 @@ def launch_dependency_installer() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv
+
+    def exception_handler(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        print("gtktube: UNCAUGHT EXCEPTION", file=sys.stderr)
+        import traceback
+        traceback.print_exception(exc_type, exc_value, exc_traceback, file=sys.stderr)
+
+    sys.excepthook = exception_handler
+
     options = parse_startup_options(argv)
     installed_command = launched_as_installed_command(argv[0])
     if installed_command or options.install_desktop:

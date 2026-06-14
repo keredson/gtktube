@@ -377,11 +377,15 @@ class PlayerMixin:
         framebuffer = c_int()
         self.libgl.glGetIntegerv(0x8CA6, byref(framebuffer))
         try:
+            # Tell mpv to update its internal state for the new frame
+            if hasattr(self.mpv_render_context, "update"):
+                self.mpv_render_context.update()
+                
             self.mpv_render_context.render(
                 opengl_fbo={
                     "fbo": framebuffer.value,
-                    "w": width,
-                    "h": height,
+                    "w": int(width),
+                    "h": int(height),
                     "internal_format": 0,
                 },
                 flip_y=True,
@@ -389,6 +393,9 @@ class PlayerMixin:
             self.mpv_render_context.report_swap()
         except Exception as exc:
             self.log(f"mpv render failed: {exc}")
+        finally:
+            self.mpv_render_queued = False
+        
         return True
 
     def on_video_unrealize(self, _area: Gtk.GLArea) -> None:
@@ -396,11 +403,15 @@ class PlayerMixin:
 
     def queue_video_render(self, generation: int) -> bool:
         if generation != self.mpv_render_generation:
+            self.mpv_render_queued = False
             return False
         self.video.queue_render()
         return False
 
     def on_mpv_render_update(self, generation: int) -> None:
+        if getattr(self, "mpv_render_queued", False):
+            return
+        self.mpv_render_queued = True
         GLib.idle_add(self.queue_video_render, generation)
 
     def get_gl_proc_address(self, _ctx: object, name: bytes) -> int:

@@ -419,6 +419,7 @@ class MainWindow(
     def log(self, message: str) -> None:
         timestamp = datetime.now().isoformat(timespec="seconds")
         print(f"{timestamp} gtktube: {message}", file=sys.stderr)
+        sys.stderr.flush()
 
     def verbose_log(self, message: str) -> None:
         if self.verbose:
@@ -495,21 +496,25 @@ class MainWindow(
             sections.remove(initial_view.page)
 
         def load_next() -> bool:
-            while sections:
-                section = sections.pop(0)
-                if section in self.loaded_local_sections:
-                    continue
-                if section == "feed":
-                    self.reload_feed()
-                elif section == "channels":
-                    self.reload_channels()
-                elif section == "history":
-                    self.reload_history()
-                elif section == "watch_later":
-                    self.reload_watch_later()
-                elif section == "recent_searches":
-                    self.reload_recent_searches()
-                return bool(sections)
+            try:
+                while sections:
+                    section = sections.pop(0)
+                    if section in self.loaded_local_sections:
+                        continue
+                    if section == "feed":
+                        self.reload_feed()
+                    elif section == "channels":
+                        self.reload_channels()
+                    elif section == "history":
+                        self.reload_history()
+                    elif section == "watch_later":
+                        self.reload_watch_later()
+                    elif section == "recent_searches":
+                        self.reload_recent_searches()
+                    return bool(sections)
+            except Exception:
+                import traceback
+                self.log(f"Error in deferred reload:\n{traceback.format_exc()}")
             return False
 
         GLib.timeout_add(250, load_next)
@@ -1759,15 +1764,25 @@ class MainWindow(
     def reload_history(self) -> None:
         self.loaded_local_sections.add("history")
         query = self.history_entry.get_text().strip() if hasattr(self, "history_entry") else ""
-        videos = self.service.repository.watch_history(query)
+        try:
+            videos = self.service.repository.watch_history(query)
+        except Exception:
+            import traceback
+            self.log(f"Failed to load watch history:\n{traceback.format_exc()}")
+            return
+
         self.clear_flowbox(self.history_grid)
         self.grid_generations[id(self.history_grid)] = (
             self.grid_generations.get(id(self.history_grid), 0) + 1
         )
         for video in videos:
-            self.history_grid.append(
-                self.video_tile(video, on_context_menu=self.show_history_context_menu)
-            )
+            try:
+                self.history_grid.append(
+                    self.video_tile(video, on_context_menu=self.show_history_context_menu)
+                )
+            except Exception:
+                import traceback
+                self.log(f"Failed to render history tile for {video.id}:\n{traceback.format_exc()}")
         has_videos = bool(videos)
         self.history_grid.set_visible(has_videos)
         self.history_empty_box.set_visible(not has_videos)
