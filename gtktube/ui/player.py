@@ -100,6 +100,14 @@ class PlayerMixin:
         )
         self.load_sponsorblock_segments()
 
+        resume = (
+            resume_position
+            if resume_position is not None
+            else self.service.repository.resume_position(playable.video.id)
+        )
+        if resume > 0:
+            self.suppress_sponsorblock_for_seek(resume)
+
         player = self.create_player(playable)
         if player is None:
             self.hide_miniplayer()
@@ -114,6 +122,12 @@ class PlayerMixin:
             load_options = {}
             if playable.audio_url:
                 load_options["audio_file"] = playable.audio_url
+            if resume > 0:
+                load_options["start"] = resume
+                self.verbose_log(
+                    "resuming playback "
+                    f"video={playable.video.id} seconds={resume}"
+                )
             self.player.loadfile(playable.stream_url, **load_options)
         except Exception as exc:
             self.set_status(f"Playback error: {exc}")
@@ -130,18 +144,7 @@ class PlayerMixin:
             self.stop_pipeline()
             return
 
-        resume = (
-            resume_position
-            if resume_position is not None
-            else self.service.repository.resume_position(playable.video.id)
-        )
-        if resume > 0:
-            self.verbose_log(
-                "queueing resume seek after file-loaded "
-                f"video={playable.video.id} seconds={resume}"
-            )
-            self.queue_seek_after_file_loaded(resume)
-        self.range_start_seconds = self.current_position_seconds()
+        self.range_start_seconds = resume if resume > 0 else 0
         self.show_full_player()
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
@@ -852,10 +855,6 @@ class PlayerMixin:
         self.pending_seek_seconds = seconds
         self.pending_seek_attempts = 0
         self.start_pending_seek_timer()
-
-    def queue_seek_after_file_loaded(self, seconds: int) -> None:
-        self.pending_seek_seconds = seconds
-        self.pending_seek_attempts = 0
 
     def start_pending_seek_timer(self, delay_ms: int = 250) -> None:
         if self.pending_seek_timer_active:
