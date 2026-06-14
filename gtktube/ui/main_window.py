@@ -142,6 +142,7 @@ class MainWindow(
         self.loading_more_videos = False
         self.refreshing_channel_ids: set[str] = set()
         self.grid_generations: dict[int, int] = {}
+        self.nav_generation = 0
         self.loaded_local_sections: set[str] = set()
         self.cleaned_up = False
         self.gl = CDLL("libepoxy.so.0")
@@ -531,15 +532,33 @@ class MainWindow(
         self.grid_generations[id(self.watch_later_grid)] = (
             self.grid_generations.get(id(self.watch_later_grid), 0) + 1
         )
-        for video in videos:
-            self.watch_later_grid.append(
-                self.video_tile(
-                    video, on_context_menu=self.show_watch_later_context_menu
+        generation = self.grid_generations[id(self.watch_later_grid)]
+        index = 0
+
+        def append_batch() -> bool:
+            nonlocal index
+            if self.grid_generations.get(id(self.watch_later_grid), 0) != generation:
+                return False
+            
+            batch_size = 12
+            end = min(index + batch_size, len(videos))
+            for video in videos[index:end]:
+                self.watch_later_grid.append(
+                    self.video_tile(
+                        video, on_context_menu=self.show_watch_later_context_menu
+                    )
                 )
-            )
-        has_videos = len(videos) > 0
-        self.watch_later_scroller.set_visible(has_videos)
-        self.watch_later_empty_box.set_visible(not has_videos)
+            
+            index = end
+            if index < len(videos):
+                return True
+            
+            has_videos = len(videos) > 0
+            self.watch_later_scroller.set_visible(has_videos)
+            self.watch_later_empty_box.set_visible(not has_videos)
+            return False
+
+        GLib.idle_add(append_batch)
 
     def build_feed_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -1439,7 +1458,7 @@ class MainWindow(
     def reload_feed(self) -> None:
         self.loaded_local_sections.add("feed")
         videos = self.service.repository.subscription_feed(self.feed_limit)
-        self.populate_video_grid(self.feed_grid, videos)
+        self.append_video_grid_batched(self.feed_grid, videos)
         has_videos = bool(videos)
         self.feed_grid.set_visible(has_videos)
         self.feed_empty_box.set_visible(not has_videos)
@@ -1456,15 +1475,31 @@ class MainWindow(
 
         self.search_channel_heading.set_visible(bool(results.channels))
         self.search_channel_grid.set_visible(bool(results.channels))
-        for channel in results.channels:
-            self.search_channel_grid.append(
-                self.channel_tile(channel)
-            )
+        self.grid_generations[id(self.search_channel_grid)] = (
+            self.grid_generations.get(id(self.search_channel_grid), 0) + 1
+        )
+        channel_generation = self.grid_generations[id(self.search_channel_grid)]
+        channel_index = 0
+
+        def append_channels_batch() -> bool:
+            nonlocal channel_index
+            if (
+                self.grid_generations.get(id(self.search_channel_grid), 0)
+                != channel_generation
+            ):
+                return False
+            batch_size = 12
+            end = min(channel_index + batch_size, len(results.channels))
+            for channel in results.channels[channel_index:end]:
+                self.search_channel_grid.append(self.channel_tile(channel))
+            channel_index = end
+            return channel_index < len(results.channels)
+
+        GLib.idle_add(append_channels_batch)
 
         self.search_video_heading.set_visible(bool(results.videos))
         self.search_grid.set_visible(bool(results.videos))
-        for video in results.videos:
-            self.search_grid.append(self.video_tile(video))
+        self.append_video_grid_batched(self.search_grid, results.videos)
 
     def reload_channels(self) -> None:
         self.loaded_local_sections.add("channels")
@@ -1474,26 +1509,48 @@ class MainWindow(
             if hasattr(self, "channel_search_entry")
             else ""
         )
-        visible_count = 0
         self.clear_flowbox(self.channel_grid)
-        for channel in channels:
-            if self.channel_matches_filter(channel):
+        self.grid_generations[id(self.channel_grid)] = (
+            self.grid_generations.get(id(self.channel_grid), 0) + 1
+        )
+        generation = self.grid_generations[id(self.channel_grid)]
+
+        filtered_channels = [
+            c for c in channels if self.channel_matches_filter(c)
+        ]
+        index = 0
+
+        def append_batch() -> bool:
+            nonlocal index
+            if self.grid_generations.get(id(self.channel_grid), 0) != generation:
+                return False
+
+            batch_size = 12
+            end = min(index + batch_size, len(filtered_channels))
+            for channel in filtered_channels[index:end]:
                 self.channel_grid.append(self.channel_tile(channel))
-                visible_count += 1
-        has_visible_channels = visible_count > 0
-        self.channel_grid.set_visible(has_visible_channels)
-        self.channel_empty_box.set_visible(not has_visible_channels)
-        if not has_visible_channels:
-            if query:
-                self.channel_empty_title.set_label("No channel results")
-                self.channel_empty_help.set_label(
-                    "No subscribed channels matched this search."
-                )
-            else:
-                self.channel_empty_title.set_label("No subscribed channels")
-                self.channel_empty_help.set_label(
-                    "Open a channel URL or subscribe from a video to add channels."
-                )
+            
+            index = end
+            if index < len(filtered_channels):
+                return True
+            
+            has_visible_channels = len(filtered_channels) > 0
+            self.channel_grid.set_visible(has_visible_channels)
+            self.channel_empty_box.set_visible(not has_visible_channels)
+            if not has_visible_channels:
+                if query:
+                    self.channel_empty_title.set_label("No channel results")
+                    self.channel_empty_help.set_label(
+                        "No subscribed channels matched this search."
+                    )
+                else:
+                    self.channel_empty_title.set_label("No subscribed channels")
+                    self.channel_empty_help.set_label(
+                        "Open a channel URL or subscribe from a video to add channels."
+                    )
+            return False
+
+        GLib.idle_add(append_batch)
         self.reload_channel_nav(channels)
 
     def channel_matches_filter(self, channel: Channel) -> bool:
@@ -1520,58 +1577,76 @@ class MainWindow(
         self.channel_rows = {}
         self.channel_nav_status_boxes = {}
         self.channel_nav_status_channels = {}
+        self.nav_generation += 1
+        generation = self.nav_generation
         new_video_counts = self.service.repository.new_video_counts_by_channel()
 
-        for channel in channels:
-            row = Gtk.ListBoxRow()
-            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=7)
-            box.add_css_class("channel-nav-row")
-            if channel.thumbnail_url:
-                icon = Gtk.Picture()
-                icon.add_css_class("channel-avatar")
-                icon.set_size_request(24, 24)
-                icon.set_can_shrink(False)
-                icon.set_content_fit(Gtk.ContentFit.COVER)
-                self.clip_channel_avatar(icon)
-                self.load_channel_nav_icon(channel, icon)
-                box.append(icon)
-            else:
-                fallback_icon = Gtk.Image.new_from_icon_name("video-display-symbolic")
-                fallback_icon.add_css_class("dim-label")
-                box.append(fallback_icon)
-            label = Gtk.Label(label=channel.title, xalign=0, hexpand=True)
-            label.add_css_class("channel-nav-label")
-            label.add_css_class("dim-label")
-            label.set_ellipsize(Pango.EllipsizeMode.END)
-            box.append(label)
-            status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-            box.append(status_box)
-            self.channel_nav_status_boxes[channel.id] = status_box
-            self.channel_nav_status_channels[channel.id] = channel
-            self.update_channel_nav_status(
-                channel,
-                status_box,
-                new_video_counts.get(channel.id, 0),
-            )
-            row.set_child(box)
-            right_click = Gtk.GestureClick()
-            right_click.set_button(3)
-            right_click.connect(
-                "pressed",
-                lambda _gesture, _n_press, x, y, channel=channel, row=row: (
-                    self.show_channel_context_menu(row, channel, x, y)
-                ),
-            )
-            row.add_controller(right_click)
-            self.nav_channels[row] = channel
-            self.channel_rows[channel.id] = row
-            self.channel_nav_rows.append(row)
-            self.nav.append(row)
+        index = 0
 
-        if self.current_view and self.current_view.channel_id is not None:
-            self.select_nav_channel(self.current_view.channel_id)
-        else:
-            GLib.idle_add(self.release_nav_selection_suppression)
+        def append_batch() -> bool:
+            nonlocal index
+            if self.nav_generation != generation:
+                return False
+
+            batch_size = 20
+            end = min(index + batch_size, len(channels))
+            for channel in channels[index:end]:
+                row = Gtk.ListBoxRow()
+                box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=7)
+                box.add_css_class("channel-nav-row")
+                if channel.thumbnail_url:
+                    icon = Gtk.Picture()
+                    icon.add_css_class("channel-avatar")
+                    icon.set_size_request(24, 24)
+                    icon.set_can_shrink(False)
+                    icon.set_content_fit(Gtk.ContentFit.COVER)
+                    self.clip_channel_avatar(icon)
+                    self.load_channel_nav_icon(channel, icon)
+                    box.append(icon)
+                else:
+                    fallback_icon = Gtk.Image.new_from_icon_name("video-display-symbolic")
+                    fallback_icon.add_css_class("dim-label")
+                    box.append(fallback_icon)
+                label = Gtk.Label(label=channel.title, xalign=0, hexpand=True)
+                label.add_css_class("channel-nav-label")
+                label.add_css_class("dim-label")
+                label.set_ellipsize(Pango.EllipsizeMode.END)
+                box.append(label)
+                status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+                box.append(status_box)
+                self.channel_nav_status_boxes[channel.id] = status_box
+                self.channel_nav_status_channels[channel.id] = channel
+                self.update_channel_nav_status(
+                    channel,
+                    status_box,
+                    new_video_counts.get(channel.id, 0),
+                )
+                row.set_child(box)
+                right_click = Gtk.GestureClick()
+                right_click.set_button(3)
+                right_click.connect(
+                    "pressed",
+                    lambda _gesture, _n_press, x, y, channel=channel, row=row: (
+                        self.show_channel_context_menu(row, channel, x, y)
+                    ),
+                )
+                row.add_controller(right_click)
+                self.nav_channels[row] = channel
+                self.channel_rows[channel.id] = row
+                self.channel_nav_rows.append(row)
+                self.nav.append(row)
+
+            index = end
+            if index < len(channels):
+                return True
+
+            if self.current_view and self.current_view.channel_id is not None:
+                self.select_nav_channel(self.current_view.channel_id)
+            else:
+                GLib.idle_add(self.release_nav_selection_suppression)
+            return False
+
+        GLib.idle_add(append_batch)
 
     def set_channel_refreshing(self, channel_id: str, active: bool) -> bool:
         if active:
@@ -1775,25 +1850,43 @@ class MainWindow(
         self.grid_generations[id(self.history_grid)] = (
             self.grid_generations.get(id(self.history_grid), 0) + 1
         )
-        for video in videos:
-            try:
-                self.history_grid.append(
-                    self.video_tile(video, on_context_menu=self.show_history_context_menu)
-                )
-            except Exception:
-                import traceback
-                self.log(f"Failed to render history tile for {video.id}:\n{traceback.format_exc()}")
-        has_videos = bool(videos)
-        self.history_grid.set_visible(has_videos)
-        self.history_empty_box.set_visible(not has_videos)
-        if has_videos:
-            return
-        if query:
-            self.history_empty_title.set_label("No history results")
-            self.history_empty_help.set_label("No watched videos matched this search.")
-        else:
-            self.history_empty_title.set_label("No watch history")
-            self.history_empty_help.set_label("Videos you watch will appear here.")
+        generation = self.grid_generations[id(self.history_grid)]
+        index = 0
+
+        def append_batch() -> bool:
+            nonlocal index
+            if self.grid_generations.get(id(self.history_grid), 0) != generation:
+                return False
+            
+            batch_size = 12
+            end = min(index + batch_size, len(videos))
+            for video in videos[index:end]:
+                try:
+                    self.history_grid.append(
+                        self.video_tile(video, on_context_menu=self.show_history_context_menu)
+                    )
+                except Exception:
+                    import traceback
+                    self.log(f"Failed to render history tile for {video.id}:\n{traceback.format_exc()}")
+            
+            index = end
+            if index < len(videos):
+                return True
+            
+            has_videos = bool(videos)
+            self.history_grid.set_visible(has_videos)
+            self.history_empty_box.set_visible(not has_videos)
+            if has_videos:
+                return False
+            if query:
+                self.history_empty_title.set_label("No history results")
+                self.history_empty_help.set_label("No watched videos matched this search.")
+            else:
+                self.history_empty_title.set_label("No watch history")
+                self.history_empty_help.set_label("Videos you watch will appear here.")
+            return False
+
+        GLib.idle_add(append_batch)
 
     def set_feed_loading(self, loading: bool, label: str = "Loading more...") -> None:
         self.feed_loading_label.set_text(label)

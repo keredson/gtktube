@@ -40,33 +40,69 @@ class ThumbnailMixin:
         url = self.absolute_media_url(url)
         download_url = self.absolute_media_url(download_url or url)
         path = self.thumbnail_path(url, suffix)
-        if path.exists():
-            if self.set_thumbnail_file(picture, path, width, height):
-                return
-            if log_label:
-                self.log(f"{log_label} cached image decode failed path={path} url={url}")
+
+        def decode_and_set(image_path: Path) -> bool:
             try:
-                path.unlink()
-            except OSError:
-                pass
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                    str(image_path),
+                    width,
+                    height,
+                    True,
+                )
+                texture = Gdk.Texture.new_for_pixbuf(pixbuf)
+            except GLib.Error:
+                if log_label:
+                    self.log(f"{log_label} image decode failed path={image_path} url={url}")
+                if image_path == path:
+                    try:
+                        image_path.unlink()
+                    except OSError:
+                        pass
+                return False
+
+            if picture.get_parent() is not None:
+                picture.set_paintable(texture)
+            return False
+
+        if path.exists():
+            future = self.executor.submit(
+                GdkPixbuf.Pixbuf.new_from_file_at_scale,
+                str(path),
+                width,
+                height,
+                True,
+            )
+
+            def done_cached() -> bool:
+                try:
+                    pixbuf = future.result()
+                    texture = Gdk.Texture.new_for_pixbuf(pixbuf)
+                    if picture.get_parent() is not None:
+                        picture.set_paintable(texture)
+                except Exception:
+                    if log_label:
+                        self.log(f"{log_label} cached image decode failed path={path} url={url}")
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+                return False
+
+            future.add_done_callback(lambda _f: GLib.idle_add(done_cached))
+            return
 
         future = self.executor.submit(self.download_thumbnail, download_url, path)
 
-        def done() -> bool:
+        def done_download() -> bool:
             try:
                 downloaded = future.result()
             except Exception:
                 return False
-            if downloaded.exists() and picture.get_parent() is not None:
-                if not self.set_thumbnail_file(picture, downloaded, width, height):
-                    if log_label:
-                        self.log(
-                            f"{log_label} downloaded image decode failed "
-                            f"path={downloaded} url={download_url}"
-                        )
+            if downloaded.exists():
+                GLib.idle_add(decode_and_set, downloaded)
             return False
 
-        future.add_done_callback(lambda _future: GLib.idle_add(done))
+        future.add_done_callback(lambda _f: GLib.idle_add(done_download))
 
     def absolute_media_url(self, url: str) -> str:
         if url.startswith("//"):
