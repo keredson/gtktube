@@ -43,11 +43,6 @@ APP_CSS = """
 
 .queue-row {
   padding: 6px;
-  border-bottom: 1px solid alpha(currentColor, 0.06);
-}
-
-.queue-row:last-child {
-  border-bottom: none;
 }
 
 .video-progress {
