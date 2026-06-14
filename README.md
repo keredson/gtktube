@@ -5,7 +5,7 @@
 </p>
 
 GTKTube is a local privacy-first Python/GTK4 YouTube player for Linux.
-It stores subscriptions and viewing history locally in SQLite, and does not use a Google account.
+It stores subscriptions and viewing history locally in SQLite, and does not require a Google account.
 The feed has no algorithm. It just shows recent videos from the channels you subscribe to.
 
 ## Features
