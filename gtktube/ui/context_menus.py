@@ -24,6 +24,14 @@ class ContextMenuMixin:
         actions.set_margin_end(6)
         popover.set_child(actions)
 
+        copy_url = Gtk.Button(label="Copy URL")
+        copy_url.add_css_class("flat")
+        copy_url.set_halign(Gtk.Align.FILL)
+        copy_url.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "copy")
+        )
+        actions.append(copy_url)
+
         open_video = Gtk.Button(label="Open video")
         open_video.add_css_class("flat")
         open_video.set_halign(Gtk.Align.FILL)
@@ -193,6 +201,14 @@ class ContextMenuMixin:
         actions.set_margin_end(6)
         popover.set_child(actions)
 
+        copy_url = Gtk.Button(label="Copy URL")
+        copy_url.add_css_class("flat")
+        copy_url.set_halign(Gtk.Align.FILL)
+        copy_url.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "copy")
+        )
+        actions.append(copy_url)
+
         open_video = Gtk.Button(label="Open video")
         open_video.add_css_class("flat")
         open_video.set_halign(Gtk.Align.FILL)
@@ -256,6 +272,14 @@ class ContextMenuMixin:
         actions.set_margin_start(6)
         actions.set_margin_end(6)
         popover.set_child(actions)
+
+        copy_url = Gtk.Button(label="Copy URL")
+        copy_url.add_css_class("flat")
+        copy_url.set_halign(Gtk.Align.FILL)
+        copy_url.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "copy")
+        )
+        actions.append(copy_url)
 
         open_video = Gtk.Button(label="Open video")
         open_video.add_css_class("flat")
@@ -331,6 +355,14 @@ class ContextMenuMixin:
         actions.set_margin_end(6)
         popover.set_child(actions)
 
+        copy_url = Gtk.Button(label="Copy URL")
+        copy_url.add_css_class("flat")
+        copy_url.set_halign(Gtk.Align.FILL)
+        copy_url.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "copy")
+        )
+        actions.append(copy_url)
+
         play_now = Gtk.Button(label="Play now")
         play_now.add_css_class("flat")
         play_now.set_halign(Gtk.Align.FILL)
@@ -376,7 +408,9 @@ class ContextMenuMixin:
     ) -> None:
         popover.popdown()
         popover.unparent()
-        if action == "channel":
+        if action == "copy":
+            self.copy_to_clipboard(video.url, "Copied video URL")
+        elif action == "channel":
             self.open_video_channel(video)
         elif action == "queue":
             self.add_to_queue(video)
