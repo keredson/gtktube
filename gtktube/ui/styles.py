@@ -51,6 +51,11 @@ APP_CSS = """
   opacity: 0.3;
 }
 
+.queue-row.current {
+  outline: 2px solid @theme_selected_bg_color;
+  outline-offset: -2px;
+}
+
 .video-progress {
   background: alpha(currentColor, 0.2);
 }
@@ -58,14 +63,14 @@ APP_CSS = """
 .video-progress progress {
   background-color: #f00;
   border: none;
-  border-radius: 0;
+  border-radius:0;
   min-height: 3px;
 }
 
 .video-progress trough {
   background: transparent;
   border: none;
-  border-radius: 0;
+  border-radius:0;
   min-height: 3px;
 }
 

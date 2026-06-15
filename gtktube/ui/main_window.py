@@ -2072,8 +2072,11 @@ class MainWindow(
         self.playlist_current_index = index
         item = self.playlist_store.get_item(index)
         self.play_video(item.video, hide_sidebar=False)
+        self.update_playlist_rows()
 
-    def toggle_playlist_skip(self, index: int) -> None:
+    def toggle_playlist_skip(self, popover: Gtk.Popover, index: int) -> None:
+        popover.popdown()
+        popover.unparent()
         if index in self.playlist_skip_set:
             self.playlist_skip_set.discard(index)
         else:
@@ -2087,8 +2090,12 @@ class MainWindow(
             box = current.get_child()
             if box is not None:
                 if idx in self.playlist_skip_set:
-                    box.add_css_class("skipped")
+                    current.add_css_class("skipped")
                 else:
-                    box.remove_css_class("skipped")
+                    current.remove_css_class("skipped")
+                if idx == self.playlist_current_index:
+                    current.add_css_class("current")
+                else:
+                    current.remove_css_class("current")
             idx += 1
             current = current.get_next_sibling()
