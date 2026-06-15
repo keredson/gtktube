@@ -2057,7 +2057,7 @@ class MainWindow(
             return
         self.playlist_current_index = index
         item = self.playlist_store.get_item(index)
-        self.play_video(item.video)
+        self.play_video(item.video, hide_sidebar=False)
 
     def toggle_playlist_skip(self, index: int) -> None:
         if index in self.playlist_skip_set:

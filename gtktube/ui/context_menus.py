@@ -390,6 +390,8 @@ class ContextMenuMixin:
     def add_to_queue(self, video: Video) -> None:
         self.video_queue.append(VideoObject(video))
         self.queue_pane.set_visible(True)
+        # Mutual exclusivity: Queue active, hide playlist
+        self.playlist_pane.set_visible(False)
 
     def remove_from_queue(self, popover: Gtk.Popover, index: int) -> None:
         popover.popdown()

@@ -46,8 +46,11 @@ class PlayerMixin:
             parts.append("completed")
         return parts
 
-    def play_video(self, video: Video) -> None:
+    def play_video(self, video: Video, hide_sidebar: bool = True) -> None:
         self.navigate_to(ViewState("player"))
+        # Mutual exclusivity: Playing a random video hides the playlist
+        if hide_sidebar:
+            self.playlist_pane.set_visible(False)
         quality = self.selected_quality()
         self.verbose_log(
             "playback requested "

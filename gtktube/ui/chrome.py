@@ -88,6 +88,12 @@ class ChromeMixin:
             while self.playlist_store.get_n_items() > 0:
                 self.playlist_store.remove(0)
             self.playlist_skip_set.clear()
+            
+            # Mutual exclusivity: Playlist active, hide/clear queue
+            while self.video_queue.get_n_items() > 0:
+                self.video_queue.remove(0)
+            self.queue_pane.set_visible(False)
+            
             self.playlist_pane.set_visible(True)
             self.set_status("Loading playlist...")
             self.run_task(
@@ -97,6 +103,9 @@ class ChromeMixin:
             )
             return
         if self.is_video_url(url):
+            # Mutual exclusivity: Playing a video hides the playlist
+            self.playlist_pane.set_visible(False)
+            
             self.navigate_to(ViewState("player"))
             quality = self.selected_quality()
             self.run_task(
