@@ -563,6 +563,8 @@ class PlayerMixin:
     def on_mpv_end_file(self) -> None:
         if self.video_queue.get_n_items() > 0:
             self.play_next_in_queue()
+        elif self.playlist_current_index is not None:
+            self.play_next_in_playlist()
 
     def play_next_in_queue(self) -> None:
         if self.video_queue.get_n_items() > 0:
@@ -570,6 +572,17 @@ class PlayerMixin:
             self.video_queue.remove(0)
             self.queue_pane.set_visible(self.video_queue.get_n_items() > 0)
             self.play_video(item.video)
+
+    def play_next_in_playlist(self) -> None:
+        items_total = self.playlist_store.get_n_items()
+        if items_total == 0:
+            return
+        next_idx = self.playlist_current_index + 1
+        while next_idx < items_total:
+            if next_idx not in self.playlist_skip_set:
+                self.play_playlist_item(next_idx)
+                return
+            next_idx += 1
 
     def stop_pipeline(self, restore_stack: bool = True) -> None:
         if self.video_fullscreen:

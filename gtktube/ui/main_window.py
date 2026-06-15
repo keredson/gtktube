@@ -103,6 +103,9 @@ class MainWindow(
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
         self.executor = ThreadPoolExecutor(max_workers=3)
         self.video_queue = Gio.ListStore(item_type=VideoObject)
+        self.playlist_store = Gio.ListStore(item_type=VideoObject)
+        self.playlist_current_index: int | None = None
+        self.playlist_skip_set: set[int] = set()
         self.dragging_index = -1
         self.current_playable: PlayableVideo | None = None
         self.sponsorblock = SponsorBlockClient()
@@ -273,6 +276,8 @@ class MainWindow(
         self.build_miniplayer()
         self.build_queue_pane()
         body.append(self.queue_pane)
+        self.build_playlist_pane()
+        body.append(self.playlist_pane)
 
         self.pages: dict[str, Gtk.Widget] = {}
         for key, title in [
@@ -1058,6 +1063,31 @@ class MainWindow(
         self.queue_list.bind_model(self.video_queue, self.create_queue_row)
         scroller.set_child(self.queue_list)
         self.queue_pane.append(scroller)
+
+    def build_playlist_pane(self) -> None:
+        self.playlist_pane = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.playlist_pane.add_css_class("queue-pane")
+        self.playlist_pane.set_size_request(320, -1)
+        self.playlist_pane.set_visible(False)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        header.set_margin_top(14)
+        header.set_margin_bottom(0)
+        header.set_margin_start(12)
+        header.set_margin_end(12)
+        label = Gtk.Label(label="Playlist")
+        label.add_css_class("heading")
+        header.append(label)
+        self.playlist_pane.append(header)
+
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.playlist_list = Gtk.ListBox()
+        self.playlist_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.playlist_list.add_css_class("sidebar-list")
+        self.playlist_list.bind_model(self.playlist_store, self.create_playlist_row)
+        scroller.set_child(self.playlist_list)
+        self.playlist_pane.append(scroller)
 
     def build_player_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -2006,3 +2036,91 @@ class MainWindow(
             next_child = child.get_next_sibling()
             flowbox.remove(child)
             child = next_child
+
+    def create_playlist_row(self, item: VideoObject) -> Gtk.Widget:
+        video = item.video
+        row = Gtk.ListBoxRow()
+        row.add_css_class("queue-row")
+        tile = self.queue_video_tile(
+            video,
+            on_clicked=lambda _: self.play_playlist_item(row.get_index()),
+            on_context_menu=lambda _w, _v, x, y: self.show_playlist_context_menu(
+                row, video, x, y
+            ),
+        )
+        tile.set_halign(Gtk.Align.FILL)
+        row.set_child(tile)
+        return row
+
+    def play_playlist_item(self, index: int) -> None:
+        if index < 0 or index >= self.playlist_store.get_n_items():
+            return
+        self.playlist_current_index = index
+        item = self.playlist_store.get_item(index)
+        self.play_video(item.video)
+
+    def toggle_playlist_skip(self, index: int) -> None:
+        if index in self.playlist_skip_set:
+            self.playlist_skip_set.discard(index)
+        else:
+            self.playlist_skip_set.add(index)
+        self.update_playlist_rows()
+
+    def update_playlist_rows(self) -> None:
+        current = self.playlist_list.get_first_child()
+        idx = 0
+        while current is not None:
+            box = current.get_child()
+            if box is not None:
+                if idx in self.playlist_skip_set:
+                    box.add_css_class("skipped")
+                else:
+                    box.remove_css_class("skipped")
+            idx += 1
+            current = current.get_next_sibling()
+
+    def setup_playlist_dnd(self, row: Gtk.ListBoxRow) -> None:
+        source = Gtk.DragSource()
+        source.set_actions(Gdk.DragAction.MOVE)
+        source.connect(
+            "prepare",
+            lambda *_: Gdk.ContentProvider.new_for_value(row.get_index()),
+        )
+        source.connect(
+            "drag-begin", lambda *_: self.on_drag_begin(row)
+        )
+        row.add_controller(source)
+        target = Gtk.DropTarget.new(int, Gdk.DragAction.MOVE)
+        target.connect(
+            "drop", lambda *args: self.on_playlist_drop(row, *args)
+        )
+        target.connect(
+            "motion", lambda *args: self.on_playlist_motion(row, *args)
+        )
+        row.add_controller(target)
+
+    def on_playlist_motion(
+        self,
+        target_row: Gtk.ListBoxRow,
+        _target: Gtk.DropTarget,
+        _x: float,
+        _y: float,
+    ) -> Gdk.DragAction:
+        target_index = target_row.get_index()
+        if self.dragging_index != -1 and self.dragging_index != target_index:
+            item = self.playlist_store.get_item(self.dragging_index)
+            self.playlist_store.remove(self.dragging_index)
+            self.playlist_store.insert(target_index, item)
+            self.dragging_index = target_index
+        return Gdk.DragAction.MOVE
+
+    def on_playlist_drop(
+        self,
+        target_row: Gtk.ListBoxRow,
+        _target: Gtk.DropTarget,
+        source_index: int,
+        _x: float,
+        _y: float,
+    ) -> bool:
+        self.dragging_index = -1
+        return True

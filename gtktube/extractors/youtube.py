@@ -105,6 +105,17 @@ class YoutubeExtractor:
         except Exception as exc:
             raise ExtractorError(str(exc)) from exc
 
+    def resolve_playlist(self, url: str) -> dict[str, Any]:
+        info = self._extract(url, flat=True, ignore_errors=True)
+        title = info.get("title") or "Playlist"
+        entries = info.get("entries") or []
+        videos = [
+            self._video_from_info(entry)
+            for entry in entries
+            if entry is not None
+        ]
+        return {"title": title, "videos": videos}
+
     def resolve_video(
         self,
         url: str,
@@ -408,3 +419,8 @@ class YoutubeExtractor:
             return str(format_note)
         format_id = info.get("format_id")
         return str(format_id) if format_id else None
+
+def is_playlist_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query)
+    return "list" in params

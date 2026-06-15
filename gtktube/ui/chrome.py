@@ -12,8 +12,9 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 from gtktube import __version__
+from gtktube.extractors.youtube import is_playlist_url
 from gtktube.models import Channel
-from gtktube.ui.types import ViewState
+from gtktube.ui.types import VideoObject, ViewState
 from gtktube.update_check import (
     UpdateInfo,
     check_for_update,
@@ -83,6 +84,18 @@ class ChromeMixin:
 
     def open_url(self, url: str) -> None:
         url = self.normalized_url(url)
+        if is_playlist_url(url):
+            while self.playlist_store.get_n_items() > 0:
+                self.playlist_store.remove(0)
+            self.playlist_skip_set.clear()
+            self.playlist_pane.set_visible(True)
+            self.set_status("Loading playlist...")
+            self.run_task(
+                "Loading playlist...",
+                lambda: self.service.extractor.resolve_playlist(url),
+                self.load_playlist_result,
+            )
+            return
         if self.is_video_url(url):
             self.navigate_to(ViewState("player"))
             quality = self.selected_quality()
@@ -118,6 +131,15 @@ class ChromeMixin:
         if parsed.query and urllib.parse.parse_qs(parsed.query).get("v"):
             return True
         return bool(path_parts and path_parts[0] in {"shorts", "live", "embed"})
+
+    def load_playlist_result(self, result: dict[str, Any]) -> None:
+        for video in result["videos"]:
+            self.playlist_store.append(VideoObject(video))
+        self.playlist_skip_set.clear()
+        self.playlist_current_index = None
+        self.set_status("Playlist loaded")
+        if self.playlist_store.get_n_items() > 0:
+            self.play_playlist_item(0)
 
     def navigate_to(self, view: ViewState, record: bool = True) -> None:
         if self.current_view == view:

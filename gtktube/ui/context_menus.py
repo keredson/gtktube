@@ -439,3 +439,61 @@ class ContextMenuMixin:
         )
         self.service.repository.upsert_channel(channel, subscribed=False)
         self.show_channel_videos(channel)
+
+    def show_playlist_context_menu(
+        self, row: Gtk.ListBoxRow, video: Video, x: float, y: float
+    ) -> None:
+        popover = Gtk.Popover()
+        popover.set_parent(row)
+        actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        actions.set_margin_top(6)
+        actions.set_margin_bottom(6)
+        actions.set_margin_start(6)
+        actions.set_margin_end(6)
+        popover.set_child(actions)
+
+        copy_url = Gtk.Button(label="Copy URL")
+        copy_url.add_css_class("flat")
+        copy_url.set_halign(Gtk.Align.FILL)
+        copy_url.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "copy")
+        )
+        actions.append(copy_url)
+
+        play_now = Gtk.Button(label="Play now")
+        play_now.add_css_class("flat")
+        play_now.set_halign(Gtk.Align.FILL)
+        play_now.connect(
+            "clicked", lambda _: self.play_from_playlist(popover, row.get_index())
+        )
+        actions.append(play_now)
+
+        toggle_skip = Gtk.Button(label="Skip")
+        toggle_skip.add_css_class("flat")
+        toggle_skip.set_halign(Gtk.Align.FILL)
+        toggle_skip.connect(
+            "clicked", lambda _: self.toggle_playlist_skip(popover, row.get_index())
+        )
+        actions.append(toggle_skip)
+
+        rectangle = Gdk.Rectangle()
+        rectangle.x = int(x)
+        rectangle.y = int(y)
+        rectangle.width = 1
+        rectangle.height = 1
+        popover.set_pointing_to(rectangle)
+        popover.popup()
+
+    def play_from_playlist(self, popover: Gtk.Popover, index: int) -> None:
+        popover.popdown()
+        popover.unparent()
+        self.play_playlist_item(index)
+
+    def toggle_playlist_skip(self, popover: Gtk.Popover, index: int) -> None:
+        popover.popdown()
+        popover.unparent()
+        if index in self.playlist_skip_set:
+            self.playlist_skip_set.discard(index)
+        else:
+            self.playlist_skip_set.add(index)
+        self.update_playlist_rows()

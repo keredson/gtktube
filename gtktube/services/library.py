@@ -102,6 +102,10 @@ class LibraryService:
         )
         return self.repository.channel(channel.id) or channel
 
+    def resolve_playlist_url(self, url: str) -> dict[str, object]:
+        result = self.extractor.resolve_playlist(url)
+        return {"title": result["title"], "videos": result["videos"]}
+
     def refresh_channel(
         self,
         channel: Channel,
