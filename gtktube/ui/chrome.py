@@ -194,6 +194,8 @@ class ChromeMixin:
         self.update_context_unsubscribe_button(view)
         if view.channel_id is not None:
             self.update_channel_header(view)
+            self.channel_tabs_notebook.set_show_tabs(True)
+            self.channel_tabs_notebook.set_current_page(0)
             self.feed_grid.set_visible(True)
             self.feed_empty_box.set_visible(False)
             self.populate_video_grid(
@@ -203,12 +205,15 @@ class ChromeMixin:
                     self.channel_video_limits.get(view.channel_id, 30),
                 ),
             )
+            self.load_channel_playlists(view)
             self.select_nav_channel(view.channel_id)
             self.stack.set_visible_child_name("feed")
             return
 
         self.set_feed_loading(False)
         self.channel_header.set_visible(False)
+        self.channel_tabs_notebook.set_show_tabs(False)
+        self.channel_tabs_notebook.set_current_page(0)
         if view.page == "feed":
             self.reload_feed()
         elif view.page == "recommended":
@@ -225,6 +230,29 @@ class ChromeMixin:
 
         self.select_nav_page(view.page)
         self.stack.set_visible_child_name(view.page)
+
+    def load_channel_playlists(self, view: ViewState) -> None:
+        channel = self.service.repository.channel(view.channel_id)
+        if not channel:
+            return
+
+        def done(playlists: list[Video]) -> None:
+            if self.current_view != view:
+                return
+            self.clear_flowbox(self.channel_playlists_grid)
+            for playlist in playlists:
+                self.channel_playlists_grid.append(
+                    self.video_tile(
+                        playlist,
+                        on_clicked=lambda _w, p=playlist: self.open_url(p.url)
+                    )
+                )
+
+        self.run_task(
+            f"Loading {channel.title} playlists...",
+            lambda: self.service.channel_playlists(channel),
+            done,
+        )
 
     def update_header_subtitle(self, view: ViewState | None = None) -> None:
         view = view or self.current_view

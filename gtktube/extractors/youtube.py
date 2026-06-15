@@ -94,7 +94,7 @@ class YoutubeExtractor:
         if ignore_errors:
             options["ignoreerrors"] = True
         if flat:
-            options["extract_flat"] = "in_playlist"
+            options["extract_flat"] = True
         if start is not None:
             options["playliststart"] = start
         if limit is not None:
@@ -225,6 +225,28 @@ class YoutubeExtractor:
             videos.append(video)
         return videos
 
+    def channel_playlists(
+        self, channel: Channel, limit: int = 30, start: int = 1
+    ) -> list[Video]:
+        target = channel.url.rstrip("/")
+        if not target.endswith("/playlists"):
+            target = f"{target}/playlists"
+        info = self._extract(
+            target,
+            flat=True,
+            limit=limit,
+            start=start,
+            ignore_errors=True,
+        )
+        entries = info.get("entries") or []
+        playlists: list[Video] = []
+        for entry in entries:
+            if not entry:
+                continue
+            playlist = self._video_from_info(entry, fallback_channel=channel)
+            playlists.append(playlist)
+        return playlists
+
     def search(self, query: str, limit: int = 20) -> SearchResults:
         return SearchResults(
             videos=self.search_videos(query, limit=limit),
@@ -346,12 +368,22 @@ class YoutubeExtractor:
     def _best_thumbnail(self, info: dict[str, Any]) -> str | None:
         thumbnails = info.get("thumbnails") or []
         if thumbnails:
-            urls = [thumbnail.get("url") for thumbnail in thumbnails]
-            for url in reversed(urls):
+            # Sort by width or height if available to get the best quality
+            def score(t: dict[str, Any]) -> int:
+                return (t.get("width") or 0) * (t.get("height") or 0)
+            
+            sorted_thumbnails = sorted(thumbnails, key=score, reverse=True)
+            for t in sorted_thumbnails:
+                url = t.get("url")
                 if url and ".webp" not in str(url).lower():
                     return self._absolute_url(str(url))
-            if urls[-1]:
-                return self._absolute_url(str(urls[-1]))
+            
+            # Fallback to the first one regardless of format
+            if thumbnails:
+                url = thumbnails[-1].get("url")
+                if url:
+                    return self._absolute_url(str(url))
+
         thumbnail = info.get("thumbnail")
         return self._absolute_url(str(thumbnail)) if thumbnail else None
 

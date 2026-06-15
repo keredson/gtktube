@@ -39,7 +39,7 @@ APP_CSS = """
 .queue-pane {
   background: alpha(currentColor, 0.02);
   border-left: 1px solid alpha(currentColor, 0.14);
-  max-width: 160px;
+  min-width: 160px;
 }
 
 .queue-row {
@@ -87,5 +87,30 @@ APP_CSS = """
 
 .video-tile:hover {
   background: alpha(currentColor, 0.05);
+}
+
+.channel-tabs {
+  background: transparent;
+  border: none;
+}
+
+.channel-tabs header {
+  background: transparent;
+  border: none;
+}
+
+.channel-tabs header tabs {
+  background: transparent;
+  border: none;
+}
+
+.channel-tabs header tab {
+  background: transparent;
+  border: none;
+}
+
+.channel-tabs stack {
+  background: transparent;
+  border: none;
 }
 """

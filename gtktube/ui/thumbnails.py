@@ -60,8 +60,7 @@ class ThumbnailMixin:
                         pass
                 return False
 
-            if picture.get_parent() is not None:
-                picture.set_paintable(texture)
+            picture.set_paintable(texture)
             return False
 
         if path.exists():
@@ -77,8 +76,7 @@ class ThumbnailMixin:
                 try:
                     pixbuf = future.result()
                     texture = Gdk.Texture.new_for_pixbuf(pixbuf)
-                    if picture.get_parent() is not None:
-                        picture.set_paintable(texture)
+                    picture.set_paintable(texture)
                 except Exception:
                     if log_label:
                         self.log(f"{log_label} cached image decode failed path={path} url={url}")
@@ -130,9 +128,11 @@ class ThumbnailMixin:
         return self.thumbnail_dir / f"{digest}{suffix}"
 
     def thumbnail_cache_suffix(self, url: str) -> str:
-        extension = Path(url.split("?", 1)[0]).suffix.lower()
-        if extension in {".jpg", ".jpeg", ".png", ".webp"}:
-            return extension
+        # Some URLs have extensions followed by query params: IkU3c1kERcw/hqdefault.jpg?sqp=...
+        path = url.split("?", 1)[0].lower()
+        for ext in (".jpg", ".jpeg", ".png", ".webp"):
+            if path.endswith(ext):
+                return ext
         return ".img"
 
     def download_thumbnail(self, url: str, path: Path) -> Path:
@@ -155,7 +155,7 @@ class ThumbnailMixin:
         return path
 
     def display_thumbnail_url(self, video: Video) -> str:
-        if video.id:
+        if video.id and "/playlist" not in video.url and "list=" not in video.url:
             return f"https://img.youtube.com/vi/{video.id}/mqdefault.jpg"
         return self.jpeg_thumbnail_url(video.thumbnail_url or "")
 

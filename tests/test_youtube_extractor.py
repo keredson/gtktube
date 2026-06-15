@@ -58,7 +58,7 @@ class ChannelPaginationTest(unittest.TestCase):
 
         options, target = FakeYoutubeDL.calls[0]
         self.assertEqual(target, "https://www.youtube.com/channel/chan1/videos")
-        self.assertEqual(options["extract_flat"], "in_playlist")
+        self.assertEqual(options["extract_flat"], True)
         self.assertEqual(options["playliststart"], 31)
         self.assertEqual(options["playlistend"], 60)
         self.assertEqual(videos[0].id, "video31")

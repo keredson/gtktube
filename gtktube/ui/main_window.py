@@ -566,19 +566,29 @@ class MainWindow(
         GLib.idle_add(append_batch)
 
     def build_feed_page(self) -> None:
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        page.set_margin_top(12)
+        page.set_margin_bottom(12)
+        page.set_margin_start(12)
+        page.set_margin_end(12)
 
-        feed_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        feed_content.set_margin_top(12)
-        feed_content.set_margin_bottom(12)
-        feed_content.set_margin_start(12)
-        feed_content.set_margin_end(12)
         self.channel_header = self.build_channel_header()
         self.channel_header.set_visible(False)
-        feed_content.append(self.channel_header)
+        self.channel_header.set_margin_bottom(10)
+        page.append(self.channel_header)
 
+        self.channel_tabs_notebook = Gtk.Notebook()
+        self.channel_tabs_notebook.set_hexpand(True)
+        self.channel_tabs_notebook.set_vexpand(True)
+        self.channel_tabs_notebook.set_show_tabs(False)
+        self.channel_tabs_notebook.set_show_border(False)
+        self.channel_tabs_notebook.add_css_class("channel-tabs")
+        page.append(self.channel_tabs_notebook)
+
+        # Videos Tab
+        videos_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.feed_grid = self.create_video_grid()
-        feed_content.append(self.feed_grid)
+        videos_content.append(self.feed_grid)
 
         self.feed_empty_box = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL, spacing=12, vexpand=True, hexpand=True
@@ -602,7 +612,7 @@ class MainWindow(
         )
         empty_help.add_css_class("dim-label")
         self.feed_empty_box.append(empty_help)
-        feed_content.append(self.feed_empty_box)
+        videos_content.append(self.feed_empty_box)
 
         self.feed_loading_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.feed_loading_box.set_halign(Gtk.Align.CENTER)
@@ -615,13 +625,22 @@ class MainWindow(
         self.feed_loading_label = Gtk.Label(label="Loading more...")
         self.feed_loading_label.add_css_class("dim-label")
         self.feed_loading_box.append(self.feed_loading_label)
-        feed_content.append(self.feed_loading_box)
+        videos_content.append(self.feed_loading_box)
 
-        scroller = Gtk.ScrolledWindow(vexpand=True)
-        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_child(feed_content)
-        scroller.get_vadjustment().connect("value-changed", self.on_feed_scroll)
-        page.append(scroller)
+        videos_scroller = Gtk.ScrolledWindow(vexpand=True)
+        videos_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        videos_scroller.set_child(videos_content)
+        videos_scroller.get_vadjustment().connect("value-changed", self.on_feed_scroll)
+        
+        self.channel_tabs_notebook.append_page(videos_scroller, Gtk.Label(label="Videos"))
+
+        # Playlists Tab
+        self.channel_playlists_grid = self.create_video_grid()
+        playlists_scroller = Gtk.ScrolledWindow(vexpand=True)
+        playlists_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        playlists_scroller.set_child(self.channel_playlists_grid)
+        
+        self.channel_tabs_notebook.append_page(playlists_scroller, Gtk.Label(label="Playlists"))
 
         self.stack.add_named(page, "feed")
 
@@ -1043,6 +1062,7 @@ class MainWindow(
         self.queue_pane = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.queue_pane.add_css_class("queue-pane")
         self.queue_pane.set_size_request(160, -1)
+        self.queue_pane.set_hexpand(False)
         self.queue_pane.set_visible(False)
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)

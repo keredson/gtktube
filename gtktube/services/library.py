@@ -128,6 +128,11 @@ class LibraryService:
         self.repository.mark_channel_refresh(channel.id, success=True)
         return videos
 
+    def channel_playlists(
+        self, channel: Channel, limit: int = 30, start: int = 1
+    ) -> list[Video]:
+        return self.extractor.channel_playlists(channel, limit=limit, start=start)
+
     def refresh_subscriptions(
         self,
         limit_per_channel: int = 30,
