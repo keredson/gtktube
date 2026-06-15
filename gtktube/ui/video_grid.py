@@ -202,10 +202,11 @@ class VideoGridMixin:
         tile.add_controller(right_click)
 
         thumbnail = Gtk.Picture()
-        thumbnail.set_hexpand(True)
-        thumbnail.set_vexpand(True)
+        thumbnail.set_size_request(131, 74)
         thumbnail.set_content_fit(Gtk.ContentFit.COVER)
         thumbnail.set_can_shrink(False)
+        thumbnail.set_hexpand(True)
+        thumbnail.set_halign(Gtk.Align.FILL)
         self.load_thumbnail(video, thumbnail)
         tile.append(thumbnail)
 

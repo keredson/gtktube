@@ -39,6 +39,7 @@ APP_CSS = """
 .queue-pane {
   background: alpha(currentColor, 0.02);
   border-left: 1px solid alpha(currentColor, 0.14);
+  max-width: 160px;
 }
 
 .queue-row {

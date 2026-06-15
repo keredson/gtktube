@@ -1042,7 +1042,7 @@ class MainWindow(
     def build_queue_pane(self) -> None:
         self.queue_pane = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.queue_pane.add_css_class("queue-pane")
-        self.queue_pane.set_size_request(320, -1)
+        self.queue_pane.set_size_request(160, -1)
         self.queue_pane.set_visible(False)
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -1067,7 +1067,7 @@ class MainWindow(
     def build_playlist_pane(self) -> None:
         self.playlist_pane = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.playlist_pane.add_css_class("queue-pane")
-        self.playlist_pane.set_size_request(320, -1)
+        self.playlist_pane.set_size_request(160, -1)
         self.playlist_pane.set_visible(False)
 
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -2078,49 +2078,3 @@ class MainWindow(
                     box.remove_css_class("skipped")
             idx += 1
             current = current.get_next_sibling()
-
-    def setup_playlist_dnd(self, row: Gtk.ListBoxRow) -> None:
-        source = Gtk.DragSource()
-        source.set_actions(Gdk.DragAction.MOVE)
-        source.connect(
-            "prepare",
-            lambda *_: Gdk.ContentProvider.new_for_value(row.get_index()),
-        )
-        source.connect(
-            "drag-begin", lambda *_: self.on_drag_begin(row)
-        )
-        row.add_controller(source)
-        target = Gtk.DropTarget.new(int, Gdk.DragAction.MOVE)
-        target.connect(
-            "drop", lambda *args: self.on_playlist_drop(row, *args)
-        )
-        target.connect(
-            "motion", lambda *args: self.on_playlist_motion(row, *args)
-        )
-        row.add_controller(target)
-
-    def on_playlist_motion(
-        self,
-        target_row: Gtk.ListBoxRow,
-        _target: Gtk.DropTarget,
-        _x: float,
-        _y: float,
-    ) -> Gdk.DragAction:
-        target_index = target_row.get_index()
-        if self.dragging_index != -1 and self.dragging_index != target_index:
-            item = self.playlist_store.get_item(self.dragging_index)
-            self.playlist_store.remove(self.dragging_index)
-            self.playlist_store.insert(target_index, item)
-            self.dragging_index = target_index
-        return Gdk.DragAction.MOVE
-
-    def on_playlist_drop(
-        self,
-        target_row: Gtk.ListBoxRow,
-        _target: Gtk.DropTarget,
-        source_index: int,
-        _x: float,
-        _y: float,
-    ) -> bool:
-        self.dragging_index = -1
-        return True
