@@ -3,7 +3,11 @@ from __future__ import annotations
 import locale
 import os
 import re
+import hashlib
+import urllib.error
+import urllib.request
 from ctypes import byref, c_int, c_void_p
+from pathlib import Path
 from typing import Any, Callable
 
 import gi
@@ -13,7 +17,7 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from gtktube.extractors.youtube import QUALITY_FORMATS
-from gtktube.models import PlayableVideo, Video
+from gtktube.models import CaptionTrack, PlayableVideo, Video
 from gtktube.ui.types import ViewState
 
 
@@ -81,6 +85,7 @@ class PlayerMixin:
         self.updating_quality = False
         self.update_player_metadata(playable.video)
         self.update_subscribe_check(playable.video)
+        self.update_caption_tracks(playable)
         self.update_player_share_button()
         self.reload_channels()
         self.show_full_player()
@@ -148,6 +153,7 @@ class PlayerMixin:
             return
 
         self.range_start_seconds = resume if resume > 0 else 0
+        self.apply_selected_caption()
         self.show_full_player()
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
@@ -608,6 +614,7 @@ class PlayerMixin:
             self.log(f"mpv terminate failed: {exc}")
         self.player = None
         self.mpv_module = None
+        self.active_caption_url = None
         self.range_start_seconds = None
         self.pending_seek_seconds = None
         self.update_play_pause_button()
@@ -622,6 +629,7 @@ class PlayerMixin:
         self.flush_watch_range()
         self.stop_pipeline()
         self.current_playable = None
+        self.active_caption_url = None
         self.player_title.set_text("No video loaded")
         self.player_meta.set_text("")
         self.miniplayer_title.set_text("")
@@ -631,6 +639,7 @@ class PlayerMixin:
             Video(id="", channel_id="", title="", url="")
         )
         self.update_player_share_button()
+        self.update_caption_tracks(None)
 
     def on_play_pause_clicked(self, _button: Gtk.Button) -> None:
         self.toggle_play_pause()
@@ -842,6 +851,101 @@ class PlayerMixin:
         if self.updating_speed:
             return
         self.set_playback_rate(self.selected_speed())
+
+    def update_caption_tracks(self, playable: PlayableVideo | None) -> None:
+        previous_selection = self.selected_caption_id
+        self.updating_captions = True
+        self.caption_combo.remove_all()
+        self.caption_combo.append("off", "CC off")
+        captions = playable.captions if playable and playable.captions else []
+        for track in captions:
+            self.caption_combo.append(track.id, track.label)
+        active_id = (
+            previous_selection
+            if previous_selection != "off"
+            and any(track.id == previous_selection for track in captions)
+            else "off"
+        )
+        self.selected_caption_id = active_id
+        self.caption_combo.set_active_id(active_id)
+        self.caption_combo.set_visible(bool(captions))
+        self.updating_captions = False
+
+    def selected_caption_track(self) -> CaptionTrack | None:
+        if self.current_playable is None or self.selected_caption_id == "off":
+            return None
+        for track in self.current_playable.captions or []:
+            if track.id == self.selected_caption_id:
+                return track
+        return None
+
+    def on_caption_changed(self, _combo: Gtk.ComboBoxText) -> None:
+        if self.updating_captions:
+            return
+        self.selected_caption_id = self.caption_combo.get_active_id() or "off"
+        self.apply_selected_caption()
+
+    def apply_selected_caption(self) -> None:
+        if self.player is None:
+            return
+        track = self.selected_caption_track()
+        if track is None:
+            self.active_caption_url = None
+            try:
+                self.player.sid = "no"
+            except Exception as exc:
+                self.log(f"mpv caption disable failed: {exc}")
+            return
+        if self.active_caption_url == track.url:
+            return
+        self.active_caption_url = track.url
+        future = self.executor.submit(self.download_caption_track, track)
+
+        def done() -> bool:
+            try:
+                path = future.result()
+            except Exception as exc:
+                if self.active_caption_url == track.url:
+                    self.active_caption_url = None
+                    self.log(f"caption download failed: {exc}")
+                return False
+            if self.player is None or self.active_caption_url != track.url:
+                return False
+            try:
+                self.player.command("sub-add", str(path), "select", track.label)
+            except Exception as exc:
+                self.log(f"mpv caption load failed: {exc}")
+            return False
+
+        future.add_done_callback(lambda _future: GLib.idle_add(done))
+
+    def download_caption_track(self, track: CaptionTrack) -> Path:
+        path = self.caption_cache_path(track)
+        if path.exists() and path.stat().st_size > 0:
+            return path
+        request = urllib.request.Request(
+            track.url,
+            headers={
+                "User-Agent": "GTKTube/0.1",
+                "Accept": "text/vtt,text/*,*/*;q=0.5",
+            },
+        )
+        tmp_path = path.with_suffix(".tmp")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                data = response.read(4_000_000)
+        except (TimeoutError, urllib.error.URLError) as exc:
+            raise RuntimeError(str(exc)) from exc
+        if not data:
+            raise RuntimeError("empty caption response")
+        tmp_path.write_bytes(data)
+        tmp_path.replace(path)
+        return path
+
+    def caption_cache_path(self, track: CaptionTrack) -> Path:
+        digest = hashlib.sha256(track.url.encode("utf-8")).hexdigest()
+        return self.caption_dir / f"{digest}.vtt"
 
     def adjust_playback_rate(self, delta: float) -> None:
         next_rate = min(PLAYBACK_RATES, key=lambda rate: abs(rate - self.playback_rate))

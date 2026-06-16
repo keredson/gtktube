@@ -4,7 +4,7 @@ import os
 import urllib.parse
 from typing import Any
 
-from gtktube.models import Channel, PlayableVideo, SearchResults, Video
+from gtktube.models import CaptionTrack, Channel, PlayableVideo, SearchResults, Video
 
 
 class ExtractorError(RuntimeError):
@@ -166,6 +166,7 @@ class YoutubeExtractor:
             quality=selected_quality,
             audio_url=audio_url,
             resolved_quality=self._resolved_quality(info),
+            captions=self._caption_tracks(info),
         )
 
     def resolve_channel(self, url: str) -> Channel:
@@ -473,6 +474,66 @@ class YoutubeExtractor:
             return str(format_note)
         format_id = info.get("format_id")
         return str(format_id) if format_id else None
+
+    def _caption_tracks(self, info: dict[str, Any]) -> list[CaptionTrack]:
+        tracks: list[CaptionTrack] = []
+        seen_urls: set[str] = set()
+        for source_key, automatic in (
+            ("subtitles", False),
+            ("automatic_captions", True),
+        ):
+            subtitles = info.get(source_key) or {}
+            if not isinstance(subtitles, dict):
+                continue
+            for language, formats in subtitles.items():
+                if not isinstance(formats, list):
+                    continue
+                formats = self._caption_formats_without_translation(formats)
+                item = self._best_caption_format(formats)
+                if item is None:
+                    continue
+                url = item.get("url")
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(str(url))
+                language_name = str(language)
+                suffix = " auto" if automatic else ""
+                tracks.append(
+                    CaptionTrack(
+                        id=f"{source_key}:{language}",
+                        label=f"{language_name}{suffix}",
+                        language=language_name,
+                        url=str(url),
+                        automatic=automatic,
+                    )
+                )
+        return tracks
+
+    def _caption_formats_without_translation(
+        self, formats: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in formats
+            if not self._caption_url_is_translation(str(item.get("url") or ""))
+        ]
+
+    def _caption_url_is_translation(self, url: str) -> bool:
+        if not url:
+            return False
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        return "tlang" in query
+
+    def _best_caption_format(self, formats: list[dict[str, Any]]) -> dict[str, Any] | None:
+        priorities = ("vtt", "webvtt", "srv3", "ttml")
+        for extension in priorities:
+            for item in formats:
+                if item.get("url") and item.get("ext") == extension:
+                    return item
+        for item in formats:
+            if item.get("url"):
+                return item
+        return None
 
 def is_playlist_url(url: str) -> bool:
     parsed = urllib.parse.urlparse(url)

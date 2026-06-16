@@ -101,6 +101,8 @@ class MainWindow(
         self.verbose = verbose
         self.thumbnail_dir = paths.cache_dir / "thumbnails"
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
+        self.caption_dir = paths.cache_dir / "captions"
+        self.caption_dir.mkdir(parents=True, exist_ok=True)
         self.executor = ThreadPoolExecutor(max_workers=3)
         self.video_queue = Gio.ListStore(item_type=VideoObject)
         self.playlist_store = Gio.ListStore(item_type=VideoObject)
@@ -127,8 +129,11 @@ class MainWindow(
         self.updating_channel_subscribe_check = False
         self.updating_quality = False
         self.updating_speed = False
+        self.updating_captions = False
         self.updating_settings = False
         self.playback_rate = 1.0
+        self.selected_caption_id = "off"
+        self.active_caption_url: str | None = None
         self.preferred_quality = self.service.repository.default_video_quality()
         self.description_link_generation = 0
         self.current_channel_url: str | None = None
@@ -1189,6 +1194,14 @@ class MainWindow(
         self.speed_combo.set_active_id(self.speed_id(self.playback_rate))
         self.speed_combo.connect("changed", self.on_speed_changed)
         self.player_controls.append(self.speed_combo)
+
+        self.caption_combo = Gtk.ComboBoxText()
+        self.caption_combo.append("off", "CC off")
+        self.caption_combo.set_active_id("off")
+        self.caption_combo.set_tooltip_text("Closed captions")
+        self.caption_combo.connect("changed", self.on_caption_changed)
+        self.caption_combo.set_visible(False)
+        self.player_controls.append(self.caption_combo)
 
         self.fullscreen_icon = Gtk.Image.new_from_icon_name("view-fullscreen-symbolic")
         self.fullscreen_button = Gtk.Button(child=self.fullscreen_icon)

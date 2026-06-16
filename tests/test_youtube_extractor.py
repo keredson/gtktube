@@ -109,5 +109,97 @@ class ChannelPaginationTest(unittest.TestCase):
         self.assertEqual(videos[0].id, "short11")
 
 
+class CaptionExtractionTest(unittest.TestCase):
+    def test_resolve_video_includes_manual_and_auto_captions(self) -> None:
+        class FakeYoutubeDL:
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(self, target: str, download: bool = False) -> dict[str, object]:
+                return {
+                    "id": "video1",
+                    "title": "Video 1",
+                    "url": "https://stream.example/video.mp4",
+                    "subtitles": {
+                        "en": [
+                            {"ext": "json3", "url": "https://example.invalid/en.json3"},
+                            {"ext": "vtt", "url": "https://example.invalid/en.vtt"},
+                        ]
+                    },
+                    "automatic_captions": {
+                        "es": [
+                            {"ext": "vtt", "url": "https://example.invalid/es-auto.vtt"}
+                        ]
+                    },
+                }
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        playable = extractor.resolve_video("https://www.youtube.com/watch?v=video1")
+
+        captions = playable.captions or []
+        self.assertEqual([caption.id for caption in captions], [
+            "subtitles:en",
+            "automatic_captions:es",
+        ])
+        self.assertEqual(captions[0].url, "https://example.invalid/en.vtt")
+        self.assertFalse(captions[0].automatic)
+        self.assertTrue(captions[1].automatic)
+
+    def test_resolve_video_ignores_auto_translated_captions(self) -> None:
+        class FakeYoutubeDL:
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(self, target: str, download: bool = False) -> dict[str, object]:
+                return {
+                    "id": "video1",
+                    "title": "Video 1",
+                    "url": "https://stream.example/video.mp4",
+                    "automatic_captions": {
+                        "en": [
+                            {
+                                "ext": "vtt",
+                                "url": "https://www.youtube.com/api/timedtext?v=video1&lang=en&fmt=vtt",
+                            }
+                        ],
+                        "fr": [
+                            {
+                                "ext": "vtt",
+                                "url": "https://www.youtube.com/api/timedtext?v=video1&lang=en&fmt=vtt&tlang=fr",
+                            }
+                        ],
+                        "zh-Hans": [
+                            {
+                                "ext": "vtt",
+                                "url": "https://www.youtube.com/api/timedtext?v=video1&lang=en&fmt=vtt&tlang=zh-Hans",
+                            }
+                        ],
+                    },
+                }
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        playable = extractor.resolve_video("https://www.youtube.com/watch?v=video1")
+
+        captions = playable.captions or []
+        self.assertEqual([caption.id for caption in captions], ["automatic_captions:en"])
+        self.assertEqual(captions[0].label, "en auto")
+
+
 if __name__ == "__main__":
     unittest.main()

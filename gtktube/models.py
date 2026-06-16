@@ -37,12 +37,22 @@ class SearchResults:
 
 
 @dataclass(frozen=True)
+class CaptionTrack:
+    id: str
+    label: str
+    language: str
+    url: str
+    automatic: bool = False
+
+
+@dataclass(frozen=True)
 class PlayableVideo:
     video: Video
     stream_url: str
     quality: str
     audio_url: str | None = None
     resolved_quality: str | None = None
+    captions: list[CaptionTrack] | None = None
 
 
 @dataclass(frozen=True)
