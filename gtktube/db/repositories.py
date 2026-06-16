@@ -151,7 +151,7 @@ class LibraryRepository:
                 (now, 1 if success else 0, now, now, channel_id),
             )
 
-    def channel_needs_refresh(self, channel_id: str, max_age_hours: int = 6) -> bool:
+    def channel_needs_refresh(self, channel_id: str, max_age_hours: int = 1) -> bool:
         with self._lock:
             row = self.connection.execute(
                 """
@@ -179,15 +179,16 @@ class LibraryRepository:
             self.connection.execute(
                 """
                 INSERT INTO videos (
-                    id, channel_id, title, url, thumbnail_url, duration_seconds,
+                    id, channel_id, title, url, kind, thumbnail_url, duration_seconds,
                     published_at, view_count, description, discovered_at,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     channel_id = COALESCE(excluded.channel_id, videos.channel_id),
                     title = excluded.title,
                     url = excluded.url,
+                    kind = excluded.kind,
                     thumbnail_url = COALESCE(excluded.thumbnail_url, videos.thumbnail_url),
                     duration_seconds = COALESCE(excluded.duration_seconds, videos.duration_seconds),
                     published_at = COALESCE(excluded.published_at, videos.published_at),
@@ -200,6 +201,7 @@ class LibraryRepository:
                     video.channel_id,
                     video.title,
                     video.url,
+                    video.kind,
                     video.thumbnail_url,
                     video.duration_seconds,
                     video.published_at,
@@ -473,6 +475,7 @@ class LibraryRepository:
                 WHERE c.is_subscribed = 1
                   AND c.new_videos_cleared_at IS NOT NULL
                   AND v.discovered_at > c.new_videos_cleared_at
+                  AND v.kind = 'video'
                   AND wh.video_id IS NULL
                 GROUP BY c.id
                 """
@@ -520,6 +523,7 @@ class LibraryRepository:
                 LEFT JOIN watch_history wh ON wh.video_id = v.id
                 LEFT JOIN hidden_videos hv ON hv.video_id = v.id
                 WHERE hv.video_id IS NULL
+                  AND v.kind = 'video'
             )
             SELECT
                 v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
@@ -535,7 +539,6 @@ class LibraryRepository:
             WHERE c.is_subscribed = 1
               AND v.channel_day_rank <= ?
             ORDER BY
-                CASE WHEN v.published_at IS NULL THEN 1 ELSE 0 END,
                 COALESCE(v.published_at, v.discovered_at) DESC
             LIMIT ?
             """,
@@ -557,8 +560,8 @@ class LibraryRepository:
             LEFT JOIN watch_progress wp ON wp.video_id = v.id
             LEFT JOIN watch_history wh ON wh.video_id = v.id
             WHERE v.channel_id = ?
+              AND v.kind = 'video'
             ORDER BY
-                CASE WHEN v.published_at IS NULL THEN 1 ELSE 0 END,
                 COALESCE(v.published_at, v.discovered_at) DESC
             LIMIT ?
             """,
@@ -568,7 +571,12 @@ class LibraryRepository:
     def channel_video_count(self, channel_id: str) -> int:
         with self._lock:
             row = self.connection.execute(
-                "SELECT COUNT(*) AS count FROM videos WHERE channel_id = ?",
+                """
+                SELECT COUNT(*) AS count
+                FROM videos
+                WHERE channel_id = ?
+                  AND kind = 'video'
+                """,
                 (channel_id,),
             ).fetchone()
         return int(row["count"]) if row else 0

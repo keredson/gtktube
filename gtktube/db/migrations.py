@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def migrate(connection: sqlite3.Connection) -> None:
@@ -35,6 +35,9 @@ def migrate(connection: sqlite3.Connection) -> None:
         current = 7
     if current < 8:
         _migrate_8(connection)
+        current = 8
+    if current < 9:
+        _migrate_9(connection)
 
 
 def _migrate_1(connection: sqlite3.Connection) -> None:
@@ -421,5 +424,24 @@ def _migrate_8(connection: sqlite3.Connection) -> None:
             );
 
             PRAGMA user_version = 8;
+            """
+        )
+
+
+def _migrate_9(connection: sqlite3.Connection) -> None:
+    with connection:
+        connection.executescript(
+            """
+            ALTER TABLE videos
+            ADD COLUMN kind TEXT NOT NULL DEFAULT 'video';
+
+            UPDATE videos
+            SET kind = 'short'
+            WHERE url LIKE '%/shorts/%';
+
+            CREATE INDEX idx_videos_kind_channel_published
+            ON videos(kind, channel_id, published_at DESC, discovered_at DESC);
+
+            PRAGMA user_version = 9;
             """
         )

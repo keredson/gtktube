@@ -225,15 +225,31 @@ class PlayerMixin:
         self.update_player_share_button()
 
     def set_description_text(self, text: str) -> None:
-        buffer = self.player_description.get_buffer()
+        self.description_text = text
+        has_description = bool(text.strip())
+        if not has_description and self.description_window is not None:
+            self.description_window.close()
+        self.player_description_button.set_sensitive(has_description)
+        if self.description_window is not None and has_description:
+            self.populate_description_window()
+
+    def description_text_view(self, text: str) -> Gtk.TextView:
+        text_view = Gtk.TextView()
+        text_view.set_editable(False)
+        text_view.set_cursor_visible(False)
+        text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        text_view.set_left_margin(8)
+        text_view.set_right_margin(8)
+        text_view.set_top_margin(8)
+        text_view.set_bottom_margin(8)
+        link_tags: dict[str, str] = {}
+        buffer = text_view.get_buffer()
         buffer.set_text(text)
-        self.description_link_tags = {}
-        self.description_link_generation += 1
         for index, match in enumerate(URL_PATTERN.finditer(text)):
             start_offset = match.start()
             end_offset = self.link_end_offset(text, match.end())
             url = text[start_offset:end_offset]
-            tag_name = f"description-link-{self.description_link_generation}-{index}"
+            tag_name = f"description-link-{index}"
             tag = buffer.create_tag(
                 tag_name,
                 underline=Pango.Underline.SINGLE,
@@ -242,37 +258,135 @@ class PlayerMixin:
             start = buffer.get_iter_at_offset(start_offset)
             end = buffer.get_iter_at_offset(end_offset)
             buffer.apply_tag(tag, start, end)
-            self.description_link_tags[tag_name] = self.normalized_url(url)
+            link_tags[tag_name] = self.normalized_url(url)
+
+        click = Gtk.GestureClick()
+        click.set_button(1)
+        click.connect(
+            "released",
+            lambda gesture, n_press, x, y, view=text_view, tags=link_tags: (
+                self.on_description_view_clicked(gesture, n_press, x, y, view, tags)
+            ),
+        )
+        text_view.add_controller(click)
+
+        motion = Gtk.EventControllerMotion()
+        motion.connect(
+            "motion",
+            lambda _controller, x, y, view=text_view, tags=link_tags: (
+                self.on_description_view_motion(view, tags, x, y)
+            ),
+        )
+        motion.connect(
+            "leave",
+            lambda _controller, view=text_view: view.set_cursor(None),
+        )
+        text_view.add_controller(motion)
+        return text_view
 
     def link_end_offset(self, text: str, end: int) -> int:
         while end > 0 and text[end - 1] in ".,;:!?)]}":
             end -= 1
         return end
 
-    def on_description_clicked(
+    def on_player_description_toggled(self, button: Gtk.ToggleButton) -> None:
+        if button.get_active():
+            button.set_tooltip_text("Hide description")
+            self.show_description_window()
+        else:
+            button.set_tooltip_text("Show description")
+            if self.description_window is not None:
+                self.description_window.close()
+
+    def show_description_window(self) -> None:
+        if not self.description_text.strip():
+            self.player_description_button.set_active(False)
+            return
+        if self.description_window is not None:
+            self.description_window.present()
+            return
+
+        window = Gtk.Window(title="Description")
+        window.set_transient_for(self)
+        window.set_modal(False)
+        window.set_default_size(680, 520)
+        window.connect("close-request", self.on_description_window_close)
+
+        self.description_window = window
+        self.populate_description_window()
+        window.present()
+
+    def populate_description_window(self) -> None:
+        if self.description_window is None:
+            return
+        if self.current_playable is not None:
+            self.description_window.set_title(
+                f"Description - {self.current_playable.video.title}"
+            )
+        else:
+            self.description_window.set_title("Description")
+
+        scroller = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_child(self.description_text_view(self.description_text))
+        self.description_window.set_child(scroller)
+
+    def on_description_window_close(self, _window: Gtk.Window) -> bool:
+        self.description_window = None
+        self.player_description_button.set_tooltip_text("Show description")
+        if self.player_description_button.get_active():
+            self.player_description_button.set_active(False)
+        return False
+
+    def on_description_view_clicked(
         self,
         _gesture: Gtk.GestureClick,
         _n_press: int,
         x: float,
         y: float,
+        text_view: Gtk.TextView,
+        link_tags: dict[str, str],
     ) -> None:
-        buffer_x, buffer_y = self.player_description.window_to_buffer_coords(
+        uri = self.description_uri_at_location(text_view, link_tags, x, y)
+        if uri:
+            Gtk.show_uri(self, uri, Gdk.CURRENT_TIME)
+
+    def on_description_view_motion(
+        self,
+        text_view: Gtk.TextView,
+        link_tags: dict[str, str],
+        x: float,
+        y: float,
+    ) -> None:
+        if self.description_uri_at_location(text_view, link_tags, x, y):
+            text_view.set_cursor_from_name("pointer")
+        else:
+            text_view.set_cursor(None)
+
+    def description_uri_at_location(
+        self,
+        text_view: Gtk.TextView,
+        link_tags: dict[str, str],
+        x: float,
+        y: float,
+    ) -> str | None:
+        buffer_x, buffer_y = text_view.window_to_buffer_coords(
             Gtk.TextWindowType.WIDGET,
             int(x),
             int(y),
         )
-        found, text_iter = self.player_description.get_iter_at_location(
+        found, text_iter = text_view.get_iter_at_location(
             buffer_x,
             buffer_y,
         )
         if not found:
-            return
+            return None
         for tag in text_iter.get_tags():
             name = tag.props.name
-            uri = self.description_link_tags.get(name)
+            uri = link_tags.get(name)
             if uri:
-                Gtk.show_uri(self, uri, Gdk.CURRENT_TIME)
-                return
+                return uri
+        return None
 
     def update_subscribe_check(self, video: Video) -> None:
         subscribed = self.service.repository.is_subscribed(video.channel_id)
@@ -635,6 +749,8 @@ class PlayerMixin:
         self.miniplayer_title.set_text("")
         self.miniplayer_meta.set_text("")
         self.set_description_text("")
+        if self.description_window is not None:
+            self.description_window.close()
         self.update_subscribe_check(
             Video(id="", channel_id="", title="", url="")
         )

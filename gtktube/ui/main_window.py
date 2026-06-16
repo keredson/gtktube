@@ -135,7 +135,6 @@ class MainWindow(
         self.selected_caption_id = "off"
         self.active_caption_url: str | None = None
         self.preferred_quality = self.service.repository.default_video_quality()
-        self.description_link_generation = 0
         self.current_channel_url: str | None = None
         self.video_fullscreen = False
         self.fullscreen_return_view: ViewState | None = None
@@ -1249,25 +1248,21 @@ class MainWindow(
         self.player_share_button.connect("clicked", self.on_player_share_clicked)
         player_actions.append(self.player_share_button)
 
-        self.player_description = Gtk.TextView()
-        self.player_description.set_editable(False)
-        self.player_description.set_cursor_visible(False)
-        self.player_description.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.player_description.set_left_margin(2)
-        self.player_description.set_right_margin(2)
-        self.description_link_tags: dict[str, str] = {}
-        description_click = Gtk.GestureClick()
-        description_click.set_button(1)
-        description_click.connect("released", self.on_description_clicked)
-        self.player_description.add_controller(description_click)
+        self.player_description_icon = Gtk.Image.new_from_icon_name(
+            "text-x-generic-symbolic"
+        )
+        self.player_description_button = Gtk.ToggleButton(
+            child=self.player_description_icon
+        )
+        self.player_description_button.set_tooltip_text("Show description")
+        self.player_description_button.set_sensitive(False)
+        self.player_description_button.connect(
+            "toggled", self.on_player_description_toggled
+        )
+        player_actions.append(self.player_description_button)
 
-        description_scroller = Gtk.ScrolledWindow()
-        description_scroller.set_size_request(-1, 140)
-        description_scroller.set_child(self.player_description)
-
-        description = Gtk.Expander(label="Description")
-        description.set_child(description_scroller)
-        self.player_metadata.append(description)
+        self.description_text = ""
+        self.description_window: Gtk.Window | None = None
 
         self.stack.add_named(page, "player")
 
@@ -1543,6 +1538,10 @@ class MainWindow(
     def reload_feed(self) -> None:
         self.loaded_local_sections.add("feed")
         videos = self.service.repository.subscription_feed(self.feed_limit)
+        self.clear_flowbox(self.feed_grid)
+        self.grid_generations[id(self.feed_grid)] = (
+            self.grid_generations.get(id(self.feed_grid), 0) + 1
+        )
         self.append_video_grid_batched(self.feed_grid, videos)
         has_videos = bool(videos)
         self.feed_grid.set_visible(has_videos)

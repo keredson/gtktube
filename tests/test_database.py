@@ -302,6 +302,42 @@ class DatabaseTests(unittest.TestCase):
         self.assertNotIn("watched_high", [video.id for video in feed])
         self.assertNotIn("unwatched_low", [video.id for video in feed])
 
+    def test_subscription_feed_excludes_shorts(self) -> None:
+        self.repository.upsert_video(
+            Video(
+                id="short1",
+                channel_id="chan1",
+                title="Short",
+                url="https://www.youtube.com/shorts/short1",
+                kind="short",
+                published_at="2026-06-10T10:00:00+00:00",
+                view_count=1000,
+            )
+        )
+
+        feed = self.repository.subscription_feed()
+
+        self.assertIn("vid1", [video.id for video in feed])
+        self.assertNotIn("short1", [video.id for video in feed])
+
+    def test_subscription_feed_orders_missing_published_dates_by_discovery(self) -> None:
+        self.connection.execute(
+            "UPDATE videos SET published_at = ? WHERE id = ?",
+            ("2026-06-13", "vid1"),
+        )
+        self.repository.upsert_video(
+            Video(
+                id="fresh_without_date",
+                channel_id="chan1",
+                title="Fresh Without Date",
+                url="https://example.test/fresh_without_date",
+            )
+        )
+
+        feed = self.repository.subscription_feed()
+
+        self.assertEqual(feed[0].id, "fresh_without_date")
+
     def test_hidden_videos_are_excluded_before_feed_daily_limit(self) -> None:
         self.connection.execute(
             "UPDATE videos SET published_at = ?, view_count = ? WHERE id = ?",

@@ -266,7 +266,11 @@ class YoutubeExtractor:
         for entry in entries:
             if not entry:
                 continue
-            short = self._video_from_info(entry, fallback_channel=channel)
+            short = self._video_from_info(
+                entry,
+                fallback_channel=channel,
+                kind="short",
+            )
             shorts.append(short)
         return shorts
 
@@ -354,7 +358,10 @@ class YoutubeExtractor:
         )
 
     def _video_from_info(
-        self, info: dict[str, Any], fallback_channel: Channel | None = None
+        self,
+        info: dict[str, Any],
+        fallback_channel: Channel | None = None,
+        kind: str = "video",
     ) -> Video:
         video_id = info.get("id")
         if not video_id:
@@ -379,6 +386,7 @@ class YoutubeExtractor:
             id=str(video_id),
             title=str(info.get("title") or "Untitled video"),
             url=str(webpage_url),
+            kind=kind,
             channel_id=str(channel_id) if channel_id else None,
             channel_title=str(channel_title) if channel_title else None,
             thumbnail_url=self._best_thumbnail(info),

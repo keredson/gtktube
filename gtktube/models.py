@@ -8,6 +8,7 @@ class Video:
     id: str
     title: str
     url: str
+    kind: str = "video"
     channel_id: str | None = None
     channel_title: str | None = None
     thumbnail_url: str | None = None
