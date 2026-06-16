@@ -1232,9 +1232,9 @@ class MainWindow(
         self.player_controls.append(self.speed_combo)
 
         self.caption_combo = Gtk.ComboBoxText()
-        self.caption_combo.append("off", "CC off")
+        self.caption_combo.append("off", "None")
         self.caption_combo.set_active_id("off")
-        self.caption_combo.set_tooltip_text("Closed captions")
+        self.caption_combo.set_tooltip_text("Subtitles")
         self.caption_combo.connect("changed", self.on_caption_changed)
         self.caption_combo.set_visible(False)
         self.player_controls.append(self.caption_combo)

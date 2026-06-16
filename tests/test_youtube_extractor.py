@@ -149,6 +149,10 @@ class CaptionExtractionTest(unittest.TestCase):
             "subtitles:en",
             "automatic_captions:es",
         ])
+        self.assertEqual([caption.label for caption in captions], [
+            "English",
+            "Spanish (auto)",
+        ])
         self.assertEqual(captions[0].url, "https://example.invalid/en.vtt")
         self.assertFalse(captions[0].automatic)
         self.assertTrue(captions[1].automatic)
@@ -198,7 +202,7 @@ class CaptionExtractionTest(unittest.TestCase):
 
         captions = playable.captions or []
         self.assertEqual([caption.id for caption in captions], ["automatic_captions:en"])
-        self.assertEqual(captions[0].label, "en auto")
+        self.assertEqual(captions[0].label, "English (auto)")
 
 
 if __name__ == "__main__":

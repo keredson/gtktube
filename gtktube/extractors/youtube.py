@@ -4,6 +4,8 @@ import os
 import urllib.parse
 from typing import Any
 
+from babel import Locale
+
 from gtktube.models import CaptionTrack, Channel, PlayableVideo, SearchResults, Video
 
 
@@ -523,18 +525,27 @@ class YoutubeExtractor:
                 if not url or url in seen_urls:
                     continue
                 seen_urls.add(str(url))
-                language_name = str(language)
-                suffix = " auto" if automatic else ""
+                language_name = self._caption_language_name(str(language))
+                suffix = " (auto)" if automatic else ""
                 tracks.append(
                     CaptionTrack(
                         id=f"{source_key}:{language}",
                         label=f"{language_name}{suffix}",
-                        language=language_name,
+                        language=str(language),
                         url=str(url),
                         automatic=automatic,
                     )
                 )
         return tracks
+
+    def _caption_language_name(self, language: str) -> str:
+        try:
+            display_name = Locale.parse(language, sep="-").get_display_name("en")
+        except Exception:
+            return language
+        if not display_name:
+            return language
+        return display_name.title()
 
     def _caption_formats_without_translation(
         self, formats: list[dict[str, Any]]

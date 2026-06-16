@@ -33,6 +33,9 @@ class DatabaseTests(unittest.TestCase):
             )
         )
 
+    def tearDown(self) -> None:
+        self.connection.close()
+
     def test_migration_sets_user_version(self) -> None:
         version = self.connection.execute("PRAGMA user_version").fetchone()[0]
         self.assertEqual(version, SCHEMA_VERSION)

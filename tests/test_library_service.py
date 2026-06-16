@@ -27,6 +27,9 @@ class LibraryServiceTests(unittest.TestCase):
         migrate(self.connection)
         self.repository = LibraryRepository(self.connection)
 
+    def tearDown(self) -> None:
+        self.connection.close()
+
     def test_import_youtube_watch_history_marks_videos_watched(self) -> None:
         extractor = FakeExtractor(
             [

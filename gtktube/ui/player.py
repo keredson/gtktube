@@ -918,6 +918,9 @@ class PlayerMixin:
         if keyval in (Gdk.KEY_f, Gdk.KEY_F):
             self.on_fullscreen_clicked(self.fullscreen_button)
             return True
+        if keyval in (Gdk.KEY_c, Gdk.KEY_C):
+            self.toggle_subtitles()
+            return True
         if Gdk.KEY_0 <= keyval <= Gdk.KEY_9:
             duration = self.current_duration_seconds()
             if duration > 0:
@@ -972,7 +975,7 @@ class PlayerMixin:
         previous_selection = self.selected_caption_id
         self.updating_captions = True
         self.caption_combo.remove_all()
-        self.caption_combo.append("off", "CC off")
+        self.caption_combo.append("off", "Subtitles: Off")
         captions = playable.captions if playable and playable.captions else []
         for track in captions:
             self.caption_combo.append(track.id, track.label)
@@ -986,6 +989,15 @@ class PlayerMixin:
         self.caption_combo.set_active_id(active_id)
         self.caption_combo.set_visible(bool(captions))
         self.updating_captions = False
+
+    def toggle_subtitles(self) -> None:
+        captions = self.current_playable.captions if self.current_playable else []
+        if not captions:
+            return
+        if self.selected_caption_id == "off":
+            self.caption_combo.set_active_id(captions[0].id)
+        else:
+            self.caption_combo.set_active_id("off")
 
     def selected_caption_track(self) -> CaptionTrack | None:
         if self.current_playable is None or self.selected_caption_id == "off":
