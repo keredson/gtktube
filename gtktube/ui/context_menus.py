@@ -234,6 +234,14 @@ class ContextMenuMixin:
         )
         actions.append(not_interested)
 
+        add_queue = Gtk.Button(label="Add to queue")
+        add_queue.add_css_class("flat")
+        add_queue.set_halign(Gtk.Align.FILL)
+        add_queue.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "queue")
+        )
+        actions.append(add_queue)
+
         remove_watch_later = Gtk.Button(label="Remove from watch later")
         remove_watch_later.add_css_class("flat")
         remove_watch_later.set_halign(Gtk.Align.FILL)
