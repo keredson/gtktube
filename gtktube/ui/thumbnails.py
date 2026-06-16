@@ -22,8 +22,10 @@ class ThumbnailMixin:
         picture: Gtk.Picture,
         width: int = 232,
         height: int = 130,
+        preserve_aspect: bool = False,
+        source_url: str | None = None,
     ) -> None:
-        url = self.display_thumbnail_url(video)
+        url = source_url or self.display_thumbnail_url(video)
         self.load_cached_image(
             url,
             picture,
@@ -31,6 +33,23 @@ class ThumbnailMixin:
             suffix=".jpg",
             width=width,
             height=height,
+            preserve_aspect=preserve_aspect,
+        )
+
+    def load_short_thumbnail(
+        self,
+        video: Video,
+        picture: Gtk.Picture,
+        width: int,
+        height: int,
+    ) -> None:
+        self.load_thumbnail(
+            video,
+            picture,
+            width=width,
+            height=height,
+            preserve_aspect=True,
+            source_url=self.display_short_thumbnail_url(video),
         )
 
     def load_cached_image(
@@ -41,6 +60,7 @@ class ThumbnailMixin:
         suffix: str = ".img",
         width: int = 232,
         height: int = 174,
+        preserve_aspect: bool = False,
         log_label: str | None = None,
     ) -> None:
         url = self.absolute_media_url(url)
@@ -53,7 +73,7 @@ class ThumbnailMixin:
                     str(image_path),
                     width,
                     height,
-                    False,
+                    preserve_aspect,
                 )
                 texture = Gdk.Texture.new_for_pixbuf(pixbuf)
             except GLib.Error:
@@ -75,7 +95,7 @@ class ThumbnailMixin:
                 str(path),
                 width,
                 height,
-                False,
+                preserve_aspect,
             )
 
             def done_cached() -> bool:
@@ -163,6 +183,13 @@ class ThumbnailMixin:
     def display_thumbnail_url(self, video: Video) -> str:
         if video.id and "/playlist" not in video.url and "list=" not in video.url:
             return f"https://img.youtube.com/vi/{video.id}/mqdefault.jpg"
+        return self.jpeg_thumbnail_url(video.thumbnail_url or "")
+
+    def display_short_thumbnail_url(self, video: Video) -> str:
+        if video.thumbnail_url:
+            return self.jpeg_thumbnail_url(video.thumbnail_url)
+        if video.id:
+            return f"https://i.ytimg.com/vi/{video.id}/oar2.jpg"
         return self.jpeg_thumbnail_url(video.thumbnail_url or "")
 
     def jpeg_thumbnail_url(self, url: str) -> str:

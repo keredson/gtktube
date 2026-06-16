@@ -247,6 +247,28 @@ class YoutubeExtractor:
             playlists.append(playlist)
         return playlists
 
+    def channel_shorts(
+        self, channel: Channel, limit: int = 30, start: int = 1
+    ) -> list[Video]:
+        target = channel.url.rstrip("/")
+        if not target.endswith("/shorts"):
+            target = f"{target}/shorts"
+        info = self._extract(
+            target,
+            flat=True,
+            limit=limit,
+            start=start,
+            ignore_errors=True,
+        )
+        entries = info.get("entries") or []
+        shorts: list[Video] = []
+        for entry in entries:
+            if not entry:
+                continue
+            short = self._video_from_info(entry, fallback_channel=channel)
+            shorts.append(short)
+        return shorts
+
     def search(self, query: str, limit: int = 20) -> SearchResults:
         return SearchResults(
             videos=self.search_videos(query, limit=limit),

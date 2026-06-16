@@ -133,6 +133,13 @@ class LibraryService:
     ) -> list[Video]:
         return self.extractor.channel_playlists(channel, limit=limit, start=start)
 
+    def channel_shorts(
+        self, channel: Channel, limit: int = 30, start: int = 1
+    ) -> list[Video]:
+        videos = self.extractor.channel_shorts(channel, limit=limit, start=start)
+        self.repository.upsert_videos(videos)
+        return videos
+
     def refresh_subscriptions(
         self,
         limit_per_channel: int = 30,

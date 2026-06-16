@@ -634,6 +634,14 @@ class MainWindow(
         
         self.channel_tabs_notebook.append_page(videos_scroller, Gtk.Label(label="Videos"))
 
+        # Shorts Tab
+        self.channel_shorts_grid = self.create_video_grid()
+        shorts_scroller = Gtk.ScrolledWindow(vexpand=True)
+        shorts_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        shorts_scroller.set_child(self.channel_shorts_grid)
+
+        self.channel_tabs_notebook.append_page(shorts_scroller, Gtk.Label(label="Shorts"))
+
         # Playlists Tab
         self.channel_playlists_grid = self.create_video_grid()
         playlists_scroller = Gtk.ScrolledWindow(vexpand=True)

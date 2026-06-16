@@ -206,6 +206,7 @@ class ChromeMixin:
                 ),
             )
             self.load_channel_playlists(view)
+            self.load_channel_shorts(view)
             self.select_nav_channel(view.channel_id)
             self.stack.set_visible_child_name("feed")
             return
@@ -235,11 +236,11 @@ class ChromeMixin:
         channel = self.service.repository.channel(view.channel_id)
         if not channel:
             return
+        self.clear_flowbox(self.channel_playlists_grid)
 
         def done(playlists: list[Video]) -> None:
             if self.current_view != view:
                 return
-            self.clear_flowbox(self.channel_playlists_grid)
             for playlist in playlists:
                 self.append_video_tile(
                     self.channel_playlists_grid,
@@ -250,6 +251,24 @@ class ChromeMixin:
         self.run_task(
             f"Loading {channel.title} playlists...",
             lambda: self.service.channel_playlists(channel),
+            done,
+        )
+
+    def load_channel_shorts(self, view: ViewState) -> None:
+        channel = self.service.repository.channel(view.channel_id)
+        if not channel:
+            return
+        self.clear_flowbox(self.channel_shorts_grid)
+
+        def done(shorts: list[Video]) -> None:
+            if self.current_view != view:
+                return
+            for short in shorts:
+                self.append_short_tile(self.channel_shorts_grid, short)
+
+        self.run_task(
+            f"Loading {channel.title} shorts...",
+            lambda: self.service.channel_shorts(channel),
             done,
         )
 
