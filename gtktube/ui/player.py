@@ -812,6 +812,8 @@ class PlayerMixin:
         self.video_fullscreen = True
         self.header.set_visible(False)
         self.sidebar.set_visible(False)
+        self.fullscreen_queue_pane_visible = self.queue_pane.get_visible()
+        self.queue_pane.set_visible(False)
         self.player_metadata.set_visible(False)
         self.fullscreen_icon.set_from_icon_name("view-restore-symbolic")
         self.fullscreen_button.set_tooltip_text("Exit fullscreen video")
@@ -823,6 +825,10 @@ class PlayerMixin:
         self.video_fullscreen = False
         self.header.set_visible(True)
         self.sidebar.set_visible(True)
+        self.queue_pane.set_visible(
+            self.fullscreen_queue_pane_visible and self.video_queue.get_n_items() > 0
+        )
+        self.fullscreen_queue_pane_visible = False
         self.player_metadata.set_visible(True)
         self.fullscreen_icon.set_from_icon_name("view-fullscreen-symbolic")
         self.fullscreen_button.set_tooltip_text("Fullscreen video")

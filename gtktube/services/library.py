@@ -219,7 +219,8 @@ class LibraryService:
 
     def recommended_videos(self, limit: int = 100) -> list[Video]:
         browser = self.repository.yt_dlp_cookies_browser()
-        return self.extractor.recommended_videos(browser, limit=limit)
+        videos = self.extractor.recommended_videos(browser, limit=limit)
+        return self.repository.videos_with_watch_progress(videos)
 
     def import_youtube_watch_history(self, limit: int = 100) -> int:
         browser = self.repository.yt_dlp_cookies_browser()

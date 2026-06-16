@@ -64,6 +64,25 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertEqual(video.watch_ranges, [(0, 33), (66, 100)])
 
+    def test_external_video_list_can_be_enriched_with_watch_progress(self) -> None:
+        self.repository.add_watch_range("vid1", 0, 33)
+        self.repository.add_watch_range("vid1", 66, 100)
+
+        videos = self.repository.videos_with_watch_progress(
+            [
+                Video(
+                    id="vid1",
+                    channel_id="chan1",
+                    channel_title="Channel One",
+                    title="External Video",
+                    url="https://example.test/watch?v=vid1",
+                )
+            ]
+        )
+
+        self.assertEqual(videos[0].watch_ranges, [(0, 33), (66, 100)])
+        self.assertAlmostEqual(videos[0].percent_watched or 0, 0.67)
+
     def test_watch_range_trigger_maintains_history_summary(self) -> None:
         self.repository.add_watch_range("vid1", 10, 20)
         self.repository.add_watch_range("vid1", 30, 40)

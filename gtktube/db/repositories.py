@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Iterable
 
@@ -217,6 +218,47 @@ class LibraryRepository:
         with self._lock:
             for video in videos:
                 self.upsert_video(video)
+
+    def videos_with_watch_progress(self, videos: Iterable[Video]) -> list[Video]:
+        videos = list(videos)
+        if not videos:
+            return []
+
+        placeholders = ",".join("?" for _video in videos)
+        with self._lock:
+            rows = self.connection.execute(
+                f"""
+                SELECT
+                    v.id,
+                    COALESCE(wp.percent_watched, 0) AS percent_watched,
+                    wp.watch_range_string,
+                    COALESCE(wh.completed, 0) AS completed
+                FROM videos v
+                LEFT JOIN watch_progress wp ON wp.video_id = v.id
+                LEFT JOIN watch_history wh ON wh.video_id = v.id
+                WHERE v.id IN ({placeholders})
+                """,
+                tuple(video.id for video in videos),
+            ).fetchall()
+        progress_by_id = {
+            row["id"]: (
+                row["percent_watched"],
+                self._watch_ranges_from_string(row["watch_range_string"]),
+                bool(row["completed"]),
+            )
+            for row in rows
+        }
+        return [
+            replace(
+                video,
+                percent_watched=progress_by_id[video.id][0],
+                watch_ranges=progress_by_id[video.id][1] or None,
+                completed=progress_by_id[video.id][2],
+            )
+            if video.id in progress_by_id
+            else video
+            for video in videos
+        ]
 
     def setting(self, key: str, default: str = "") -> str:
         with self._lock:
@@ -843,14 +885,11 @@ class LibraryRepository:
         return [self._video_from_row(row) for row in rows]
 
     def _video_from_row(self, row: sqlite3.Row) -> Video:
-        ranges = []
-        if "watch_range_string" in row.keys() and row["watch_range_string"]:
-            for part in row["watch_range_string"].split(","):
-                try:
-                    start, end = part.split("-")
-                    ranges.append((int(start), int(end)))
-                except (ValueError, TypeError):
-                    continue
+        ranges = (
+            self._watch_ranges_from_string(row["watch_range_string"])
+            if "watch_range_string" in row.keys()
+            else []
+        )
 
         return Video(
             id=row["id"],
@@ -867,6 +906,20 @@ class LibraryRepository:
             watch_ranges=ranges or None,
             completed=bool(row["completed"]),
         )
+
+    def _watch_ranges_from_string(
+        self, watch_range_string: str | None
+    ) -> list[tuple[int, int]]:
+        ranges = []
+        if not watch_range_string:
+            return ranges
+        for part in watch_range_string.split(","):
+            try:
+                start, end = part.split("-")
+                ranges.append((int(start), int(end)))
+            except (ValueError, TypeError):
+                continue
+        return ranges
 
     def _channel_from_row(self, row: sqlite3.Row) -> Channel:
         return Channel(

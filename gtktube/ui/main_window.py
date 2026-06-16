@@ -138,6 +138,7 @@ class MainWindow(
         self.current_channel_url: str | None = None
         self.video_fullscreen = False
         self.fullscreen_return_view: ViewState | None = None
+        self.fullscreen_queue_pane_visible = False
         self.status_text = "Ready"
         self.back_stack: list[ViewState] = []
         self.forward_stack: list[ViewState] = []
@@ -771,6 +772,17 @@ class MainWindow(
         self.recommended_show_btn.set_sensitive(bool(self.recommended_onboarding_browser_combo.get_active_id()))
 
         self.recommended_stack.add_named(onboarding, "onboarding")
+
+        loading = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        loading.set_valign(Gtk.Align.CENTER)
+        loading.set_halign(Gtk.Align.CENTER)
+        loading_spinner = Gtk.Spinner()
+        loading_spinner.start()
+        loading.append(loading_spinner)
+        loading_label = Gtk.Label(label="Loading recommendations...")
+        loading_label.add_css_class("dim-label")
+        loading.append(loading_label)
+        self.recommended_stack.add_named(loading, "loading")
 
         # Grid UI
         grid_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -1466,10 +1478,11 @@ class MainWindow(
         browser = self.service.repository.yt_dlp_cookies_browser()
 
         if show is True and browser:
-            self.recommended_stack.set_visible_child_name("grid")
+            self.recommended_stack.set_visible_child_name("loading")
             self.clear_flowbox(self.recommended_grid)
 
             def done(videos: list[Video]) -> None:
+                self.recommended_stack.set_visible_child_name("grid")
                 self.populate_video_grid(self.recommended_grid, videos)
 
             def failed(exc: Exception) -> None:
