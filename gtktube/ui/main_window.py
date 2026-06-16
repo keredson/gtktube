@@ -147,6 +147,7 @@ class MainWindow(
         self.feed_limit = 100
         self.channel_video_limits: dict[str, int] = {}
         self.loading_more_videos = False
+        self.importing_youtube_history = False
         self.refreshing_channel_ids: set[str] = set()
         self.grid_generations: dict[int, int] = {}
         self.nav_generation = 0
@@ -316,6 +317,8 @@ class MainWindow(
         self.schedule_deferred_local_reloads(initial_view)
         GLib.timeout_add_seconds(5, self.flush_watch_range)
         GLib.timeout_add_seconds(1, self.update_playback_controls)
+        GLib.timeout_add_seconds(10, self.maybe_import_youtube_watch_history_once)
+        GLib.timeout_add_seconds(3600, self.maybe_import_youtube_watch_history)
         if self.enable_update_check:
             GLib.timeout_add_seconds(2, self.start_update_check)
 
@@ -499,6 +502,40 @@ class MainWindow(
         self.reload_history()
         self.reload_watch_later()
         self.reload_recent_searches()
+
+    def maybe_import_youtube_watch_history_once(self) -> bool:
+        self.maybe_import_youtube_watch_history()
+        return False
+
+    def maybe_import_youtube_watch_history(self, force: bool = False) -> bool:
+        if self.importing_youtube_history:
+            return True
+        if not self.service.repository.import_youtube_watch_history_enabled():
+            return True
+        if not self.service.repository.yt_dlp_cookies_browser():
+            self.set_status("YouTube history import needs a browser cookie source")
+            return True
+        if not force and not self.service.repository.youtube_watch_history_import_due():
+            return True
+
+        self.importing_youtube_history = True
+
+        def done(count: int) -> None:
+            self.reload_feed()
+            self.reload_history()
+            self.reload_channels()
+            self.set_status(f"Imported {count} YouTube history videos")
+
+        def finished() -> None:
+            self.importing_youtube_history = False
+
+        self.run_task(
+            "Importing YouTube watch history...",
+            lambda: self.service.import_youtube_watch_history(limit=100),
+            done,
+            finished=finished,
+        )
+        return True
 
     def schedule_deferred_local_reloads(self, initial_view: ViewState) -> None:
         sections = ["feed", "channels", "history", "watch_later", "recent_searches"]

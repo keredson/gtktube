@@ -226,10 +226,44 @@ class SettingsMixin:
         self.recommended_switch.connect("state-set", self.on_recommended_setting_changed)
         self.recommended_row.append(self.recommended_switch)
 
+        self.youtube_history_row = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=12
+        )
+        self.youtube_history_row.set_valign(Gtk.Align.CENTER)
+        page.append(self.youtube_history_row)
+
+        youtube_history_labels = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True
+        )
+        self.youtube_history_row.append(youtube_history_labels)
+        youtube_history_label = Gtk.Label(
+            label="Import YouTube watch history",
+            xalign=0,
+        )
+        youtube_history_labels.append(youtube_history_label)
+        youtube_history_help = Gtk.Label(
+            label=(
+                "Hourly and optional. Requires browser cookies, then marks "
+                "videos from YouTube's watch history as watched locally."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        youtube_history_help.add_css_class("dim-label")
+        youtube_history_labels.append(youtube_history_help)
+
+        self.youtube_history_import_switch = Gtk.Switch()
+        self.youtube_history_import_switch.set_valign(Gtk.Align.CENTER)
+        self.youtube_history_import_switch.connect(
+            "state-set",
+            self.on_youtube_history_import_setting_changed,
+        )
+        self.youtube_history_row.append(self.youtube_history_import_switch)
+
         self.browser_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.browser_row.set_valign(Gtk.Align.CENTER)
         page.append(self.browser_row)
-        
+
         browser_labels = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True
         )
@@ -335,6 +369,9 @@ class SettingsMixin:
         )
         show_recommended = self.service.repository.show_recommended_videos()
         self.recommended_switch.set_active(show_recommended is True)
+        self.youtube_history_import_switch.set_active(
+            self.service.repository.import_youtube_watch_history_enabled()
+        )
         self._update_privacy_help()
         self.sponsorblock_enabled_check.set_active(
             self.service.repository.sponsorblock_enabled()
@@ -394,7 +431,8 @@ class SettingsMixin:
     def _update_privacy_help(self) -> None:
         mode = self.cookies_mode_combo.get_active_id()
         show_recommended = self.recommended_switch.get_active()
-        needs_cookies = (mode != "never") or show_recommended
+        import_history = self.youtube_history_import_switch.get_active()
+        needs_cookies = (mode != "never") or show_recommended or import_history
         self.browser_row.set_sensitive(needs_cookies)
 
         if mode == "never":
@@ -434,6 +472,13 @@ class SettingsMixin:
                 if hasattr(self, "reload_recommended"):
                     getattr(self, "reload_recommended")()
 
+            if (
+                browser
+                and self.service.repository.import_youtube_watch_history_enabled()
+                and hasattr(self, "maybe_import_youtube_watch_history")
+            ):
+                getattr(self, "maybe_import_youtube_watch_history")(force=True)
+
     def on_recommended_setting_changed(self, switch: Gtk.Switch, state: bool) -> bool:
         if self.updating_settings:
             return False
@@ -441,6 +486,17 @@ class SettingsMixin:
         self._update_privacy_help()
         if hasattr(self, "update_recommended_nav_visibility"):
             getattr(self, "update_recommended_nav_visibility")()
+        return False
+
+    def on_youtube_history_import_setting_changed(
+        self, switch: Gtk.Switch, state: bool
+    ) -> bool:
+        if self.updating_settings:
+            return False
+        self.service.repository.set_import_youtube_watch_history_enabled(state)
+        self._update_privacy_help()
+        if state and hasattr(self, "maybe_import_youtube_watch_history"):
+            getattr(self, "maybe_import_youtube_watch_history")(force=True)
         return False
 
     def on_sponsorblock_setting_changed(self, _widget: Gtk.Widget) -> None:

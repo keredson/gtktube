@@ -342,6 +342,36 @@ class LibraryRepository:
         else:
             self.set_setting("show_recommended_videos", "1" if show else "0")
 
+    def import_youtube_watch_history_enabled(self) -> bool:
+        return self.bool_setting("import_youtube_watch_history_enabled", False)
+
+    def set_import_youtube_watch_history_enabled(self, enabled: bool) -> None:
+        self.set_setting(
+            "import_youtube_watch_history_enabled",
+            "1" if enabled else "0",
+        )
+
+    def youtube_watch_history_last_import_at(self) -> datetime | None:
+        value = self.setting("youtube_watch_history_last_import_at", "")
+        if not value:
+            return None
+        try:
+            imported_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if imported_at.tzinfo is None:
+            imported_at = imported_at.replace(tzinfo=UTC)
+        return imported_at
+
+    def youtube_watch_history_import_due(self, max_age_hours: int = 1) -> bool:
+        imported_at = self.youtube_watch_history_last_import_at()
+        if imported_at is None:
+            return True
+        return datetime.now(UTC) - imported_at >= timedelta(hours=max_age_hours)
+
+    def mark_youtube_watch_history_import(self) -> None:
+        self.set_setting("youtube_watch_history_last_import_at", utcnow())
+
     def sponsorblock_categories(self) -> list[str]:
         try:
             raw_categories = json.loads(

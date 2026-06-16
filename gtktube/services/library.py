@@ -221,5 +221,18 @@ class LibraryService:
         browser = self.repository.yt_dlp_cookies_browser()
         return self.extractor.recommended_videos(browser, limit=limit)
 
+    def import_youtube_watch_history(self, limit: int = 100) -> int:
+        browser = self.repository.yt_dlp_cookies_browser()
+        if not browser:
+            raise ExtractorError("YouTube watch history import requires browser cookies")
+
+        videos = self.extractor.watch_history(browser, limit=limit)
+        for video in videos:
+            self._store_video_and_channel(video)
+            self.repository.mark_played(video.id, video.duration_seconds)
+
+        self.repository.mark_youtube_watch_history_import()
+        return len(videos)
+
     def supported_browsers(self) -> list[str]:
         return self.extractor.supported_browsers()

@@ -189,6 +189,38 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(self.repository.default_video_quality(), "720p")
         self.assertFalse(self.repository.has_default_video_quality_override())
 
+    def test_youtube_watch_history_import_is_off_by_default(self) -> None:
+        row = self.connection.execute(
+            """
+            SELECT value
+            FROM settings
+            WHERE key = 'import_youtube_watch_history_enabled'
+            """
+        ).fetchone()
+
+        self.assertIsNone(row)
+        self.assertFalse(self.repository.import_youtube_watch_history_enabled())
+
+    def test_youtube_watch_history_import_setting_round_trips(self) -> None:
+        self.repository.set_import_youtube_watch_history_enabled(True)
+        self.assertTrue(self.repository.import_youtube_watch_history_enabled())
+
+        self.repository.set_import_youtube_watch_history_enabled(False)
+        self.assertFalse(self.repository.import_youtube_watch_history_enabled())
+
+    def test_youtube_watch_history_import_due_tracks_last_import(self) -> None:
+        self.assertTrue(self.repository.youtube_watch_history_import_due())
+
+        self.repository.mark_youtube_watch_history_import()
+        self.assertFalse(self.repository.youtube_watch_history_import_due())
+
+        old_import = (datetime.now(UTC) - timedelta(hours=2)).isoformat(
+            timespec="seconds"
+        )
+        self.repository.set_setting("youtube_watch_history_last_import_at", old_import)
+
+        self.assertTrue(self.repository.youtube_watch_history_import_due())
+
     def test_refresh_worker_count_uses_code_default_until_overridden(self) -> None:
         self.assertEqual(self.repository.refresh_worker_count(), 10)
         self.assertFalse(self.repository.has_refresh_worker_count_override())
