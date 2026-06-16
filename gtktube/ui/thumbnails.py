@@ -16,15 +16,21 @@ from gtktube.models import Video
 
 
 class ThumbnailMixin:
-    def load_thumbnail(self, video: Video, picture: Gtk.Picture) -> None:
+    def load_thumbnail(
+        self,
+        video: Video,
+        picture: Gtk.Picture,
+        width: int = 232,
+        height: int = 130,
+    ) -> None:
         url = self.display_thumbnail_url(video)
         self.load_cached_image(
             url,
             picture,
             self.jpeg_thumbnail_url(url),
             suffix=".jpg",
-            width=232,
-            height=131,
+            width=width,
+            height=height,
         )
 
     def load_cached_image(
@@ -47,7 +53,7 @@ class ThumbnailMixin:
                     str(image_path),
                     width,
                     height,
-                    True,
+                    False,
                 )
                 texture = Gdk.Texture.new_for_pixbuf(pixbuf)
             except GLib.Error:
@@ -69,7 +75,7 @@ class ThumbnailMixin:
                 str(path),
                 width,
                 height,
-                True,
+                False,
             )
 
             def done_cached() -> bool:
@@ -115,7 +121,7 @@ class ThumbnailMixin:
                 str(path),
                 width,
                 height,
-                True,
+                False,
             )
         except GLib.Error:
             return False

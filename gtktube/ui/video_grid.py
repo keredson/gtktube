@@ -11,6 +11,12 @@ from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 from gtktube.models import Video
 
 
+VIDEO_TILE_WIDTH = 232
+VIDEO_THUMBNAIL_HEIGHT = 130
+QUEUE_THUMBNAIL_WIDTH = 148
+QUEUE_THUMBNAIL_HEIGHT = 83
+
+
 class VideoGridMixin:
     def create_video_grid(self) -> Gtk.FlowBox:
         grid = Gtk.FlowBox()
@@ -33,7 +39,7 @@ class VideoGridMixin:
         self.clear_flowbox(grid)
         self.grid_generations[id(grid)] = self.grid_generations.get(id(grid), 0) + 1
         for video in videos:
-            grid.append(self.video_tile(video))
+            self.append_video_tile(grid, video)
 
     def append_video_grid_batched(
         self,
@@ -50,7 +56,7 @@ class VideoGridMixin:
                 return False
             end = min(index + 8, len(videos))
             for video in videos[index:end]:
-                grid.append(self.video_tile(video))
+                self.append_video_tile(grid, video)
             index = end
             if index < len(videos):
                 return True
@@ -60,17 +66,30 @@ class VideoGridMixin:
 
         GLib.idle_add(append_batch)
 
+    def append_video_tile(
+        self,
+        grid: Gtk.FlowBox,
+        video: Video,
+        on_clicked: Callable[[Gtk.Widget], None] | None = None,
+        on_context_menu: Callable[[Gtk.Widget, Video, float, float], None] | None = None,
+    ) -> None:
+        wrapper = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        wrapper.set_size_request(VIDEO_TILE_WIDTH, -1)
+        wrapper.set_hexpand(False)
+        wrapper.set_halign(Gtk.Align.START)
+        wrapper.set_valign(Gtk.Align.START)
+        wrapper.append(self.video_tile(video, on_clicked, on_context_menu))
+        grid.append(wrapper)
+
     def video_tile(
         self,
         video: Video,
         on_clicked: Callable[[Gtk.Widget], None] | None = None,
         on_context_menu: Callable[[Gtk.Widget, Video, float, float], None] | None = None,
     ) -> Gtk.Widget:
-        tile_width = 232
-        thumbnail_height = 131
         tile = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         tile.add_css_class("video-tile")
-        tile.set_size_request(tile_width, -1)
+        tile.set_size_request(VIDEO_TILE_WIDTH, -1)
         tile.set_hexpand(False)
         tile.set_halign(Gtk.Align.START)
         tile.set_focusable(True)
@@ -110,17 +129,33 @@ class VideoGridMixin:
         tile.add_controller(right_click)
 
         thumbnail = Gtk.Picture()
-        thumbnail.set_size_request(tile_width, thumbnail_height)
+        thumbnail.set_size_request(VIDEO_TILE_WIDTH, VIDEO_THUMBNAIL_HEIGHT)
         thumbnail.set_can_shrink(False)
         thumbnail.set_content_fit(Gtk.ContentFit.COVER)
-        self.load_thumbnail(video, thumbnail)
+        self.load_thumbnail(
+            video,
+            thumbnail,
+            width=VIDEO_TILE_WIDTH,
+            height=VIDEO_THUMBNAIL_HEIGHT,
+        )
+
+        aspect = Gtk.AspectFrame.new(0.5, 0.5, 16 / 9, False)
+        aspect.set_size_request(VIDEO_TILE_WIDTH, VIDEO_THUMBNAIL_HEIGHT)
+        aspect.set_hexpand(False)
+        aspect.set_halign(Gtk.Align.START)
+        aspect.set_child(thumbnail)
 
         thumb_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        thumb_container.append(thumbnail)
+        thumb_container.set_size_request(VIDEO_TILE_WIDTH, -1)
+        thumb_container.set_hexpand(False)
+        thumb_container.set_halign(Gtk.Align.START)
+        thumb_container.append(aspect)
 
         if video.watch_ranges:
             progress = Gtk.DrawingArea()
-            progress.set_size_request(-1, 3)
+            progress.set_size_request(VIDEO_TILE_WIDTH, 3)
+            progress.set_hexpand(False)
+            progress.set_halign(Gtk.Align.START)
             progress.set_draw_func(
                 lambda _area, cr, width, height, v=video: self.draw_video_progress(
                     cr, width, height, v
@@ -131,6 +166,9 @@ class VideoGridMixin:
         tile.append(thumb_container)
 
         title = Gtk.Label(label=video.title, xalign=0)
+        title.set_size_request(VIDEO_TILE_WIDTH - 12, -1)
+        title.set_hexpand(False)
+        title.set_halign(Gtk.Align.START)
         title.set_wrap(True)
         title.set_lines(2)
         title.set_width_chars(28)
@@ -143,6 +181,9 @@ class VideoGridMixin:
         meta = self.video_meta(video)
         subtitle = Gtk.Label(label=meta, xalign=0)
         subtitle.add_css_class("dim-label")
+        subtitle.set_size_request(VIDEO_TILE_WIDTH - 12, -1)
+        subtitle.set_hexpand(False)
+        subtitle.set_halign(Gtk.Align.START)
         subtitle.set_wrap(True)
         subtitle.set_lines(2)
         subtitle.set_width_chars(28)
@@ -202,13 +243,22 @@ class VideoGridMixin:
         tile.add_controller(right_click)
 
         thumbnail = Gtk.Picture()
-        thumbnail.set_size_request(131, 74)
+        thumbnail.set_size_request(QUEUE_THUMBNAIL_WIDTH, QUEUE_THUMBNAIL_HEIGHT)
         thumbnail.set_content_fit(Gtk.ContentFit.COVER)
         thumbnail.set_can_shrink(False)
         thumbnail.set_hexpand(True)
         thumbnail.set_halign(Gtk.Align.FILL)
-        self.load_thumbnail(video, thumbnail)
-        tile.append(thumbnail)
+        self.load_thumbnail(
+            video,
+            thumbnail,
+            width=QUEUE_THUMBNAIL_WIDTH,
+            height=QUEUE_THUMBNAIL_HEIGHT,
+        )
+
+        aspect = Gtk.AspectFrame.new(0.5, 0.5, 16 / 9, False)
+        aspect.set_size_request(QUEUE_THUMBNAIL_WIDTH, QUEUE_THUMBNAIL_HEIGHT)
+        aspect.set_child(thumbnail)
+        tile.append(aspect)
 
         return tile
 

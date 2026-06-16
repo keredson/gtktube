@@ -44,7 +44,7 @@ APP_CSS = """
 
 .queue-row {
   padding: 6px;
-  min-height: 86px;
+  min-height: 95px;
 }
 
 .queue-row.skipped {

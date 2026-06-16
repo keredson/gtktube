@@ -241,11 +241,10 @@ class ChromeMixin:
                 return
             self.clear_flowbox(self.channel_playlists_grid)
             for playlist in playlists:
-                self.channel_playlists_grid.append(
-                    self.video_tile(
-                        playlist,
-                        on_clicked=lambda _w, p=playlist: self.open_url(p.url)
-                    )
+                self.append_video_tile(
+                    self.channel_playlists_grid,
+                    playlist,
+                    on_clicked=lambda _w, p=playlist: self.open_url(p.url),
                 )
 
         self.run_task(

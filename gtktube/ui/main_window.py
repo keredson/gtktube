@@ -548,10 +548,10 @@ class MainWindow(
             batch_size = 12
             end = min(index + batch_size, len(videos))
             for video in videos[index:end]:
-                self.watch_later_grid.append(
-                    self.video_tile(
-                        video, on_context_menu=self.show_watch_later_context_menu
-                    )
+                self.append_video_tile(
+                    self.watch_later_grid,
+                    video,
+                    on_context_menu=self.show_watch_later_context_menu,
                 )
             
             index = end
@@ -1926,8 +1926,10 @@ class MainWindow(
             end = min(index + batch_size, len(videos))
             for video in videos[index:end]:
                 try:
-                    self.history_grid.append(
-                        self.video_tile(video, on_context_menu=self.show_history_context_menu)
+                    self.append_video_tile(
+                        self.history_grid,
+                        video,
+                        on_context_menu=self.show_history_context_menu,
                     )
                 except Exception:
                     import traceback
