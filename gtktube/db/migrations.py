@@ -6,12 +6,19 @@ import sqlite3
 SCHEMA_VERSION = 9
 
 
+class UnsupportedDatabaseSchema(RuntimeError):
+    def __init__(self, current: int, supported: int):
+        self.current = current
+        self.supported = supported
+        super().__init__(
+            f"Database schema version {current} is newer than supported {supported}"
+        )
+
+
 def migrate(connection: sqlite3.Connection) -> None:
     current = connection.execute("PRAGMA user_version").fetchone()[0]
     if current > SCHEMA_VERSION:
-        raise RuntimeError(
-            f"Database schema version {current} is newer than supported {SCHEMA_VERSION}"
-        )
+        raise UnsupportedDatabaseSchema(current, SCHEMA_VERSION)
     if current < 1:
         _migrate_1(connection)
         current = 1

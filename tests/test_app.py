@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from gtktube.app import (
@@ -11,8 +12,10 @@ from gtktube.app import (
     desktop_exec_for_launch,
     install_desktop_entry,
     launched_as_installed_command,
+    main,
     parse_startup_options,
 )
+from gtktube.db.migrations import UnsupportedDatabaseSchema
 
 
 class StartupOptionTests(unittest.TestCase):
@@ -95,6 +98,31 @@ class StartupOptionTests(unittest.TestCase):
                 os.environ.pop("XDG_DATA_HOME", None)
             else:
                 os.environ["XDG_DATA_HOME"] = previous_data_home
+
+    def test_newer_database_schema_launches_upgrade_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "gtktube.sqlite3"
+            connection = mock.Mock()
+
+            with (
+                mock.patch("gtktube.app.install_desktop_entry"),
+                mock.patch("gtktube.app.dependency_checks_pass", return_value=True),
+                mock.patch("gtktube.app.connect", return_value=connection),
+                mock.patch(
+                    "gtktube.app.migrate",
+                    side_effect=UnsupportedDatabaseSchema(current=9, supported=8),
+                ),
+                mock.patch("gtktube.app.run_upgrade_tool", return_value=17) as upgrade,
+            ):
+                result = main(["gtktube", "--db", str(database_path)])
+
+            self.assertEqual(result, 17)
+            upgrade.assert_called_once()
+            reason, gtk_argv = upgrade.call_args.args
+            self.assertIn("schema 9", reason)
+            self.assertIn("supports schema 8", reason)
+            self.assertEqual(gtk_argv, ["gtktube"])
+            connection.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

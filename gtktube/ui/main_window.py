@@ -48,24 +48,30 @@ class GTKTubeApplication(Gtk.Application):
     ):
         super().__init__(
             application_id="local.gtktube.GTKTube",
-            flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
+            flags=Gio.ApplicationFlags.NON_UNIQUE,
         )
         self.service = service
         self.paths = paths
         self.force_update_dialog = force_update_dialog
         self.enable_update_check = enable_update_check
         self.verbose = verbose
+        self.activation_error: BaseException | None = None
 
     def do_activate(self) -> None:
-        window = MainWindow(
-            self,
-            self.service,
-            self.paths,
-            force_update_dialog=self.force_update_dialog,
-            enable_update_check=self.enable_update_check,
-            verbose=self.verbose,
-        )
-        window.present()
+        try:
+            window = MainWindow(
+                self,
+                self.service,
+                self.paths,
+                force_update_dialog=self.force_update_dialog,
+                enable_update_check=self.enable_update_check,
+                verbose=self.verbose,
+            )
+            window.present()
+        except Exception as exc:
+            self.activation_error = exc
+            sys.excepthook(type(exc), exc, exc.__traceback__)
+            self.quit()
 
     def do_shutdown(self) -> None:
         for window in self.get_windows():

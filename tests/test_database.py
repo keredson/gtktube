@@ -5,7 +5,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 from gtktube.db.connection import connect
-from gtktube.db.migrations import SCHEMA_VERSION, migrate
+from gtktube.db.migrations import SCHEMA_VERSION, UnsupportedDatabaseSchema, migrate
 from gtktube.db.repositories import LibraryRepository
 from gtktube.models import Channel, SponsorBlockSegment, Video
 
@@ -520,6 +520,19 @@ class ConnectionTests(unittest.TestCase):
             migrate(connection)
             row = connection.execute("PRAGMA user_version").fetchone()
             self.assertEqual(row[0], SCHEMA_VERSION)
+        finally:
+            connection.close()
+
+    def test_migrate_rejects_newer_schema_with_typed_error(self) -> None:
+        connection = connect(":memory:")
+        try:
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+
+            with self.assertRaises(UnsupportedDatabaseSchema) as raised:
+                migrate(connection)
+
+            self.assertEqual(raised.exception.current, SCHEMA_VERSION + 1)
+            self.assertEqual(raised.exception.supported, SCHEMA_VERSION)
         finally:
             connection.close()
 

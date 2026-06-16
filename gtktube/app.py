@@ -5,11 +5,12 @@ import locale
 import shutil
 import signal
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from importlib import resources
 from pathlib import Path
 
 from .db.connection import connect
-from .db.migrations import migrate
+from .db.migrations import UnsupportedDatabaseSchema, migrate
 from .db.repositories import LibraryRepository
 from .extractors.youtube import YoutubeExtractor
 from .paths import AppPaths
@@ -201,6 +202,87 @@ def launch_dependency_installer() -> None:
     install_deps_main()
 
 
+def run_upgrade_tool(reason: str, gtk_argv: list[str]) -> int:
+    import gi
+
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Gio, Gtk
+
+    from .ui.upgrade import UpgradeController
+
+    class UpgradeApplication(Gtk.Application):
+        def __init__(self) -> None:
+            super().__init__(
+                application_id="local.gtktube.GTKTube.Upgrade",
+                flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
+            )
+            self.executor = ThreadPoolExecutor(max_workers=1)
+            self.status: Gtk.Label | None = None
+
+        def do_activate(self) -> None:
+            window = Gtk.ApplicationWindow(application=self, title="GTKTube upgrade")
+            window.set_default_size(520, 220)
+
+            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            content.set_margin_top(16)
+            content.set_margin_bottom(16)
+            content.set_margin_start(16)
+            content.set_margin_end(16)
+            window.set_child(content)
+
+            title = Gtk.Label(label="GTKTube needs an upgrade", xalign=0)
+            title.add_css_class("title-2")
+            content.append(title)
+
+            message = Gtk.Label(label=reason, xalign=0, wrap=True)
+            content.append(message)
+
+            controller = UpgradeController(
+                window,
+                self.executor,
+                self.set_status,
+                self.quit,
+            )
+            controller.append_upgrade_command(content)
+
+            status = Gtk.Label(label="", xalign=0, wrap=True)
+            status.add_css_class("dim-label")
+            content.append(status)
+            self.status = status
+
+            buttons = Gtk.Box(
+                orientation=Gtk.Orientation.HORIZONTAL,
+                spacing=8,
+                halign=Gtk.Align.END,
+            )
+            content.append(buttons)
+
+            close_button = Gtk.Button(label="Close")
+            close_button.connect("clicked", lambda _button: self.quit())
+            buttons.append(close_button)
+
+            upgrade_button = Gtk.Button(label="Upgrade and restart")
+            upgrade_button.add_css_class("suggested-action")
+            buttons.append(upgrade_button)
+
+            def upgrade(_button: Gtk.Button) -> None:
+                controller.run_upgrade_and_restart(action=upgrade_button)
+
+            upgrade_button.connect("clicked", upgrade)
+            window.present()
+
+        def set_status(self, text: str) -> None:
+            if self.status is not None:
+                self.status.set_text(text)
+
+        def do_shutdown(self) -> None:
+            self.executor.shutdown(wait=False, cancel_futures=True)
+            Gtk.Application.do_shutdown(self)
+
+    app = UpgradeApplication()
+    return app.run(gtk_argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv
 
@@ -244,7 +326,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"gtktube: database={paths.database_path}", file=sys.stderr)
 
     connection = connect(paths.database_path)
-    migrate(connection)
+    try:
+        migrate(connection)
+    except UnsupportedDatabaseSchema as exc:
+        connection.close()
+        reason = (
+            f"The database uses schema {exc.current}, but this GTKTube install "
+            f"only supports schema {exc.supported}. Upgrade GTKTube to open it."
+        )
+        return run_upgrade_tool(reason, options.gtk_argv)
     repository = LibraryRepository(connection)
     extractor = YoutubeExtractor()
     service = LibraryService(repository, extractor)
@@ -265,7 +355,10 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGINT, on_sigint)
     try:
-        return app.run(options.gtk_argv)
+        result = app.run(options.gtk_argv)
+        if app.activation_error is not None:
+            return 1
+        return result
     except KeyboardInterrupt:
         return 130
     finally:
