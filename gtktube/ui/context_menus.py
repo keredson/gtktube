@@ -400,6 +400,7 @@ class ContextMenuMixin:
         self.queue_pane.set_visible(True)
         # Mutual exclusivity: Queue active, hide playlist
         self.playlist_pane.set_visible(False)
+        self.update_transport_navigation_buttons()
 
     def remove_from_queue(self, popover: Gtk.Popover, index: int) -> None:
         popover.popdown()
@@ -407,6 +408,7 @@ class ContextMenuMixin:
         if 0 <= index < self.video_queue.get_n_items():
             self.video_queue.remove(index)
             self.queue_pane.set_visible(self.video_queue.get_n_items() > 0)
+            self.update_transport_navigation_buttons()
 
     def play_from_queue(self, popover: Gtk.Popover, index: int) -> None:
         popover.popdown()

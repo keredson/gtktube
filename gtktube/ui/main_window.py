@@ -317,6 +317,9 @@ class MainWindow(
         self.build_search_page()
         self.build_history_page()
         self.build_player_page()
+        self.video_queue.connect("items-changed", self.on_transport_items_changed)
+        self.playlist_store.connect("items-changed", self.on_transport_items_changed)
+        self.update_transport_navigation_buttons()
 
         self.update_recommended_nav_visibility()
         initial_view = self.initial_view_state()
@@ -1211,10 +1214,26 @@ class MainWindow(
         self.play_pause_icon = Gtk.Image.new_from_icon_name(
             "media-playback-start-symbolic"
         )
+        self.previous_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("media-skip-backward-symbolic")
+        )
+        self.previous_button.set_tooltip_text("Previous playlist video")
+        self.previous_button.connect("clicked", self.on_previous_clicked)
+        self.previous_button.set_visible(False)
+        self.player_controls.append(self.previous_button)
+
         self.play_pause_button = Gtk.Button(child=self.play_pause_icon)
         self.play_pause_button.set_tooltip_text("Play")
         self.play_pause_button.connect("clicked", self.on_play_pause_clicked)
         self.player_controls.append(self.play_pause_button)
+
+        self.next_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("media-skip-forward-symbolic")
+        )
+        self.next_button.set_tooltip_text("Next video")
+        self.next_button.connect("clicked", self.on_next_clicked)
+        self.next_button.set_visible(False)
+        self.player_controls.append(self.next_button)
 
         self.elapsed_label = Gtk.Label(label="0:00")
         self.player_controls.append(self.elapsed_label)
@@ -2103,7 +2122,8 @@ class MainWindow(
             item = self.video_queue.get_item(index)
             self.video_queue.remove(index)
             self.queue_pane.set_visible(self.video_queue.get_n_items() > 0)
-            self.play_video(item.video)
+            self.update_transport_navigation_buttons()
+            self.play_video(item.video, hide_sidebar=False)
 
     def setup_queue_dnd(self, row: Gtk.ListBoxRow) -> None:
         source = Gtk.DragSource()
@@ -2197,3 +2217,4 @@ class MainWindow(
                     current.remove_css_class("current")
             idx += 1
             current = current.get_next_sibling()
+        self.update_transport_navigation_buttons()

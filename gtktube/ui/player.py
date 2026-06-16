@@ -55,6 +55,8 @@ class PlayerMixin:
         # Mutual exclusivity: Playing a random video hides the playlist
         if hide_sidebar:
             self.playlist_pane.set_visible(False)
+            self.playlist_current_index = None
+            self.update_playlist_rows()
         quality = self.selected_quality()
         self.verbose_log(
             "playback requested "
@@ -689,23 +691,65 @@ class PlayerMixin:
         elif self.playlist_current_index is not None:
             self.play_next_in_playlist()
 
+    def playlist_previous_index(self) -> int | None:
+        if self.playlist_current_index is None:
+            return None
+        previous_idx = self.playlist_current_index - 1
+        while previous_idx >= 0:
+            if previous_idx not in self.playlist_skip_set:
+                return previous_idx
+            previous_idx -= 1
+        return None
+
+    def playlist_next_index(self) -> int | None:
+        if self.playlist_current_index is None:
+            return None
+        items_total = self.playlist_store.get_n_items()
+        next_idx = self.playlist_current_index + 1
+        while next_idx < items_total:
+            if next_idx not in self.playlist_skip_set:
+                return next_idx
+            next_idx += 1
+        return None
+
+    def update_transport_navigation_buttons(self) -> None:
+        if not hasattr(self, "previous_button") or not hasattr(self, "next_button"):
+            return
+        self.previous_button.set_visible(self.playlist_previous_index() is not None)
+        self.next_button.set_visible(
+            self.video_queue.get_n_items() > 0
+            or self.playlist_next_index() is not None
+        )
+
+    def on_transport_items_changed(self, *_args: object) -> None:
+        self.update_transport_navigation_buttons()
+
+    def on_previous_clicked(self, _button: Gtk.Button) -> None:
+        self.play_previous_in_playlist()
+
+    def on_next_clicked(self, _button: Gtk.Button) -> None:
+        if self.video_queue.get_n_items() > 0:
+            self.play_next_in_queue()
+        else:
+            self.play_next_in_playlist()
+
     def play_next_in_queue(self) -> None:
         if self.video_queue.get_n_items() > 0:
             item = self.video_queue.get_item(0)
             self.video_queue.remove(0)
             self.queue_pane.set_visible(self.video_queue.get_n_items() > 0)
-            self.play_video(item.video)
+            self.update_transport_navigation_buttons()
+            self.play_video(item.video, hide_sidebar=False)
+
+    def play_previous_in_playlist(self) -> None:
+        previous_idx = self.playlist_previous_index()
+        if previous_idx is not None:
+            self.play_playlist_item(previous_idx)
 
     def play_next_in_playlist(self) -> None:
-        items_total = self.playlist_store.get_n_items()
-        if items_total == 0:
-            return
-        next_idx = self.playlist_current_index + 1
-        while next_idx < items_total:
-            if next_idx not in self.playlist_skip_set:
-                self.play_playlist_item(next_idx)
-                return
-            next_idx += 1
+        next_idx = self.playlist_next_index()
+        if next_idx is not None:
+            self.play_playlist_item(next_idx)
 
     def stop_pipeline(self, restore_stack: bool = True) -> None:
         if self.video_fullscreen:
@@ -732,6 +776,7 @@ class PlayerMixin:
         self.range_start_seconds = None
         self.pending_seek_seconds = None
         self.update_play_pause_button()
+        self.update_transport_navigation_buttons()
 
     def on_close_player_clicked(self, _button: Gtk.Button) -> None:
         self.close_current_video()
@@ -1263,6 +1308,7 @@ class PlayerMixin:
         self.elapsed_label.set_text(self.format_time(current))
         self.duration_label.set_text(self.format_time(duration))
         self.update_play_pause_button()
+        self.update_transport_navigation_buttons()
         self.maybe_log_sponsorblock_skip_ready(current)
         self.maybe_skip_sponsorblock_segment(current)
         return True
