@@ -355,7 +355,10 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGINT, on_sigint)
     try:
-        return app.run(options.gtk_argv)
+        result = app.run(options.gtk_argv)
+        if app.activation_error is not None:
+            return 1
+        return result
     except KeyboardInterrupt:
         return 130
     finally:
