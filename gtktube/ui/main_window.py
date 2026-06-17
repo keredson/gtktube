@@ -1372,6 +1372,12 @@ class MainWindow(
         self.player_meta.add_css_class("dim-label")
         text_box.append(self.player_meta)
 
+        self.player_chapter_label = Gtk.Label(label="", xalign=0)
+        self.player_chapter_label.set_ellipsize(Pango.EllipsizeMode.END)
+        self.player_chapter_label.add_css_class("dim-label")
+        self.player_chapter_label.set_visible(False)
+        text_box.append(self.player_chapter_label)
+
         player_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         player_actions.set_valign(Gtk.Align.CENTER)
         header_box.append(player_actions)
@@ -1400,6 +1406,32 @@ class MainWindow(
             "toggled", self.on_player_description_toggled
         )
         player_actions.append(self.player_description_button)
+
+        self.player_chapters_icon = Gtk.Image.new_from_icon_name(
+            "view-list-symbolic"
+        )
+        self.player_chapters_button = Gtk.MenuButton(child=self.player_chapters_icon)
+        self.player_chapters_button.set_tooltip_text("Chapters")
+        self.player_chapters_button.set_sensitive(False)
+        self.player_chapters_button.set_visible(False)
+        player_actions.append(self.player_chapters_button)
+
+        self.player_chapters_popover = Gtk.Popover()
+        self.player_chapters_button.set_popover(self.player_chapters_popover)
+        chapters_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        chapters_box.set_size_request(320, 260)
+        self.player_chapters_popover.set_child(chapters_box)
+        self.player_chapters_list = Gtk.ListBox()
+        self.player_chapters_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.player_chapters_list.connect(
+            "row-activated", self.on_chapter_row_activated
+        )
+        chapters_scroller = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
+        chapters_scroller.set_policy(
+            Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC
+        )
+        chapters_scroller.set_child(self.player_chapters_list)
+        chapters_box.append(chapters_scroller)
 
         self.description_text = ""
         self.description_window: Gtk.Window | None = None

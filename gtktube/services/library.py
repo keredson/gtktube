@@ -24,6 +24,9 @@ class LibraryService:
             cookies_browser=self.repository.yt_dlp_cookies_browser(),
         )
         self._store_video_and_channel(playable.video)
+        self.repository.replace_video_chapters(
+            playable.video.id, playable.chapters or []
+        )
         if record_play:
             self.repository.record_play_started(playable.video.id)
         return playable
@@ -38,6 +41,9 @@ class LibraryService:
             cookies_browser=self.repository.yt_dlp_cookies_browser(),
         )
         self._store_video_and_channel(playable.video)
+        self.repository.replace_video_chapters(
+            playable.video.id, playable.chapters or []
+        )
         if record_play:
             self.repository.record_play_started(playable.video.id)
         return playable

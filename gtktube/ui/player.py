@@ -17,7 +17,7 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from gtktube.extractors.youtube import QUALITY_FORMATS
-from gtktube.models import CaptionTrack, PlayableVideo, Video
+from gtktube.models import CaptionTrack, PlayableVideo, Video, VideoChapter
 from gtktube.ui.types import ViewState
 
 
@@ -88,6 +88,7 @@ class PlayerMixin:
         self.update_player_metadata(playable.video)
         self.update_subscribe_check(playable.video)
         self.update_caption_tracks(playable)
+        self.update_chapters(playable)
         self.update_player_share_button()
         self.reload_channels()
         self.show_full_player()
@@ -226,6 +227,98 @@ class PlayerMixin:
         self.miniplayer_meta.set_text(meta)
         self.set_description_text(video.description or "")
         self.update_player_share_button()
+
+    def update_chapters(self, playable: PlayableVideo | None) -> None:
+        chapters = playable.chapters if playable and playable.chapters else []
+        self.clear_chapter_rows()
+        for chapter in chapters:
+            self.player_chapters_list.append(self.chapter_row(chapter))
+        has_chapters = bool(chapters)
+        self.player_chapters_button.set_visible(has_chapters)
+        self.player_chapters_button.set_sensitive(has_chapters)
+        self.player_chapter_label.set_visible(has_chapters)
+        if has_chapters:
+            self.update_active_chapter(self.current_position_seconds())
+        else:
+            self.player_chapter_label.set_text("")
+        self.sponsorblock_timeline.queue_draw()
+
+    def clear_chapter_rows(self) -> None:
+        child = self.player_chapters_list.get_first_child()
+        while child is not None:
+            next_child = child.get_next_sibling()
+            self.player_chapters_list.remove(child)
+            child = next_child
+
+    def chapter_row(self, chapter: VideoChapter) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow()
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(10)
+        box.set_margin_end(10)
+
+        time_label = Gtk.Label(
+            label=self.format_time(int(chapter.start_seconds)),
+            xalign=0,
+        )
+        time_label.add_css_class("dim-label")
+        time_label.set_width_chars(7)
+        box.append(time_label)
+
+        title_label = Gtk.Label(label=chapter.title, xalign=0, hexpand=True)
+        title_label.set_ellipsize(Pango.EllipsizeMode.END)
+        box.append(title_label)
+
+        row.set_child(box)
+        return row
+
+    def on_chapter_row_activated(
+        self, _listbox: Gtk.ListBox, row: Gtk.ListBoxRow
+    ) -> None:
+        chapters = self.current_playable.chapters if self.current_playable else []
+        index = row.get_index()
+        if not chapters or index < 0 or index >= len(chapters):
+            return
+        chapter = chapters[index]
+        self.player_chapters_popover.popdown()
+        self.seek_media(
+            int(chapter.start_seconds),
+            user_initiated=True,
+            precision="exact",
+        )
+
+    def active_chapter(
+        self, chapters: list[VideoChapter], position_seconds: int
+    ) -> VideoChapter | None:
+        active = None
+        for chapter in chapters:
+            if chapter.start_seconds <= position_seconds:
+                active = chapter
+            else:
+                break
+        return active
+
+    def update_active_chapter(self, position_seconds: int) -> None:
+        chapters = self.current_playable.chapters if self.current_playable else []
+        if not chapters:
+            self.player_chapter_label.set_text("")
+            self.player_chapter_label.set_visible(False)
+            return
+        active = self.active_chapter(chapters, position_seconds)
+        if active is None:
+            self.player_chapter_label.set_text("")
+            return
+        self.player_chapter_label.set_text(f"Chapter: {active.title}")
+        self.player_chapter_label.set_tooltip_text(active.title)
+
+        child = self.player_chapters_list.get_first_child()
+        while child is not None:
+            if child.get_index() == active.position:
+                self.player_chapters_list.select_row(child)
+                break
+            child = child.get_next_sibling()
 
     def set_description_text(self, text: str) -> None:
         self.description_text = text
@@ -804,6 +897,7 @@ class PlayerMixin:
         )
         self.update_player_share_button()
         self.update_caption_tracks(None)
+        self.update_chapters(None)
 
     def on_play_pause_clicked(self, _button: Gtk.Button) -> None:
         self.toggle_play_pause()
@@ -1345,6 +1439,8 @@ class PlayerMixin:
         self.duration_label.set_text(self.format_time(duration))
         self.update_play_pause_button()
         self.update_transport_navigation_buttons()
+        self.update_active_chapter(current)
+        self.sponsorblock_timeline.queue_draw()
         self.maybe_log_sponsorblock_skip_ready(current)
         self.maybe_skip_sponsorblock_segment(current)
         return True

@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from gtktube.db.connection import connect
 from gtktube.db.migrations import SCHEMA_VERSION, UnsupportedDatabaseSchema, migrate
 from gtktube.db.repositories import LibraryRepository
-from gtktube.models import Channel, SponsorBlockSegment, Video
+from gtktube.models import Channel, SponsorBlockSegment, Video, VideoChapter
 
 
 class DatabaseTests(unittest.TestCase):
@@ -63,6 +63,34 @@ class DatabaseTests(unittest.TestCase):
         video = self.repository.subscription_feed()[0]
 
         self.assertEqual(video.watch_ranges, [(0, 33), (66, 100)])
+
+    def test_video_chapters_round_trip(self) -> None:
+        self.repository.replace_video_chapters(
+            "vid1",
+            [
+                VideoChapter(
+                    video_id="vid1",
+                    title="Intro",
+                    start_seconds=0,
+                    end_seconds=12.5,
+                    position=0,
+                ),
+                VideoChapter(
+                    video_id="vid1",
+                    title="Demo",
+                    start_seconds=12.5,
+                    end_seconds=None,
+                    position=1,
+                ),
+            ],
+        )
+
+        chapters = self.repository.video_chapters("vid1")
+
+        self.assertEqual([chapter.title for chapter in chapters], ["Intro", "Demo"])
+        self.assertEqual(chapters[0].start_seconds, 0)
+        self.assertEqual(chapters[0].end_seconds, 12.5)
+        self.assertIsNone(chapters[1].end_seconds)
 
     def test_external_video_list_can_be_enriched_with_watch_progress(self) -> None:
         self.repository.add_watch_range("vid1", 0, 33)

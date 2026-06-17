@@ -47,6 +47,15 @@ class CaptionTrack:
 
 
 @dataclass(frozen=True)
+class VideoChapter:
+    video_id: str
+    title: str
+    start_seconds: float
+    end_seconds: float | None = None
+    position: int = 0
+
+
+@dataclass(frozen=True)
 class PlayableVideo:
     video: Video
     stream_url: str
@@ -54,6 +63,7 @@ class PlayableVideo:
     audio_url: str | None = None
     resolved_quality: str | None = None
     captions: list[CaptionTrack] | None = None
+    chapters: list[VideoChapter] | None = None
 
 
 @dataclass(frozen=True)

@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Iterable
 
 from gtktube.extractors.youtube import QUALITY_FORMATS
-from gtktube.models import Channel, SponsorBlockSegment, Video
+from gtktube.models import Channel, SponsorBlockSegment, Video, VideoChapter
 
 
 SPONSORBLOCK_CATEGORIES = [
@@ -218,6 +218,46 @@ class LibraryRepository:
         with self._lock:
             for video in videos:
                 self.upsert_video(video)
+
+    def replace_video_chapters(
+        self, video_id: str, chapters: list[VideoChapter]
+    ) -> None:
+        now = utcnow()
+        with self._lock, self.connection:
+            self.connection.execute(
+                "DELETE FROM video_chapters WHERE video_id = ?", (video_id,)
+            )
+            for position, chapter in enumerate(chapters):
+                self.connection.execute(
+                    """
+                    INSERT INTO video_chapters (
+                        video_id, start_seconds, end_seconds, title, position,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        video_id,
+                        chapter.start_seconds,
+                        chapter.end_seconds,
+                        chapter.title,
+                        position,
+                        now,
+                    ),
+                )
+
+    def video_chapters(self, video_id: str) -> list[VideoChapter]:
+        with self._lock:
+            rows = self.connection.execute(
+                """
+                SELECT video_id, title, start_seconds, end_seconds, position
+                FROM video_chapters
+                WHERE video_id = ?
+                ORDER BY position
+                """,
+                (video_id,),
+            ).fetchall()
+        return [self._video_chapter_from_row(row) for row in rows]
 
     def videos_with_watch_progress(self, videos: Iterable[Video]) -> list[Video]:
         videos = list(videos)
@@ -972,4 +1012,15 @@ class LibraryRepository:
             start_seconds=float(row["start_seconds"]),
             end_seconds=float(row["end_seconds"]),
             uuid=row["uuid"],
+        )
+
+    def _video_chapter_from_row(self, row: sqlite3.Row) -> VideoChapter:
+        return VideoChapter(
+            video_id=row["video_id"],
+            title=row["title"],
+            start_seconds=float(row["start_seconds"]),
+            end_seconds=(
+                float(row["end_seconds"]) if row["end_seconds"] is not None else None
+            ),
+            position=int(row["position"]),
         )

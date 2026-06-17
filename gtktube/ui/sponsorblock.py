@@ -67,6 +67,8 @@ class SponsorBlockMixin:
         width: int,
         height: int,
     ) -> None:
+        self.draw_chapter_timeline(context, width, height)
+
         duration = self.current_duration_seconds()
         if duration <= 0 or not self.sponsorblock_segments:
             return
@@ -84,6 +86,33 @@ class SponsorBlockMixin:
             red, green, blue = self.sponsorblock_segment_color(segment.category)
             context.set_source_rgba(red, green, blue, 0.85)
             context.rectangle(x, y, segment_width, bar_height)
+            context.fill()
+
+    def draw_chapter_timeline(
+        self,
+        context: object,
+        width: int,
+        height: int,
+    ) -> None:
+        duration = self.current_duration_seconds()
+        chapters = self.current_playable.chapters if self.current_playable else []
+        if duration <= 0 or not chapters:
+            return
+        trough_inset = 12
+        drawable_width = max(1, width - (trough_inset * 2))
+        center_y = int(height / 2)
+        base_y = max(0, center_y - 10)
+        point_y = max(0, center_y - 3)
+        for chapter in chapters:
+            if chapter.start_seconds <= 0:
+                continue
+            start = max(0.0, min(chapter.start_seconds, float(duration)))
+            x = trough_inset + int(drawable_width * start / duration)
+            context.set_source_rgba(0.92, 0.92, 0.92, 0.85)
+            context.move_to(x - 4, base_y)
+            context.line_to(x + 4, base_y)
+            context.line_to(x, point_y)
+            context.close_path()
             context.fill()
 
     def sponsorblock_segment_color(self, category: str) -> tuple[float, float, float]:

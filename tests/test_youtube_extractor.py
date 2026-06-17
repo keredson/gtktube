@@ -446,6 +446,50 @@ class CaptionExtractionTest(unittest.TestCase):
         self.assertEqual([caption.id for caption in captions], ["automatic_captions:en"])
         self.assertEqual(captions[0].label, "English (auto)")
 
+    def test_resolve_video_includes_chapters(self) -> None:
+        class FakeYoutubeDL:
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(
+                self, target: str, download: bool = False
+            ) -> dict[str, object]:
+                return {
+                    "id": "video1",
+                    "title": "Video 1",
+                    "url": "https://stream.example/video.mp4",
+                    "chapters": [
+                        {
+                            "title": "Intro",
+                            "start_time": 0,
+                            "end_time": 12.5,
+                        },
+                        {
+                            "title": "Demo",
+                            "start_time": 12.5,
+                            "end_time": 60,
+                        },
+                    ],
+                }
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        playable = extractor.resolve_video("https://www.youtube.com/watch?v=video1")
+
+        chapters = playable.chapters or []
+        self.assertEqual([chapter.title for chapter in chapters], ["Intro", "Demo"])
+        self.assertEqual(chapters[0].video_id, "video1")
+        self.assertEqual(chapters[0].start_seconds, 0)
+        self.assertEqual(chapters[0].end_seconds, 12.5)
+        self.assertEqual(chapters[1].position, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

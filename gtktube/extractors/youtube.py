@@ -7,7 +7,14 @@ from typing import Any
 
 from babel import Locale
 
-from gtktube.models import CaptionTrack, Channel, PlayableVideo, SearchResults, Video
+from gtktube.models import (
+    CaptionTrack,
+    Channel,
+    PlayableVideo,
+    SearchResults,
+    Video,
+    VideoChapter,
+)
 
 
 class ExtractorError(RuntimeError):
@@ -236,6 +243,7 @@ class YoutubeExtractor:
             audio_url=audio_url,
             resolved_quality=self._resolved_quality(info),
             captions=self._caption_tracks(info),
+            chapters=self._chapters(info),
         )
 
     def resolve_channel(self, url: str) -> Channel:
@@ -672,6 +680,40 @@ class YoutubeExtractor:
             if item.get("url"):
                 return item
         return None
+
+    def _chapters(self, info: dict[str, Any]) -> list[VideoChapter]:
+        video_id = str(info.get("id") or "")
+        raw_chapters = info.get("chapters") or []
+        if not video_id or not isinstance(raw_chapters, list):
+            return []
+
+        chapters: list[VideoChapter] = []
+        for position, item in enumerate(raw_chapters):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or item.get("name") or "").strip()
+            start = self._optional_float(item.get("start_time"))
+            end = self._optional_float(item.get("end_time"))
+            if not title or start is None or start < 0:
+                continue
+            if end is not None and end <= start:
+                end = None
+            chapters.append(
+                VideoChapter(
+                    video_id=video_id,
+                    title=title,
+                    start_seconds=start,
+                    end_seconds=end,
+                    position=len(chapters),
+                )
+            )
+        return chapters
+
+    def _optional_float(self, value: object) -> float | None:
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
 
 def is_playlist_url(url: str) -> bool:
     parsed = urllib.parse.urlparse(url)
