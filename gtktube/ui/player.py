@@ -4,6 +4,7 @@ import locale
 import os
 import re
 import hashlib
+import time
 import urllib.error
 import urllib.request
 from ctypes import byref, c_int, c_void_p
@@ -23,6 +24,8 @@ from gtktube.ui.types import ViewState
 
 PLAYBACK_RATES = [rate / 100 for rate in range(25, 401, 25)]
 URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>\"]+")
+BUFFER_CHECK_INTERVAL_MS = 250
+BUFFER_START_TIMEOUT_SECONDS = 20.0
 
 
 class PlayerMixin:
@@ -200,6 +203,8 @@ class PlayerMixin:
         )
         try:
             self.verbose_log(f"mpv starting playback {stream_context}")
+            self.player.pause = True
+            self.player.speed = self.playback_rate
             load_options = {}
             if playable.audio_url:
                 load_options["audio_file"] = playable.audio_url
@@ -215,22 +220,76 @@ class PlayerMixin:
             self.log(f"mpv loadfile failed {stream_context}: {exc}")
             self.stop_pipeline()
             return
-        try:
-            self.player.pause = False
-            self.player.speed = self.playback_rate
-            self.update_playback_inhibition()
-            self.verbose_log(f"mpv play command accepted video={playable.video.id}")
-        except Exception as exc:
-            self.set_status(f"Playback error: {exc}")
-            self.log(f"mpv playback option failed {stream_context}: {exc}")
-            self.stop_pipeline()
-            return
 
         self.range_start_seconds = resume if resume > 0 else 0
         self.apply_selected_caption()
+        self.wait_for_playback_buffer(player, playable.video.id)
         self.show_full_player()
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
+
+    def wait_for_playback_buffer(self, player: Any, video_id: str) -> None:
+        target = self.playback_buffer_target_seconds()
+        started_at = time.monotonic()
+        self.set_status(f"Buffering {target:g}s before playback...")
+        self.verbose_log(
+            "mpv buffering before playback "
+            f"video={video_id} target={target:g}s rate={self.playback_rate:g}"
+        )
+        GLib.timeout_add(
+            BUFFER_CHECK_INTERVAL_MS,
+            self.maybe_start_buffered_playback,
+            player,
+            video_id,
+            started_at,
+        )
+
+    def playback_buffer_target_seconds(self) -> float:
+        return max(12.0, min(30.0, 10.0 * max(1.0, self.playback_rate)))
+
+    def maybe_start_buffered_playback(
+        self,
+        player: Any,
+        video_id: str,
+        started_at: float,
+    ) -> bool:
+        if player is not self.player:
+            return False
+
+        elapsed = time.monotonic() - started_at
+        target = self.playback_buffer_target_seconds()
+        cache_duration = self.mpv_float_property("demuxer-cache-duration") or 0.0
+        cache_state = self.mpv_property("demuxer-cache-state")
+        underrun = (
+            isinstance(cache_state, dict)
+            and bool(cache_state.get("underrun"))
+        )
+        ready = cache_duration >= target and not underrun
+        timed_out = elapsed >= BUFFER_START_TIMEOUT_SECONDS
+        if not ready and not timed_out:
+            return True
+
+        try:
+            player.pause = False
+            player.speed = self.playback_rate
+        except Exception as exc:
+            self.set_status(f"Playback error: {exc}")
+            self.log(f"mpv buffered playback start failed video={video_id}: {exc}")
+            self.stop_pipeline()
+            return False
+
+        self.last_playback_diagnostics_at = 0.0
+        self.last_playback_diagnostics_values = {}
+        self.last_playback_diagnostics_paused = False
+        self.update_playback_inhibition()
+        self.set_status("Ready")
+        self.verbose_log(
+            "mpv play command accepted "
+            f"video={video_id} buffered={cache_duration:.3f}s "
+            f"target={target:g}s elapsed={elapsed:.3f}s "
+            f"reason={'target' if ready else 'timeout'}"
+        )
+        return False
 
     def maybe_show_sponsorblock_prompt(
         self, after_response: Callable[[], None] | None = None
@@ -793,10 +852,10 @@ class PlayerMixin:
                 vo="libmpv",
                 ytdl=False,
                 cache="yes",
-                cache_secs=60,
-                demuxer_readahead_secs=20,
-                demuxer_max_bytes="300MiB",
-                demuxer_max_back_bytes="100MiB",
+                cache_secs=180,
+                demuxer_readahead_secs=90,
+                demuxer_max_bytes="600MiB",
+                demuxer_max_back_bytes="150MiB",
                 demuxer_seekable_cache="yes",
                 ytdl_format=ytdl_format,
                 log_handler=self.on_mpv_log,
@@ -943,6 +1002,9 @@ class PlayerMixin:
         self.active_caption_url = None
         self.range_start_seconds = None
         self.pending_seek_seconds = None
+        self.last_playback_diagnostics_at = 0.0
+        self.last_playback_diagnostics_values = {}
+        self.last_playback_diagnostics_paused = False
         self.update_play_pause_button()
         self.update_transport_navigation_buttons()
 
@@ -1347,6 +1409,9 @@ class PlayerMixin:
         if self.player is not None:
             try:
                 self.player.speed = rate
+                self.last_playback_diagnostics_at = 0.0
+                self.last_playback_diagnostics_values = {}
+                self.last_playback_diagnostics_paused = False
             except Exception as exc:
                 self.log(f"mpv speed change failed: {exc}")
         self.set_status(f"Playback speed {self.speed_label(rate)}")
@@ -1515,6 +1580,83 @@ class PlayerMixin:
         self.update_transport_navigation_buttons()
         self.update_active_chapter(current)
         self.sponsorblock_timeline.queue_draw()
+        self.maybe_log_playback_diagnostics(current, duration)
         self.maybe_log_sponsorblock_skip_ready(current)
         self.maybe_skip_sponsorblock_segment(current)
         return True
+
+    def maybe_log_playback_diagnostics(self, current: int, duration: int) -> None:
+        if not self.verbose or self.player is None:
+            return
+        speed = self.mpv_property("speed")
+        if self.playback_rate == 1.0 and speed in (None, 1, 1.0):
+            return
+        now = time.monotonic()
+        if now - self.last_playback_diagnostics_at < 5:
+            return
+
+        names = (
+            "speed",
+            "pause",
+            "time-pos",
+            "duration",
+            "cache-buffering-state",
+            "demuxer-cache-duration",
+            "demuxer-cache-time",
+            "demuxer-cache-state",
+            "avsync",
+            "mistimed-frame-count",
+            "vo-delayed-frame-count",
+            "decoder-frame-drop-count",
+            "frame-drop-count",
+        )
+        values = {
+            name: self.mpv_property(name)
+            for name in names
+        }
+        paused = bool(values.get("pause"))
+        if paused and self.last_playback_diagnostics_paused:
+            self.last_playback_diagnostics_at = now
+            return
+
+        delta_names = (
+            "mistimed-frame-count",
+            "vo-delayed-frame-count",
+            "decoder-frame-drop-count",
+            "frame-drop-count",
+        )
+        parts = [
+            f"video={self.current_playable.video.id if self.current_playable else 'none'}",
+            f"ui_rate={self.playback_rate:g}",
+            f"ui_pos={current}/{duration}",
+        ]
+        for name, value in values.items():
+            if value is not None:
+                parts.append(f"{name}={value!r}")
+                previous = self.last_playback_diagnostics_values.get(name)
+                if name in delta_names and isinstance(value, int) and isinstance(previous, int):
+                    parts.append(f"{name}-delta={value - previous}")
+        self.last_playback_diagnostics_at = now
+        self.last_playback_diagnostics_values = values
+        self.last_playback_diagnostics_paused = paused
+        self.verbose_log("mpv playback diagnostics " + " ".join(parts))
+
+    def mpv_property(self, name: str) -> object | None:
+        if self.player is None:
+            return None
+        try:
+            if hasattr(self.player, "get_property"):
+                return self.player.get_property(name)
+        except Exception:
+            pass
+        try:
+            return getattr(self.player, name.replace("-", "_"))
+        except Exception:
+            return None
+
+    def mpv_float_property(self, name: str) -> float | None:
+        value = self.mpv_property(name)
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None

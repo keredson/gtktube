@@ -139,6 +139,9 @@ class MainWindow(
         self.updating_captions = False
         self.updating_settings = False
         self.playback_rate = 1.0
+        self.last_playback_diagnostics_at = 0.0
+        self.last_playback_diagnostics_values: dict[str, object] = {}
+        self.last_playback_diagnostics_paused = False
         self.selected_caption_id = "off"
         self.active_caption_url: str | None = None
         self.preferred_quality = self.service.repository.default_video_quality()
