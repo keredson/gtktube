@@ -89,7 +89,7 @@ APP_CSS = """
   background: alpha(currentColor, 0.05);
 }
 
-.playlist-badge {
+.thumbnail-badge {
   background: rgba(0, 0, 0, 0.78);
   color: white;
   border-radius: 4px;

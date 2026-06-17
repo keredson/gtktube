@@ -133,6 +133,8 @@ class VideoGridMixin:
         thumbnail_overlay.add_overlay(thumbnail)
         if is_playlist_url(video.url):
             thumbnail_overlay.add_overlay(self.playlist_badge())
+        elif video.duration_seconds:
+            thumbnail_overlay.add_overlay(self.duration_badge(video.duration_seconds))
 
         aspect = Gtk.AspectFrame.new(0.5, 0.5, 16 / 9, False)
         aspect.set_size_request(VIDEO_TILE_WIDTH, VIDEO_THUMBNAIL_HEIGHT)
@@ -163,12 +165,7 @@ class VideoGridMixin:
         return tile
 
     def playlist_badge(self) -> Gtk.Widget:
-        badge = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        badge.add_css_class("playlist-badge")
-        badge.set_halign(Gtk.Align.END)
-        badge.set_valign(Gtk.Align.END)
-        badge.set_margin_bottom(6)
-        badge.set_margin_end(6)
+        badge = self.thumbnail_badge()
         badge.set_tooltip_text("Playlist")
 
         icon = Gtk.Image.new_from_icon_name("view-list-symbolic")
@@ -178,6 +175,23 @@ class VideoGridMixin:
         label = Gtk.Label(label="PLAYLIST")
         label.add_css_class("caption")
         badge.append(label)
+        return badge
+
+    def duration_badge(self, duration_seconds: int) -> Gtk.Widget:
+        badge = self.thumbnail_badge()
+        badge.set_tooltip_text("Runtime")
+        label = Gtk.Label(label=self.format_time(duration_seconds))
+        label.add_css_class("caption")
+        badge.append(label)
+        return badge
+
+    def thumbnail_badge(self) -> Gtk.Box:
+        badge = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        badge.add_css_class("thumbnail-badge")
+        badge.set_halign(Gtk.Align.END)
+        badge.set_valign(Gtk.Align.END)
+        badge.set_margin_bottom(6)
+        badge.set_margin_end(6)
         return badge
 
     def short_tile(
@@ -199,11 +213,16 @@ class VideoGridMixin:
             height=SHORT_TILE_HEIGHT,
         )
 
+        thumbnail_overlay = Gtk.Overlay()
+        thumbnail_overlay.set_child(thumbnail)
+        if video.duration_seconds:
+            thumbnail_overlay.add_overlay(self.duration_badge(video.duration_seconds))
+
         aspect = Gtk.AspectFrame.new(0.5, 0.5, 9 / 16, False)
         aspect.set_size_request(VIDEO_TILE_WIDTH, SHORT_TILE_HEIGHT)
         aspect.set_hexpand(False)
         aspect.set_halign(Gtk.Align.START)
-        aspect.set_child(thumbnail)
+        aspect.set_child(thumbnail_overlay)
 
         thumb_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         thumb_container.set_size_request(VIDEO_TILE_WIDTH, -1)
@@ -289,7 +308,7 @@ class VideoGridMixin:
         title.set_margin_end(6)
         tile.append(title)
 
-        meta = self.video_meta(video)
+        meta = self.video_grid_meta(video)
         subtitle = Gtk.Label(label=meta, xalign=0)
         subtitle.add_css_class("dim-label")
         subtitle.set_size_request(VIDEO_TILE_WIDTH - 12, -1)
@@ -304,6 +323,20 @@ class VideoGridMixin:
         subtitle.set_margin_end(6)
         subtitle.set_margin_bottom(6)
         tile.append(subtitle)
+
+    def video_grid_meta(self, video: Video) -> str:
+        parts = []
+        if video.channel_title:
+            parts.append(video.channel_title)
+        if video.published_at:
+            parts.append(f"Posted {video.published_at}")
+        if video.view_count is not None:
+            parts.append(f"{video.view_count:,} views")
+        if video.percent_watched:
+            parts.append(f"{round(video.percent_watched * 100)}% watched")
+        if video.completed:
+            parts.append("completed")
+        return " · ".join(parts)
 
     def queue_video_tile(
         self,
