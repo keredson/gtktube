@@ -140,6 +140,16 @@ class LibraryService:
         self.repository.upsert_videos(videos)
         return videos
 
+    def search_channel(
+        self, channel: Channel, query: str, limit: int = 30
+    ) -> list[Video]:
+        videos = self.extractor.search_channel_videos(channel, query, limit=limit)
+        self.repository.upsert_videos(videos)
+        return videos
+
+    def playlist_thumbnail(self, url: str) -> str | None:
+        return self.extractor.playlist_thumbnail(url)
+
     def refresh_subscriptions(
         self,
         limit_per_channel: int = 30,

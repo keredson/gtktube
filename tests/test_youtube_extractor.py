@@ -108,6 +108,95 @@ class ChannelPaginationTest(unittest.TestCase):
         self.assertEqual(options["playlistend"], 20)
         self.assertEqual(videos[0].id, "short11")
 
+    def test_channel_search_uses_channel_search_url(self) -> None:
+        class FakeYoutubeDL:
+            calls: list[tuple[dict[str, object], str]] = []
+
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(self, target: str, download: bool = False) -> dict[str, object]:
+                self.calls.append((self.options, target))
+                return {
+                    "entries": [
+                        {
+                            "id": "result1",
+                            "title": "Search Result",
+                            "url": "result1",
+                        }
+                    ]
+                }
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        videos = extractor.search_channel_videos(
+            Channel(
+                id="chan1",
+                title="Channel One",
+                url="https://www.youtube.com/@channelone",
+            ),
+            "space test",
+            limit=25,
+        )
+
+        options, target = FakeYoutubeDL.calls[0]
+        self.assertEqual(
+            target,
+            "https://www.youtube.com/@channelone/search?query=space+test",
+        )
+        self.assertEqual(options["extract_flat"], True)
+        self.assertEqual(options["playlistend"], 25)
+        self.assertEqual(videos[0].id, "result1")
+        self.assertEqual(videos[0].channel_id, "chan1")
+
+    def test_playlist_thumbnail_uses_first_playlist_video_thumbnail(self) -> None:
+        class FakeYoutubeDL:
+            calls: list[tuple[dict[str, object], str]] = []
+
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(
+                self, target: str, download: bool = False
+            ) -> dict[str, object]:
+                self.calls.append((self.options, target))
+                return {
+                    "entries": [
+                        {
+                            "id": "video1",
+                            "title": "First Playlist Video",
+                            "thumbnail": "https://example.invalid/thumb.jpg",
+                            "url": "video1",
+                        }
+                    ]
+                }
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        thumbnail_url = extractor.playlist_thumbnail(
+            "https://www.youtube.com/playlist?list=PL123"
+        )
+
+        self.assertEqual(thumbnail_url, "https://example.invalid/thumb.jpg")
+        self.assertEqual(
+            FakeYoutubeDL.calls[0][1],
+            "https://www.youtube.com/playlist?list=PL123",
+        )
+
 
 class CaptionExtractionTest(unittest.TestCase):
     def test_resolve_video_includes_manual_and_auto_captions(self) -> None:

@@ -276,6 +276,25 @@ class YoutubeExtractor:
             shorts.append(short)
         return shorts
 
+    def search_channel_videos(
+        self, channel: Channel, query: str, limit: int = 30
+    ) -> list[Video]:
+        encoded = urllib.parse.quote_plus(query)
+        target = f"{channel.url.rstrip('/')}/search?query={encoded}"
+        info = self._extract(
+            target,
+            flat=True,
+            limit=limit,
+            ignore_errors=True,
+        )
+        entries = info.get("entries") or []
+        videos: list[Video] = []
+        for entry in entries:
+            if not entry:
+                continue
+            videos.append(self._video_from_info(entry, fallback_channel=channel))
+        return videos
+
     def search(self, query: str, limit: int = 20) -> SearchResults:
         return SearchResults(
             videos=self.search_videos(query, limit=limit),
@@ -438,6 +457,20 @@ class YoutubeExtractor:
 
         thumbnail = info.get("thumbnail")
         return self._absolute_url(str(thumbnail)) if thumbnail else None
+
+    def playlist_thumbnail(self, url: str) -> str | None:
+        try:
+            info = self._extract(url, flat=True, limit=1, ignore_errors=True)
+        except ExtractorError:
+            return None
+        thumbnail_url = self._best_thumbnail(info)
+        if thumbnail_url:
+            return thumbnail_url
+        entries = info.get("entries") or []
+        for entry in entries:
+            if entry:
+                return self._best_thumbnail(entry)
+        return None
 
     def _absolute_url(self, url: str) -> str:
         if url.startswith("//"):

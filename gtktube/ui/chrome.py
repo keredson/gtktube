@@ -194,6 +194,8 @@ class ChromeMixin:
         self.update_context_refresh_button(view)
         self.update_context_unsubscribe_button(view)
         if view.channel_id is not None:
+            if self.channel_video_search_channel_id != view.channel_id:
+                self.reset_channel_video_search(view.channel_id)
             self.update_channel_header(view)
             self.channel_tabs_notebook.set_show_tabs(True)
             self.channel_tabs_notebook.set_current_page(0)

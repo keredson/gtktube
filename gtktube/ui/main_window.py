@@ -18,7 +18,7 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 
-from gtktube.extractors.youtube import ExtractorError, QUALITY_FORMATS
+from gtktube.extractors.youtube import ExtractorError, QUALITY_FORMATS, is_playlist_url
 from gtktube.models import Channel, PlayableVideo, SearchResults, SponsorBlockSegment, Video
 from gtktube.paths import AppPaths
 from gtktube.services.library import LibraryService
@@ -153,6 +153,7 @@ class MainWindow(
         self.updating_recent_searches = False
         self.feed_limit = 100
         self.channel_video_limits: dict[str, int] = {}
+        self.channel_video_search_channel_id: str | None = None
         self.loading_more_videos = False
         self.importing_youtube_history = False
         self.refreshing_channel_ids: set[str] = set()
@@ -701,6 +702,69 @@ class MainWindow(
         
         self.channel_tabs_notebook.append_page(playlists_scroller, Gtk.Label(label="Playlists"))
 
+        # Search Tab
+        search_tab = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        search_box.set_margin_top(4)
+        search_box.set_margin_start(4)
+        search_box.set_margin_end(4)
+        search_tab.append(search_box)
+        self.channel_video_search_entry = Gtk.Entry(hexpand=True)
+        self.channel_video_search_entry.set_placeholder_text("Search this channel")
+        self.channel_video_search_entry.connect(
+            "activate", self.on_channel_video_search_clicked
+        )
+        search_box.append(self.channel_video_search_entry)
+        self.channel_video_search_icon = Gtk.Image.new_from_icon_name(
+            "system-search-symbolic"
+        )
+        self.channel_video_search_spinner = Gtk.Spinner()
+        self.channel_video_search_button = Gtk.Button(
+            child=self.channel_video_search_icon
+        )
+        self.channel_video_search_button.set_tooltip_text("Search this channel")
+        self.channel_video_search_button.connect(
+            "clicked", self.on_channel_video_search_clicked
+        )
+        search_box.append(self.channel_video_search_button)
+
+        search_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.channel_search_results_grid = self.create_video_grid()
+        self.channel_search_results_grid.set_visible(False)
+        search_content.append(self.channel_search_results_grid)
+
+        self.channel_search_empty_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=12,
+            vexpand=True,
+            hexpand=True,
+        )
+        self.channel_search_empty_box.set_valign(Gtk.Align.CENTER)
+        self.channel_search_empty_box.set_halign(Gtk.Align.CENTER)
+        channel_search_empty_icon = Gtk.Image.new_from_icon_name("system-search-symbolic")
+        channel_search_empty_icon.set_pixel_size(64)
+        channel_search_empty_icon.add_css_class("dim-label")
+        self.channel_search_empty_box.append(channel_search_empty_icon)
+        self.channel_search_empty_title = Gtk.Label(label="Search this channel")
+        self.channel_search_empty_title.add_css_class("title-4")
+        self.channel_search_empty_title.add_css_class("dim-label")
+        self.channel_search_empty_box.append(self.channel_search_empty_title)
+        self.channel_search_empty_help = Gtk.Label(
+            label="Enter a search term above to find videos from this channel.",
+            xalign=0.5,
+            wrap=True,
+        )
+        self.channel_search_empty_help.add_css_class("dim-label")
+        self.channel_search_empty_box.append(self.channel_search_empty_help)
+        search_content.append(self.channel_search_empty_box)
+
+        search_scroller = Gtk.ScrolledWindow(vexpand=True)
+        search_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        search_scroller.set_child(search_content)
+        search_tab.append(search_scroller)
+
+        self.channel_tabs_notebook.append_page(search_tab, Gtk.Label(label="Search"))
+
         self.stack.add_named(page, "feed")
 
     def build_recommended_page(self) -> None:
@@ -857,6 +921,7 @@ class MainWindow(
             "clicked", self.on_channel_header_share_clicked
         )
         actions.append(self.channel_header_share_button)
+
         return header
 
     def build_channels_page(self) -> None:
@@ -1538,6 +1603,44 @@ class MainWindow(
     def on_channel_search_clicked(self, _widget: Gtk.Widget) -> None:
         self.reload_channels()
 
+    def on_channel_video_search_clicked(self, _widget: Gtk.Widget) -> None:
+        if not self.channel_video_search_button.get_sensitive():
+            return
+        channel = self.current_channel()
+        if channel is None:
+            return
+        query = self.channel_video_search_entry.get_text().strip()
+        if not query:
+            self.reset_channel_video_search(channel.id)
+            self.channel_tabs_notebook.set_current_page(0)
+            return
+
+        def done(videos: list[Video]) -> None:
+            if not self.current_view or self.current_view.channel_id != channel.id:
+                return
+            self.populate_channel_search_results(query, videos)
+            self.channel_tabs_notebook.set_current_page(3)
+
+        def finished() -> None:
+            self.channel_video_search_spinner.stop()
+            self.channel_video_search_button.set_child(self.channel_video_search_icon)
+            self.channel_video_search_button.set_sensitive(True)
+
+        self.channel_video_search_button.set_sensitive(False)
+        self.channel_video_search_button.set_child(self.channel_video_search_spinner)
+        self.channel_video_search_spinner.start()
+        self.channel_tabs_notebook.set_current_page(3)
+        self.channel_search_results_grid.set_visible(False)
+        self.channel_search_empty_box.set_visible(True)
+        self.channel_search_empty_title.set_label("Searching...")
+        self.channel_search_empty_help.set_label(f"Searching {channel.title}.")
+        self.run_task(
+            f"Searching {channel.title}...",
+            lambda: self.service.search_channel(channel, query),
+            done,
+            finished=finished,
+        )
+
     def on_player_subscribe_toggled(self, _button: Gtk.CheckButton) -> None:
         if self.updating_subscribe_check:
             return
@@ -1659,6 +1762,93 @@ class MainWindow(
         self.search_video_heading.set_visible(bool(results.videos))
         self.search_grid.set_visible(bool(results.videos))
         self.append_video_grid_batched(self.search_grid, results.videos)
+
+    def populate_channel_search_results(
+        self, query: str, videos: list[Video]
+    ) -> None:
+        self.clear_flowbox(self.channel_search_results_grid)
+        self.grid_generations[id(self.channel_search_results_grid)] = (
+            self.grid_generations.get(id(self.channel_search_results_grid), 0) + 1
+        )
+        has_results = bool(videos)
+        self.channel_search_results_grid.set_visible(has_results)
+        self.channel_search_empty_box.set_visible(not has_results)
+        if not has_results:
+            self.channel_search_empty_title.set_label("No channel results")
+            self.channel_search_empty_help.set_label(
+                f"No videos in this channel matched \"{query}\"."
+            )
+            return
+        index = 0
+        generation = self.grid_generations[id(self.channel_search_results_grid)]
+
+        def append_batch() -> bool:
+            nonlocal index
+            if (
+                self.grid_generations.get(id(self.channel_search_results_grid), 0)
+                != generation
+            ):
+                return False
+            end = min(index + 8, len(videos))
+            for video in videos[index:end]:
+                self.append_video_tile(
+                    self.channel_search_results_grid,
+                    video,
+                    on_clicked=(
+                        lambda _widget, result=video: self.open_url(result.url)
+                        if is_playlist_url(result.url)
+                        else self.play_video(result)
+                    ),
+                )
+            index = end
+            return index < len(videos)
+
+        GLib.idle_add(append_batch)
+
+    def reset_channel_video_search(self, channel_id: str | None = None) -> None:
+        self.channel_video_search_channel_id = channel_id
+        self.channel_video_search_entry.set_text("")
+        self.clear_flowbox(self.channel_search_results_grid)
+        self.grid_generations[id(self.channel_search_results_grid)] = (
+            self.grid_generations.get(id(self.channel_search_results_grid), 0) + 1
+        )
+        self.channel_search_results_grid.set_visible(False)
+        self.channel_search_empty_box.set_visible(True)
+        self.channel_search_empty_title.set_label("Search this channel")
+        self.channel_search_empty_help.set_label(
+            "Enter a search term above to find videos from this channel."
+        )
+
+    def load_missing_tile_thumbnail(
+        self,
+        video: Video,
+        picture: Gtk.Picture,
+        width: int,
+        height: int,
+    ) -> None:
+        if video.thumbnail_url or not is_playlist_url(video.url):
+            return
+
+        future = self.executor.submit(self.service.playlist_thumbnail, video.url)
+
+        def done() -> bool:
+            try:
+                thumbnail_url = future.result()
+            except Exception as exc:
+                self.verbose_log(f"playlist thumbnail lookup failed for {video.url}: {exc}")
+                return False
+            if thumbnail_url:
+                self.load_cached_image(
+                    thumbnail_url,
+                    picture,
+                    suffix=self.thumbnail_cache_suffix(thumbnail_url),
+                    width=width,
+                    height=height,
+                    log_label=f"playlist thumbnail {video.id}",
+                )
+            return False
+
+        future.add_done_callback(lambda _future: GLib.idle_add(done))
 
     def reload_channels(self) -> None:
         self.loaded_local_sections.add("channels")

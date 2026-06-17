@@ -89,6 +89,13 @@ APP_CSS = """
   background: alpha(currentColor, 0.05);
 }
 
+.playlist-badge {
+  background: rgba(0, 0, 0, 0.78);
+  color: white;
+  border-radius: 4px;
+  padding: 3px 6px;
+}
+
 .channel-tabs {
   background: transparent;
   border: none;

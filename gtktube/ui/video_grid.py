@@ -8,6 +8,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
+from gtktube.extractors.youtube import is_playlist_url
 from gtktube.models import Video
 
 
@@ -112,12 +113,32 @@ class VideoGridMixin:
             width=VIDEO_TILE_WIDTH,
             height=VIDEO_THUMBNAIL_HEIGHT,
         )
+        missing_thumbnail_loader = getattr(self, "load_missing_tile_thumbnail", None)
+        if callable(missing_thumbnail_loader):
+            missing_thumbnail_loader(
+                video,
+                thumbnail,
+                VIDEO_TILE_WIDTH,
+                VIDEO_THUMBNAIL_HEIGHT,
+            )
+
+        thumbnail_overlay = Gtk.Overlay()
+        thumbnail_placeholder = Gtk.Image.new_from_icon_name("video-display-symbolic")
+        thumbnail_placeholder.set_pixel_size(48)
+        thumbnail_placeholder.set_size_request(VIDEO_TILE_WIDTH, VIDEO_THUMBNAIL_HEIGHT)
+        thumbnail_placeholder.set_halign(Gtk.Align.CENTER)
+        thumbnail_placeholder.set_valign(Gtk.Align.CENTER)
+        thumbnail_placeholder.add_css_class("dim-label")
+        thumbnail_overlay.set_child(thumbnail_placeholder)
+        thumbnail_overlay.add_overlay(thumbnail)
+        if is_playlist_url(video.url):
+            thumbnail_overlay.add_overlay(self.playlist_badge())
 
         aspect = Gtk.AspectFrame.new(0.5, 0.5, 16 / 9, False)
         aspect.set_size_request(VIDEO_TILE_WIDTH, VIDEO_THUMBNAIL_HEIGHT)
         aspect.set_hexpand(False)
         aspect.set_halign(Gtk.Align.START)
-        aspect.set_child(thumbnail)
+        aspect.set_child(thumbnail_overlay)
 
         thumb_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         thumb_container.set_size_request(VIDEO_TILE_WIDTH, -1)
@@ -140,6 +161,24 @@ class VideoGridMixin:
         tile.append(thumb_container)
         self.append_video_tile_labels(tile, video)
         return tile
+
+    def playlist_badge(self) -> Gtk.Widget:
+        badge = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        badge.add_css_class("playlist-badge")
+        badge.set_halign(Gtk.Align.END)
+        badge.set_valign(Gtk.Align.END)
+        badge.set_margin_bottom(6)
+        badge.set_margin_end(6)
+        badge.set_tooltip_text("Playlist")
+
+        icon = Gtk.Image.new_from_icon_name("view-list-symbolic")
+        icon.set_pixel_size(14)
+        badge.append(icon)
+
+        label = Gtk.Label(label="PLAYLIST")
+        label.add_css_class("caption")
+        badge.append(label)
+        return badge
 
     def short_tile(
         self,
