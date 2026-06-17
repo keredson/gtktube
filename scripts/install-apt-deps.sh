@@ -8,4 +8,5 @@ sudo apt-get install -y \
   gir1.2-gtk-4.0 \
   gir1.2-adw-1 \
   libmpv2 \
-  python3-mpv
+  python3-mpv \
+  nodejs

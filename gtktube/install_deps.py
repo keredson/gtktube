@@ -21,6 +21,7 @@ PACKAGES = [
     "gir1.2-adw-1",
     "libmpv2",
     "python3-mpv",
+    "nodejs",
 ]
 
 

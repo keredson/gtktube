@@ -5,7 +5,7 @@ import unittest
 
 from gtktube.db.migrations import migrate
 from gtktube.db.repositories import LibraryRepository
-from gtktube.models import Video
+from gtktube.models import Channel, Video
 from gtktube.services.library import LibraryService
 
 
@@ -17,6 +17,52 @@ class FakeExtractor:
     def watch_history(self, cookies_browser: str, limit: int = 100) -> list[Video]:
         self.browser = cookies_browser
         return self.videos[:limit]
+
+
+class RefreshExtractor:
+    def resolve_channel(self, url: str) -> Channel:
+        return Channel(id="chan1", title="Channel One", url=url)
+
+    def channel_uploads(
+        self, channel: Channel, limit: int = 30, start: int = 1
+    ) -> list[Video]:
+        return [
+            Video(
+                id="video1",
+                title="Video One",
+                url="https://example.test/video1",
+                channel_id=channel.id,
+                channel_title=channel.title,
+            )
+        ]
+
+    def channel_shorts(
+        self, channel: Channel, limit: int = 30, start: int = 1
+    ) -> list[Video]:
+        return [
+            Video(
+                id="short1",
+                title="Short One",
+                url="https://example.test/short1",
+                kind="short",
+                channel_id=channel.id,
+                channel_title=channel.title,
+            )
+        ]
+
+    def channel_playlists(
+        self, channel: Channel, limit: int = 30, start: int = 1
+    ) -> list[Video]:
+        return [
+            Video(
+                id="playlist1",
+                title="Playlist One",
+                url="https://example.test/playlist1",
+                kind="playlist",
+                channel_id=channel.id,
+                channel_title=channel.title,
+            )
+        ]
 
 
 class LibraryServiceTests(unittest.TestCase):
@@ -55,6 +101,31 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertTrue(video.completed)
         self.assertEqual(video.watch_ranges, [(0, 120)])
         self.assertIsNotNone(self.repository.youtube_watch_history_last_import_at())
+
+    def test_refresh_channel_stores_videos_shorts_and_playlists(self) -> None:
+        channel = Channel(
+            id="chan1",
+            title="Channel One",
+            url="https://example.test/channel",
+        )
+        self.repository.upsert_channel(channel, subscribed=True)
+        service = LibraryService(self.repository, RefreshExtractor())  # type: ignore[arg-type]
+
+        videos = service.refresh_channel(channel, refresh_metadata=False)
+
+        self.assertEqual([video.id for video in videos], ["video1"])
+        self.assertEqual(
+            [video.id for video in self.repository.channel_videos("chan1")],
+            ["video1"],
+        )
+        self.assertEqual(
+            [video.id for video in self.repository.channel_shorts("chan1")],
+            ["short1"],
+        )
+        self.assertEqual(
+            [video.id for video in self.repository.channel_playlists("chan1")],
+            ["playlist1"],
+        )
 
 
 if __name__ == "__main__":

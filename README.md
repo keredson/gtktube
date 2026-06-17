@@ -52,7 +52,8 @@ pipx install --system-site-packages gtktube
 gtktube --install-desktop
 ```
 
-GTKTube also needs GTK4/PyGObject and libmpv from your Linux distribution.
+GTKTube also needs GTK4/PyGObject, libmpv, and a JavaScript runtime for yt-dlp
+from your Linux distribution.
 If required system dependencies are missing, the app can launch a small installer helper.
 
 ## Run

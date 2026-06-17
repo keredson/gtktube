@@ -240,10 +240,17 @@ class ChromeMixin:
         if not channel:
             return
         self.clear_flowbox(self.channel_playlists_grid)
+        for playlist in self.service.repository.channel_playlists(channel.id):
+            self.append_video_tile(
+                self.channel_playlists_grid,
+                playlist,
+                on_clicked=lambda _w, p=playlist: self.open_url(p.url),
+            )
 
         def done(playlists: list[Video]) -> None:
             if self.current_view != view:
                 return
+            self.clear_flowbox(self.channel_playlists_grid)
             for playlist in playlists:
                 self.append_video_tile(
                     self.channel_playlists_grid,
@@ -262,10 +269,13 @@ class ChromeMixin:
         if not channel:
             return
         self.clear_flowbox(self.channel_shorts_grid)
+        for short in self.service.repository.channel_shorts(channel.id):
+            self.append_short_tile(self.channel_shorts_grid, short)
 
         def done(shorts: list[Video]) -> None:
             if self.current_view != view:
                 return
+            self.clear_flowbox(self.channel_shorts_grid)
             for short in shorts:
                 self.append_short_tile(self.channel_shorts_grid, short)
 

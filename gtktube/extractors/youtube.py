@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import urllib.parse
 from typing import Any
 
@@ -16,6 +17,18 @@ class ExtractorError(RuntimeError):
 class RestrictedVideoError(ExtractorError):
     pass
 
+
+class QuietYtdlpLogger:
+    def debug(self, message: str) -> None:
+        pass
+
+    def warning(self, message: str) -> None:
+        pass
+
+    def error(self, message: str) -> None:
+        pass
+
+
 def is_restricted_video_error(message: str) -> bool:
     text = message.lower()
     return (
@@ -23,6 +36,10 @@ def is_restricted_video_error(message: str) -> bool:
         or "members-only" in text
         or "join this channel to get access" in text
     )
+
+
+def is_unavailable_format_error(message: str) -> bool:
+    return "requested format is not available" in message.lower()
 
 
 DEFAULT_PLAYBACK_FORMAT = (
@@ -59,6 +76,32 @@ class YoutubeExtractor:
     def __init__(self) -> None:
         self._ydl_cls: type[Any] | None = None
 
+    def _base_options(self) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "ignoreconfig": True,
+            "logger": QuietYtdlpLogger(),
+        }
+        js_runtimes = self._available_js_runtimes()
+        if js_runtimes:
+            options["js_runtimes"] = js_runtimes
+        return options
+
+    def _available_js_runtimes(self) -> dict[str, dict[str, str]]:
+        for name, binaries in (
+            ("deno", ("deno",)),
+            ("node", ("node", "nodejs")),
+            ("quickjs", ("qjs", "quickjs")),
+            ("bun", ("bun",)),
+        ):
+            for binary in binaries:
+                path = shutil.which(binary)
+                if path:
+                    return {name: {"path": path}}
+        return {}
+
     def supported_browsers(self) -> list[str]:
         try:
             from yt_dlp.cookies import SUPPORTED_BROWSERS
@@ -88,9 +131,7 @@ class YoutubeExtractor:
         ignore_errors: bool = False,
     ) -> dict[str, Any]:
         options: dict[str, Any] = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
+            **self._base_options(),
             "noplaylist": False,
         }
         if ignore_errors:
@@ -126,15 +167,11 @@ class YoutubeExtractor:
         cookies_browser: str = "firefox",
     ) -> PlayableVideo:
         selected_quality = quality if quality in QUALITY_FORMATS else "720p"
+        custom_format = os.environ.get("GTKTUBE_YTDLP_FORMAT")
         options = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
+            **self._base_options(),
             "noplaylist": True,
-            "format": os.environ.get(
-                "GTKTUBE_YTDLP_FORMAT",
-                QUALITY_FORMATS[selected_quality],
-            ),
+            "format": custom_format or QUALITY_FORMATS[selected_quality],
         }
         
         if cookies_mode == "always" and cookies_browser:
@@ -157,7 +194,37 @@ class YoutubeExtractor:
                 else:
                     raise ExtractorError("Video is members-only or otherwise restricted.") from exc
             else:
-                raise ExtractorError(str(exc)) from exc
+                if (
+                    is_unavailable_format_error(str(exc))
+                    and custom_format is None
+                ):
+                    fallback_options_list = []
+                    fallback_options = dict(options)
+                    fallback_options.pop("format", None)
+                    fallback_options_list.append(fallback_options)
+                    if "cookiesfrombrowser" in options:
+                        no_cookies_options = dict(options)
+                        no_cookies_options.pop("cookiesfrombrowser", None)
+                        fallback_options_list.append(no_cookies_options)
+
+                        no_cookies_default_options = dict(no_cookies_options)
+                        no_cookies_default_options.pop("format", None)
+                        fallback_options_list.append(no_cookies_default_options)
+
+                    retry_error: Exception | None = None
+                    for fallback_options in fallback_options_list:
+                        try:
+                            with self._youtube_dl()(fallback_options) as ydl:
+                                info = ydl.extract_info(url, download=False)
+                        except Exception as retry_exc:
+                            retry_error = retry_exc
+                            continue
+                        break
+                    else:
+                        retry_error = retry_error or exc
+                        raise ExtractorError(str(retry_error)) from retry_error
+                else:
+                    raise ExtractorError(str(exc)) from exc
 
         stream_url, audio_url = self._stream_urls(info)
         if not stream_url:
@@ -246,7 +313,11 @@ class YoutubeExtractor:
         for entry in entries:
             if not entry:
                 continue
-            playlist = self._video_from_info(entry, fallback_channel=channel)
+            playlist = self._video_from_info(
+                entry,
+                fallback_channel=channel,
+                kind="playlist",
+            )
             playlists.append(playlist)
         return playlists
 
@@ -326,9 +397,7 @@ class YoutubeExtractor:
 
     def recommended_videos(self, cookies_browser: str, limit: int = 100) -> list[Video]:
         options = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
+            **self._base_options(),
             "extract_flat": "in_playlist",
             "cookiesfrombrowser": (cookies_browser,),
             "playlistend": limit,
@@ -345,9 +414,7 @@ class YoutubeExtractor:
         if not cookies_browser:
             raise ExtractorError("YouTube watch history import requires browser cookies")
         options = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
+            **self._base_options(),
             "extract_flat": "in_playlist",
             "cookiesfrombrowser": (cookies_browser,),
             "playlistend": limit,

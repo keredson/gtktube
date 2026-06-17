@@ -123,6 +123,11 @@ class LibraryService:
                 pass
         videos = self.extractor.channel_uploads(channel, limit=limit, start=start)
         self.repository.upsert_videos(videos)
+        if start == 1:
+            shorts = self.extractor.channel_shorts(channel, limit=limit, start=start)
+            playlists = self.extractor.channel_playlists(channel, limit=limit, start=start)
+            self.repository.upsert_videos(shorts)
+            self.repository.upsert_videos(playlists)
         if clear_new_indicator:
             self.repository.clear_new_video_indicator(channel.id)
         self.repository.mark_channel_refresh(channel.id, success=True)
@@ -131,7 +136,9 @@ class LibraryService:
     def channel_playlists(
         self, channel: Channel, limit: int = 30, start: int = 1
     ) -> list[Video]:
-        return self.extractor.channel_playlists(channel, limit=limit, start=start)
+        playlists = self.extractor.channel_playlists(channel, limit=limit, start=start)
+        self.repository.upsert_videos(playlists)
+        return playlists
 
     def channel_shorts(
         self, channel: Channel, limit: int = 30, start: int = 1

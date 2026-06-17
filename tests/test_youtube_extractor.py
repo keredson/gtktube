@@ -1,6 +1,12 @@
 import unittest
+from unittest import mock
 
-from gtktube.extractors.youtube import YoutubeExtractor, is_restricted_video_error
+from gtktube.extractors.youtube import (
+    QUALITY_FORMATS,
+    YoutubeExtractor,
+    is_restricted_video_error,
+    is_unavailable_format_error,
+)
 from gtktube.models import Channel
 
 
@@ -15,6 +21,40 @@ class RestrictedVideoErrorTest(unittest.TestCase):
 
     def test_non_restricted_error_is_not_members_only(self) -> None:
         self.assertFalse(is_restricted_video_error("ERROR: network timeout"))
+
+
+class UnavailableFormatErrorTest(unittest.TestCase):
+    def test_detects_unavailable_format_error(self) -> None:
+        self.assertTrue(
+            is_unavailable_format_error(
+                "ERROR: [youtube] abc: Requested format is not available."
+            )
+        )
+
+    def test_non_format_error_is_not_unavailable_format(self) -> None:
+        self.assertFalse(is_unavailable_format_error("ERROR: network timeout"))
+
+
+class JavascriptRuntimeTest(unittest.TestCase):
+    def test_uses_first_available_javascript_runtime(self) -> None:
+        extractor = YoutubeExtractor()
+
+        with mock.patch(
+            "gtktube.extractors.youtube.shutil.which",
+            side_effect=lambda binary: (
+                "/usr/bin/node" if binary == "node" else None
+            ),
+        ):
+            self.assertEqual(
+                extractor._available_js_runtimes(),
+                {"node": {"path": "/usr/bin/node"}},
+            )
+
+    def test_omits_javascript_runtime_when_none_is_available(self) -> None:
+        extractor = YoutubeExtractor()
+
+        with mock.patch("gtktube.extractors.youtube.shutil.which", return_value=None):
+            self.assertEqual(extractor._available_js_runtimes(), {})
 
 
 class ChannelPaginationTest(unittest.TestCase):
@@ -108,6 +148,41 @@ class ChannelPaginationTest(unittest.TestCase):
         self.assertEqual(options["playlistend"], 20)
         self.assertEqual(videos[0].id, "short11")
 
+    def test_channel_playlists_are_tagged_as_playlists(self) -> None:
+        class FakeYoutubeDL:
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(self, target: str, download: bool = False) -> dict[str, object]:
+                return {
+                    "entries": [
+                        {
+                            "id": "playlist1",
+                            "title": "Playlist 1",
+                            "url": "https://www.youtube.com/playlist?list=playlist1",
+                        }
+                    ]
+                }
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        playlists = extractor.channel_playlists(
+            Channel(
+                id="chan1",
+                title="Channel One",
+                url="https://www.youtube.com/channel/chan1",
+            ),
+        )
+
+        self.assertEqual(playlists[0].kind, "playlist")
+
     def test_channel_search_uses_channel_search_url(self) -> None:
         class FakeYoutubeDL:
             calls: list[tuple[dict[str, object], str]] = []
@@ -199,6 +274,84 @@ class ChannelPaginationTest(unittest.TestCase):
 
 
 class CaptionExtractionTest(unittest.TestCase):
+    def test_resolve_video_falls_back_when_quality_format_is_unavailable(self) -> None:
+        class FakeYoutubeDL:
+            calls: list[dict[str, object]] = []
+
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(self, target: str, download: bool = False) -> dict[str, object]:
+                self.calls.append(self.options)
+                if len(self.calls) == 1:
+                    raise Exception(
+                        "ERROR: [youtube] video1: Requested format is not available."
+                    )
+                return {
+                    "id": "video1",
+                    "title": "Video 1",
+                    "url": "https://stream.example/video.mp4",
+                }
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        playable = extractor.resolve_video(
+            "https://www.youtube.com/watch?v=video1",
+            quality="1080p",
+        )
+
+        self.assertEqual(playable.video.id, "video1")
+        self.assertEqual(FakeYoutubeDL.calls[0]["format"], QUALITY_FORMATS["1080p"])
+        self.assertNotIn("format", FakeYoutubeDL.calls[1])
+
+    def test_resolve_video_can_drop_cookies_when_formats_are_unavailable(self) -> None:
+        class FakeYoutubeDL:
+            calls: list[dict[str, object]] = []
+
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(self, target: str, download: bool = False) -> dict[str, object]:
+                self.calls.append(self.options)
+                if "cookiesfrombrowser" in self.options:
+                    raise Exception(
+                        "ERROR: [youtube] video1: Requested format is not available."
+                    )
+                return {
+                    "id": "video1",
+                    "title": "Video 1",
+                    "url": "https://stream.example/video.mp4",
+                }
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        playable = extractor.resolve_video(
+            "https://www.youtube.com/watch?v=video1",
+            quality="1080p",
+            cookies_mode="always",
+            cookies_browser="chrome",
+        )
+
+        self.assertEqual(playable.video.id, "video1")
+        self.assertIn("cookiesfrombrowser", FakeYoutubeDL.calls[0])
+        self.assertIn("cookiesfrombrowser", FakeYoutubeDL.calls[1])
+        self.assertNotIn("cookiesfrombrowser", FakeYoutubeDL.calls[2])
+        self.assertEqual(FakeYoutubeDL.calls[2]["format"], QUALITY_FORMATS["1080p"])
+
     def test_resolve_video_includes_manual_and_auto_captions(self) -> None:
         class FakeYoutubeDL:
             def __init__(self, options: dict[str, object]) -> None:

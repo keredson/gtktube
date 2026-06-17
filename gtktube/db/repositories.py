@@ -640,6 +640,37 @@ class LibraryRepository:
             (channel_id, limit),
         )
 
+    def channel_shorts(self, channel_id: str, limit: int = 100) -> list[Video]:
+        return self._channel_videos_by_kind(channel_id, "short", limit)
+
+    def channel_playlists(self, channel_id: str, limit: int = 100) -> list[Video]:
+        return self._channel_videos_by_kind(channel_id, "playlist", limit)
+
+    def _channel_videos_by_kind(
+        self, channel_id: str, kind: str, limit: int
+    ) -> list[Video]:
+        return self._videos_query(
+            """
+            SELECT
+                v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
+                v.thumbnail_url, v.description, v.duration_seconds,
+                v.published_at, v.view_count,
+                COALESCE(wp.percent_watched, 0) AS percent_watched,
+                wp.watch_range_string,
+                COALESCE(wh.completed, 0) AS completed
+            FROM videos v
+            LEFT JOIN channels c ON c.id = v.channel_id
+            LEFT JOIN watch_progress wp ON wp.video_id = v.id
+            LEFT JOIN watch_history wh ON wh.video_id = v.id
+            WHERE v.channel_id = ?
+              AND v.kind = ?
+            ORDER BY
+                COALESCE(v.published_at, v.discovered_at) DESC
+            LIMIT ?
+            """,
+            (channel_id, kind, limit),
+        )
+
     def channel_video_count(self, channel_id: str) -> int:
         with self._lock:
             row = self.connection.execute(
