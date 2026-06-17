@@ -147,6 +147,7 @@ class PlayerMixin:
         try:
             self.player.pause = False
             self.player.speed = self.playback_rate
+            self.update_playback_inhibition()
             self.verbose_log(f"mpv play command accepted video={playable.video.id}")
         except Exception as exc:
             self.set_status(f"Playback error: {exc}")
@@ -683,6 +684,7 @@ class PlayerMixin:
                 self.log(message)
             else:
                 self.verbose_log(message)
+            GLib.idle_add(self.uninhibit_playback)
             GLib.idle_add(self.on_mpv_end_file)
 
     def on_mpv_end_file(self) -> None:
@@ -752,6 +754,7 @@ class PlayerMixin:
             self.play_playlist_item(next_idx)
 
     def stop_pipeline(self, restore_stack: bool = True) -> None:
+        self.uninhibit_playback()
         if self.video_fullscreen:
             self.close_video_fullscreen()
         if restore_stack:
@@ -822,6 +825,7 @@ class PlayerMixin:
         except Exception as exc:
             self.log(f"mpv pause toggle failed: {exc}")
         self.update_play_pause_button()
+        self.update_playback_inhibition()
 
     def update_play_pause_button(self) -> None:
         if self.player is None:
@@ -834,6 +838,38 @@ class PlayerMixin:
         else:
             self.play_pause_icon.set_from_icon_name("media-playback-pause-symbolic")
             self.play_pause_button.set_tooltip_text("Pause")
+
+    def update_playback_inhibition(self) -> None:
+        if self.player is None or bool(getattr(self.player, "pause", False)):
+            self.uninhibit_playback()
+            return
+        self.inhibit_playback()
+
+    def inhibit_playback(self) -> None:
+        if self.playback_inhibit_cookie is not None:
+            return
+        app = self.get_application()
+        if app is None:
+            return
+        cookie = app.inhibit(
+            self,
+            Gtk.ApplicationInhibitFlags.IDLE,
+            "GTKTube is playing video",
+        )
+        if cookie:
+            self.playback_inhibit_cookie = int(cookie)
+            self.verbose_log("screensaver inhibited for playback")
+
+    def uninhibit_playback(self) -> bool:
+        cookie = self.playback_inhibit_cookie
+        if cookie is None:
+            return False
+        app = self.get_application()
+        if app is not None:
+            app.uninhibit(cookie)
+        self.playback_inhibit_cookie = None
+        self.verbose_log("screensaver inhibition released")
+        return False
 
     def on_fullscreen_clicked(self, _button: Gtk.Button) -> None:
         if self.video_fullscreen:

@@ -149,6 +149,7 @@ class MainWindow(
         self.back_stack: list[ViewState] = []
         self.forward_stack: list[ViewState] = []
         self.current_view: ViewState | None = None
+        self.playback_inhibit_cookie: int | None = None
         self.suppress_nav_selection = False
         self.updating_recent_searches = False
         self.feed_limit = 100
