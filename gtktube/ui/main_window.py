@@ -116,6 +116,7 @@ class MainWindow(
         self.playlist_skip_set: set[int] = set()
         self.dragging_index = -1
         self.current_playable: PlayableVideo | None = None
+        self.playback_request_id = 0
         self.sponsorblock = SponsorBlockClient()
         self.sponsorblock_segments: list[SponsorBlockSegment] = []
         self.suppressed_sponsorblock_segments: set[str] = set()
@@ -1273,7 +1274,33 @@ class MainWindow(
         video_click = Gtk.GestureClick()
         video_click.connect("released", self.on_video_clicked)
         self.video.add_controller(video_click)
-        self.miniplayer_video_container.append(self.video)
+
+        self.video_overlay = Gtk.Overlay()
+        self.video_overlay.set_child(self.video)
+        self.miniplayer_video_container.append(self.video_overlay)
+
+        self.player_loading_overlay = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=10,
+        )
+        self.player_loading_overlay.add_css_class("player-loading-overlay")
+        self.player_loading_overlay.set_halign(Gtk.Align.FILL)
+        self.player_loading_overlay.set_valign(Gtk.Align.FILL)
+        self.player_loading_overlay.set_hexpand(True)
+        self.player_loading_overlay.set_vexpand(True)
+        self.player_loading_overlay.set_visible(False)
+        self.player_loading_spinner = Gtk.Spinner()
+        self.player_loading_spinner.set_halign(Gtk.Align.CENTER)
+        self.player_loading_spinner.set_valign(Gtk.Align.END)
+        self.player_loading_spinner.set_vexpand(True)
+        self.player_loading_overlay.append(self.player_loading_spinner)
+        self.player_loading_label = Gtk.Label(label="Resolving video...")
+        self.player_loading_label.add_css_class("dim-label")
+        self.player_loading_label.set_halign(Gtk.Align.CENTER)
+        self.player_loading_label.set_valign(Gtk.Align.START)
+        self.player_loading_label.set_vexpand(True)
+        self.player_loading_overlay.append(self.player_loading_label)
+        self.video_overlay.add_overlay(self.player_loading_overlay)
 
         self.player_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.miniplayer_controls_container.append(self.player_controls)

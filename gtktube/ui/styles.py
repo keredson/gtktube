@@ -78,6 +78,11 @@ APP_CSS = """
   background: transparent;
 }
 
+.player-loading-overlay {
+  background: rgba(0, 0, 0, 0.88);
+  color: white;
+}
+
 .video-tile {
   background: transparent;
   border: none;
@@ -94,6 +99,10 @@ APP_CSS = """
   color: white;
   border-radius: 4px;
   padding: 3px 6px;
+}
+
+.availability-badge {
+  background: rgba(120, 20, 20, 0.88);
 }
 
 .channel-tabs {

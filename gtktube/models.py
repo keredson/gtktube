@@ -16,6 +16,7 @@ class Video:
     duration_seconds: int | None = None
     published_at: str | None = None
     view_count: int | None = None
+    availability: str | None = None
     percent_watched: float | None = None
     watch_ranges: list[tuple[int, int]] | None = None
     completed: bool = False

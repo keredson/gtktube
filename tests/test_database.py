@@ -30,6 +30,7 @@ class DatabaseTests(unittest.TestCase):
                 description="Useful context about the video.",
                 duration_seconds=100,
                 view_count=12345,
+                availability="subscriber_only",
             )
         )
 
@@ -195,6 +196,23 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(feed[0].description, "Useful context about the video.")
         self.assertEqual(feed[0].duration_seconds, 100)
         self.assertEqual(feed[0].view_count, 12345)
+        self.assertEqual(feed[0].availability, "subscriber_only")
+
+    def test_video_availability_updates_when_video_becomes_public(self) -> None:
+        self.repository.upsert_video(
+            Video(
+                id="vid1",
+                channel_id="chan1",
+                channel_title="Channel One",
+                title="A Long Video",
+                url="https://example.test/watch?v=vid1",
+                availability="public",
+            )
+        )
+
+        feed = self.repository.subscription_feed()
+
+        self.assertEqual(feed[0].availability, "public")
 
     def test_feed_daily_channel_limit_default_is_not_persisted(self) -> None:
         row = self.connection.execute(

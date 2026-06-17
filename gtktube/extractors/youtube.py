@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import urllib.parse
+from dataclasses import replace
 from typing import Any
 
 from babel import Locale
@@ -136,7 +137,7 @@ class YoutubeExtractor:
         limit: int | None = None,
         start: int | None = None,
         ignore_errors: bool = False,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         options: dict[str, Any] = {
             **self._base_options(),
             "noplaylist": False,
@@ -157,14 +158,14 @@ class YoutubeExtractor:
 
     def resolve_playlist(self, url: str) -> dict[str, Any]:
         info = self._extract(url, flat=True, ignore_errors=True)
-        title = info.get("title") or "Playlist"
-        entries = info.get("entries") or []
+        title = info.get("title") if isinstance(info, dict) else None
+        entries = self._entries(info)
         videos = [
             self._video_from_info(entry)
             for entry in entries
             if entry is not None
         ]
-        return {"title": title, "videos": videos}
+        return {"title": title or "Playlist", "videos": videos}
 
     def resolve_video(
         self,
@@ -195,11 +196,13 @@ class YoutubeExtractor:
                         with self._youtube_dl()(options) as ydl:
                             info = ydl.extract_info(url, download=False)
                     except Exception as retry_exc:
-                        raise ExtractorError(f"Video is restricted and cookies failed: {retry_exc}") from retry_exc
+                        raise RestrictedVideoError(
+                            f"Video is restricted and cookies failed: {retry_exc}"
+                        ) from retry_exc
                 elif cookies_mode == "restricted_prompt" and cookies_browser:
                     raise RestrictedVideoError("Video is members-only or otherwise restricted.") from exc
                 else:
-                    raise ExtractorError("Video is members-only or otherwise restricted.") from exc
+                    raise RestrictedVideoError("Video is members-only or otherwise restricted.") from exc
             else:
                 if (
                     is_unavailable_format_error(str(exc))
@@ -233,11 +236,15 @@ class YoutubeExtractor:
                 else:
                     raise ExtractorError(str(exc)) from exc
 
+        video = self._video_from_info(info)
+        if video.availability is None:
+            video = replace(video, availability="public")
+
         stream_url, audio_url = self._stream_urls(info)
         if not stream_url:
             raise ExtractorError("No playable stream URL found")
         return PlayableVideo(
-            video=self._video_from_info(info),
+            video=video,
             stream_url=stream_url,
             quality=selected_quality,
             audio_url=audio_url,
@@ -294,7 +301,7 @@ class YoutubeExtractor:
             start=start,
             ignore_errors=True,
         )
-        entries = info.get("entries") or []
+        entries = self._entries(info)
         videos: list[Video] = []
         for entry in entries:
             if not entry:
@@ -316,7 +323,7 @@ class YoutubeExtractor:
             start=start,
             ignore_errors=True,
         )
-        entries = info.get("entries") or []
+        entries = self._entries(info)
         playlists: list[Video] = []
         for entry in entries:
             if not entry:
@@ -342,7 +349,7 @@ class YoutubeExtractor:
             start=start,
             ignore_errors=True,
         )
-        entries = info.get("entries") or []
+        entries = self._entries(info)
         shorts: list[Video] = []
         for entry in entries:
             if not entry:
@@ -366,7 +373,7 @@ class YoutubeExtractor:
             limit=limit,
             ignore_errors=True,
         )
-        entries = info.get("entries") or []
+        entries = self._entries(info)
         videos: list[Video] = []
         for entry in entries:
             if not entry:
@@ -382,7 +389,7 @@ class YoutubeExtractor:
 
     def search_videos(self, query: str, limit: int = 20) -> list[Video]:
         info = self._extract(f"ytsearch{limit}:{query}", flat=True, limit=limit)
-        entries = info.get("entries") or []
+        entries = self._entries(info)
         return [self._video_from_info(entry) for entry in entries if entry]
 
     def search_channels(self, query: str, limit: int = 10) -> list[Channel]:
@@ -392,7 +399,7 @@ class YoutubeExtractor:
             f"search_query={encoded}&sp=EgIQAg%253D%253D"
         )
         info = self._extract(url, flat=True, limit=limit)
-        entries = info.get("entries") or []
+        entries = self._entries(info)
         channels: list[Channel] = []
         for entry in entries:
             if not entry:
@@ -413,7 +420,7 @@ class YoutubeExtractor:
         try:
             with self._youtube_dl()(options) as ydl:
                 info = ydl.extract_info(":ytrec", download=False)
-                entries = info.get("entries") or []
+                entries = self._entries(info)
                 return [self._video_from_info(entry) for entry in entries if entry]
         except Exception as exc:
             raise ExtractorError(str(exc)) from exc
@@ -430,7 +437,7 @@ class YoutubeExtractor:
         try:
             with self._youtube_dl()(options) as ydl:
                 info = ydl.extract_info(":ythistory", download=False)
-                entries = info.get("entries") or []
+                entries = self._entries(info)
                 return [self._video_from_info(entry) for entry in entries if entry]
         except Exception as exc:
             raise ExtractorError(str(exc)) from exc
@@ -509,7 +516,24 @@ class YoutubeExtractor:
             duration_seconds=self._optional_int(info.get("duration")),
             published_at=self._published_at(info),
             view_count=self._optional_int(info.get("view_count")),
+            availability=self._availability(info),
         )
+
+    def _availability(self, info: dict[str, Any]) -> str | None:
+        availability = info.get("availability")
+        if availability is None:
+            return None
+        availability = str(availability)
+        if availability in {
+            "private",
+            "premium_only",
+            "subscriber_only",
+            "needs_auth",
+            "unlisted",
+            "public",
+        }:
+            return availability
+        return None
 
     def _best_thumbnail(self, info: dict[str, Any]) -> str | None:
         thumbnails = info.get("thumbnails") or []
@@ -538,14 +562,24 @@ class YoutubeExtractor:
             info = self._extract(url, flat=True, limit=1, ignore_errors=True)
         except ExtractorError:
             return None
+        if not isinstance(info, dict):
+            return None
         thumbnail_url = self._best_thumbnail(info)
         if thumbnail_url:
             return thumbnail_url
-        entries = info.get("entries") or []
+        entries = self._entries(info)
         for entry in entries:
             if entry:
                 return self._best_thumbnail(entry)
         return None
+
+    def _entries(self, info: object) -> list[dict[str, Any]]:
+        if not isinstance(info, dict):
+            return []
+        entries = info.get("entries") or []
+        if not isinstance(entries, list):
+            return []
+        return [entry for entry in entries if isinstance(entry, dict)]
 
     def _absolute_url(self, url: str) -> str:
         if url.startswith("//"):

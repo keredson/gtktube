@@ -131,6 +131,9 @@ class VideoGridMixin:
         thumbnail_placeholder.add_css_class("dim-label")
         thumbnail_overlay.set_child(thumbnail_placeholder)
         thumbnail_overlay.add_overlay(thumbnail)
+        availability_badge = self.availability_badge(video)
+        if availability_badge is not None:
+            thumbnail_overlay.add_overlay(availability_badge)
         if is_playlist_url(video.url):
             thumbnail_overlay.add_overlay(self.playlist_badge())
         elif video.duration_seconds:
@@ -185,6 +188,32 @@ class VideoGridMixin:
         badge.append(label)
         return badge
 
+    def availability_badge(self, video: Video) -> Gtk.Widget | None:
+        labels = {
+            "private": ("PRIVATE", "Private video"),
+            "premium_only": ("PREMIUM", "Premium-only video"),
+            "subscriber_only": ("MEMBERS", "Members-only video"),
+            "needs_auth": ("SIGN IN", "Sign-in required"),
+        }
+        label_text, tooltip = labels.get(video.availability, (None, None))
+        if label_text is None:
+            return None
+        badge = self.thumbnail_badge()
+        badge.add_css_class("availability-badge")
+        badge.set_tooltip_text(tooltip)
+        badge.set_valign(Gtk.Align.START)
+        badge.set_margin_top(6)
+        badge.set_margin_bottom(0)
+
+        icon = Gtk.Image.new_from_icon_name("changes-prevent-symbolic")
+        icon.set_pixel_size(14)
+        badge.append(icon)
+
+        label = Gtk.Label(label=label_text)
+        label.add_css_class("caption")
+        badge.append(label)
+        return badge
+
     def thumbnail_badge(self) -> Gtk.Box:
         badge = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         badge.add_css_class("thumbnail-badge")
@@ -215,6 +244,9 @@ class VideoGridMixin:
 
         thumbnail_overlay = Gtk.Overlay()
         thumbnail_overlay.set_child(thumbnail)
+        availability_badge = self.availability_badge(video)
+        if availability_badge is not None:
+            thumbnail_overlay.add_overlay(availability_badge)
         if video.duration_seconds:
             thumbnail_overlay.add_overlay(self.duration_badge(video.duration_seconds))
 

@@ -3,6 +3,7 @@ from unittest import mock
 
 from gtktube.extractors.youtube import (
     QUALITY_FORMATS,
+    RestrictedVideoError,
     YoutubeExtractor,
     is_restricted_video_error,
     is_unavailable_format_error,
@@ -21,6 +22,31 @@ class RestrictedVideoErrorTest(unittest.TestCase):
 
     def test_non_restricted_error_is_not_members_only(self) -> None:
         self.assertFalse(is_restricted_video_error("ERROR: network timeout"))
+
+    def test_resolve_video_raises_restricted_error_without_cookies(self) -> None:
+        class FakeYoutubeDL:
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(
+                self, target: str, download: bool = False
+            ) -> dict[str, object]:
+                raise Exception(
+                    "ERROR: [youtube] abc: This video is available to this "
+                    "channel's members."
+                )
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        with self.assertRaises(RestrictedVideoError):
+            extractor.resolve_video("https://www.youtube.com/watch?v=abc")
 
 
 class UnavailableFormatErrorTest(unittest.TestCase):
@@ -147,6 +173,58 @@ class ChannelPaginationTest(unittest.TestCase):
         self.assertEqual(options["playliststart"], 11)
         self.assertEqual(options["playlistend"], 20)
         self.assertEqual(videos[0].id, "short11")
+
+    def test_channel_shorts_treats_none_extraction_as_empty(self) -> None:
+        class FakeYoutubeDL:
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(
+                self, target: str, download: bool = False
+            ) -> dict[str, object] | None:
+                return None
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        videos = extractor.channel_shorts(
+            Channel(
+                id="chan1",
+                title="Channel One",
+                url="https://www.youtube.com/channel/chan1",
+            )
+        )
+
+        self.assertEqual(videos, [])
+
+    def test_resolve_playlist_treats_none_extraction_as_empty(self) -> None:
+        class FakeYoutubeDL:
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(
+                self, target: str, download: bool = False
+            ) -> dict[str, object] | None:
+                return None
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        result = extractor.resolve_playlist("https://www.youtube.com/playlist?list=PL123")
+
+        self.assertEqual(result, {"title": "Playlist", "videos": []})
 
     def test_channel_playlists_are_tagged_as_playlists(self) -> None:
         class FakeYoutubeDL:
@@ -464,6 +542,7 @@ class CaptionExtractionTest(unittest.TestCase):
                     "id": "video1",
                     "title": "Video 1",
                     "url": "https://stream.example/video.mp4",
+                    "availability": "subscriber_only",
                     "chapters": [
                         {
                             "title": "Intro",
@@ -489,6 +568,7 @@ class CaptionExtractionTest(unittest.TestCase):
         self.assertEqual(chapters[0].start_seconds, 0)
         self.assertEqual(chapters[0].end_seconds, 12.5)
         self.assertEqual(chapters[1].position, 1)
+        self.assertEqual(playable.video.availability, "subscriber_only")
 
 
 if __name__ == "__main__":

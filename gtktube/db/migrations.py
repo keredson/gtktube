@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 class UnsupportedDatabaseSchema(RuntimeError):
@@ -48,6 +48,9 @@ def migrate(connection: sqlite3.Connection) -> None:
         current = 9
     if current < 10:
         _migrate_10(connection)
+        current = 10
+    if current < 11:
+        _migrate_11(connection)
 
 
 def _migrate_1(connection: sqlite3.Connection) -> None:
@@ -478,5 +481,17 @@ def _migrate_10(connection: sqlite3.Connection) -> None:
             ON video_chapters(video_id, start_seconds);
 
             PRAGMA user_version = 10;
+            """
+        )
+
+
+def _migrate_11(connection: sqlite3.Connection) -> None:
+    with connection:
+        connection.executescript(
+            """
+            ALTER TABLE videos
+            ADD COLUMN availability TEXT;
+
+            PRAGMA user_version = 11;
             """
         )

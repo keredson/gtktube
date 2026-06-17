@@ -5,7 +5,11 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from gtktube.db.repositories import LibraryRepository
-from gtktube.extractors.youtube import ExtractorError, YoutubeExtractor
+from gtktube.extractors.youtube import (
+    ExtractorError,
+    RestrictedVideoError,
+    YoutubeExtractor,
+)
 from gtktube.models import Channel, PlayableVideo, SearchResults, Video
 
 
@@ -34,12 +38,16 @@ class LibraryService:
     def play_video(
         self, video: Video, quality: str = "720p", record_play: bool = True
     ) -> PlayableVideo:
-        playable = self.extractor.resolve_video(
-            video.url,
-            quality=quality,
-            cookies_mode=self.repository.yt_dlp_cookies_mode(),
-            cookies_browser=self.repository.yt_dlp_cookies_browser(),
-        )
+        try:
+            playable = self.extractor.resolve_video(
+                video.url,
+                quality=quality,
+                cookies_mode=self.repository.yt_dlp_cookies_mode(),
+                cookies_browser=self.repository.yt_dlp_cookies_browser(),
+            )
+        except RestrictedVideoError:
+            self.repository.set_video_availability(video.id, "subscriber_only")
+            raise
         self._store_video_and_channel(playable.video)
         self.repository.replace_video_chapters(
             playable.video.id, playable.chapters or []

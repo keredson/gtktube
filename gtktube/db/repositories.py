@@ -181,10 +181,10 @@ class LibraryRepository:
                 """
                 INSERT INTO videos (
                     id, channel_id, title, url, kind, thumbnail_url, duration_seconds,
-                    published_at, view_count, description, discovered_at,
+                    published_at, view_count, description, availability, discovered_at,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     channel_id = COALESCE(excluded.channel_id, videos.channel_id),
                     title = excluded.title,
@@ -195,6 +195,7 @@ class LibraryRepository:
                     published_at = COALESCE(excluded.published_at, videos.published_at),
                     view_count = COALESCE(excluded.view_count, videos.view_count),
                     description = COALESCE(excluded.description, videos.description),
+                    availability = COALESCE(excluded.availability, videos.availability),
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -208,6 +209,7 @@ class LibraryRepository:
                     video.published_at,
                     video.view_count,
                     video.description,
+                    video.availability,
                     now,
                     now,
                     now,
@@ -218,6 +220,18 @@ class LibraryRepository:
         with self._lock:
             for video in videos:
                 self.upsert_video(video)
+
+    def set_video_availability(self, video_id: str, availability: str) -> None:
+        now = utcnow()
+        with self._lock, self.connection:
+            self.connection.execute(
+                """
+                UPDATE videos
+                SET availability = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (availability, now, video_id),
+            )
 
     def replace_video_chapters(
         self, video_id: str, chapters: list[VideoChapter]
@@ -640,7 +654,7 @@ class LibraryRepository:
             SELECT
                 v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
                 v.thumbnail_url, v.description, v.duration_seconds,
-                v.published_at, v.view_count,
+                v.published_at, v.view_count, v.availability,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 wp.watch_range_string,
                 COALESCE(wh.completed, 0) AS completed
@@ -663,7 +677,7 @@ class LibraryRepository:
             SELECT
                 v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
                 v.thumbnail_url, v.description, v.duration_seconds,
-                v.published_at, v.view_count,
+                v.published_at, v.view_count, v.availability,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 wp.watch_range_string,
                 COALESCE(wh.completed, 0) AS completed
@@ -694,7 +708,7 @@ class LibraryRepository:
             SELECT
                 v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
                 v.thumbnail_url, v.description, v.duration_seconds,
-                v.published_at, v.view_count,
+                v.published_at, v.view_count, v.availability,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 wp.watch_range_string,
                 COALESCE(wh.completed, 0) AS completed
@@ -739,7 +753,7 @@ class LibraryRepository:
             SELECT
                 v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
                 v.thumbnail_url, v.description, v.duration_seconds,
-                v.published_at, v.view_count,
+                v.published_at, v.view_count, v.availability,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 wp.watch_range_string,
                 COALESCE(wh.completed, 0) AS completed
@@ -810,7 +824,7 @@ class LibraryRepository:
             SELECT
                 v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
                 v.thumbnail_url, v.description, v.duration_seconds,
-                v.published_at, v.view_count,
+                v.published_at, v.view_count, v.availability,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 wp.watch_range_string,
                 COALESCE(wh.completed, 0) AS completed
@@ -973,6 +987,9 @@ class LibraryRepository:
             duration_seconds=row["duration_seconds"],
             published_at=row["published_at"],
             view_count=row["view_count"],
+            availability=(
+                row["availability"] if "availability" in row.keys() else None
+            ),
             percent_watched=row["percent_watched"],
             watch_ranges=ranges or None,
             completed=bool(row["completed"]),

@@ -58,6 +58,9 @@ class PlayerMixin:
             self.playlist_current_index = None
             self.update_playlist_rows()
         quality = self.selected_quality()
+        self.playback_request_id += 1
+        request_id = self.playback_request_id
+        self.show_player_loading(video)
         self.verbose_log(
             "playback requested "
             f"video={video.id} quality={quality} url={video.url}"
@@ -65,8 +68,74 @@ class PlayerMixin:
         self.run_task(
             "Resolving video...",
             lambda: self.service.play_video(video, quality=quality),
-            self.load_playable,
+            lambda playable: self.load_playable_if_current(playable, request_id),
+            error=lambda exc: self.show_player_error_if_current(exc, request_id),
         )
+
+    def load_playable_if_current(
+        self, playable: PlayableVideo, request_id: int
+    ) -> None:
+        if request_id != self.playback_request_id:
+            self.verbose_log(
+                "ignoring stale playback resolve "
+                f"video={playable.video.id} request={request_id} "
+                f"current={self.playback_request_id}"
+            )
+            return
+        self.load_playable(playable)
+
+    def clear_player_loading_if_current(self, request_id: int) -> None:
+        if request_id == self.playback_request_id:
+            self.set_player_loading(False)
+
+    def show_player_error_if_current(
+        self, exc: Exception, request_id: int
+    ) -> None:
+        if request_id != self.playback_request_id:
+            return
+        self.show_player_error(str(exc) or "Could not load video")
+        self.reload_visible_video_grid()
+
+    def show_player_loading(self, video: Video) -> None:
+        self.flush_watch_range()
+        self.stop_pipeline(restore_stack=False)
+        self.current_playable = None
+        self.active_caption_url = None
+        self.player_title.set_text(video.title)
+        self.player_meta.set_text("Resolving video...")
+        self.player_chapter_label.set_text("")
+        self.player_chapter_label.set_visible(False)
+        self.miniplayer_title.set_text(video.title)
+        self.miniplayer_meta.set_text("Resolving video...")
+        self.set_description_text("")
+        self.update_caption_tracks(None)
+        self.update_chapters(None)
+        self.update_player_share_button()
+        self.elapsed_label.set_text("0:00")
+        self.duration_label.set_text("0:00")
+        self.updating_scrubber = True
+        self.scrubber.set_range(0, 1)
+        self.scrubber.set_value(0)
+        self.updating_scrubber = False
+        self.set_player_loading(True)
+        self.show_full_player()
+        self.select_nav_page("player")
+        self.stack.set_visible_child_name("player")
+
+    def set_player_loading(self, loading: bool) -> None:
+        self.player_loading_overlay.set_visible(loading)
+        if loading:
+            self.player_loading_label.set_text("Resolving video...")
+            self.player_loading_spinner.start()
+        else:
+            self.player_loading_spinner.stop()
+
+    def show_player_error(self, message: str) -> None:
+        self.player_loading_spinner.stop()
+        self.player_loading_label.set_text(message)
+        self.player_loading_overlay.set_visible(True)
+        self.player_meta.set_text("Playback unavailable")
+        self.miniplayer_meta.set_text("Playback unavailable")
 
     def load_playable(
         self, playable: PlayableVideo, resume_position: int | None = None
@@ -119,6 +188,7 @@ class PlayerMixin:
         if resume > 0:
             self.suppress_sponsorblock_for_seek(resume)
 
+        self.set_player_loading(False)
         player = self.create_player(playable)
         if player is None:
             self.hide_miniplayer()
@@ -506,6 +576,7 @@ class PlayerMixin:
         self.miniplayer_video_container.set_vexpand(True)
         self.miniplayer_video_container.set_valign(Gtk.Align.FILL)
         self.miniplayer_video_container.set_size_request(-1, -1)
+        self.video_overlay.set_size_request(-1, 360)
         self.miniplayer_controls_container.set_hexpand(True)
         self.miniplayer_controls_container.set_vexpand(False)
         self.miniplayer_controls_container.set_valign(Gtk.Align.FILL)
@@ -536,6 +607,7 @@ class PlayerMixin:
         self.miniplayer_video_container.set_vexpand(False)
         self.miniplayer_video_container.set_valign(Gtk.Align.CENTER)
         self.miniplayer_video_container.set_size_request(176, 99)
+        self.video_overlay.set_size_request(176, 99)
         self.miniplayer_controls_container.set_hexpand(True)
         self.miniplayer_controls_container.set_vexpand(False)
         self.miniplayer_controls_container.set_valign(Gtk.Align.CENTER)
@@ -881,10 +953,12 @@ class PlayerMixin:
         self.navigate_to(ViewState("player"))
 
     def close_current_video(self) -> None:
+        self.playback_request_id += 1
         self.flush_watch_range()
         self.stop_pipeline()
         self.current_playable = None
         self.active_caption_url = None
+        self.set_player_loading(False)
         self.player_title.set_text("No video loaded")
         self.player_meta.set_text("")
         self.miniplayer_title.set_text("")
