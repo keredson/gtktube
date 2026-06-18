@@ -32,13 +32,17 @@ class SponsorBlockMixin:
         if fresh:
             return
 
-        future = self.executor.submit(
+        future = self.submit_background(
             self.sponsorblock.segments,
             video_id,
             categories,
         )
+        if future is None:
+            return
 
         def done() -> bool:
+            if self.cleaned_up:
+                return False
             try:
                 segments = future.result()
             except SponsorBlockError as exc:
@@ -58,7 +62,7 @@ class SponsorBlockMixin:
             self.sponsorblock_timeline.queue_draw()
             return False
 
-        future.add_done_callback(lambda _future: GLib.idle_add(done))
+        self.schedule_background_finish(future, done)
 
     def draw_sponsorblock_timeline(
         self,

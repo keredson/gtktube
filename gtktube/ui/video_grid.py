@@ -54,6 +54,8 @@ class VideoGridMixin:
 
         def append_batch() -> bool:
             nonlocal index
+            if self.cleaned_up:
+                return False
             if self.grid_generations.get(id(grid), 0) != generation:
                 return False
             end = min(index + 8, len(videos))

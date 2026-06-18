@@ -376,7 +376,7 @@ class ChromeMixin:
             return
         if self.current_view and self.current_view.page == "recommended":
             if hasattr(self, "reload_recommended"):
-                getattr(self, "reload_recommended")()
+                getattr(self, "reload_recommended")(force=True)
 
     def on_context_unsubscribe_clicked(self, _button: Gtk.Button) -> None:
         channel = self.current_channel()
@@ -432,13 +432,17 @@ class ChromeMixin:
         self.set_status(message)
 
     def start_update_check(self) -> bool:
-        future = self.executor.submit(
+        future = self.submit_background(
             check_for_update,
             __version__,
             self.force_update_dialog,
         )
+        if future is None:
+            return False
 
         def finish() -> bool:
+            if self.cleaned_up:
+                return False
             try:
                 update = future.result()
             except Exception as exc:
@@ -456,7 +460,7 @@ class ChromeMixin:
                 self.show_update_dialog(update)
             return False
 
-        future.add_done_callback(lambda _future: GLib.idle_add(finish))
+        self.schedule_background_finish(future, finish)
         return False
 
     def show_update_dialog(self, update: UpdateInfo) -> None:

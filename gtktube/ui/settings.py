@@ -466,11 +466,13 @@ class SettingsMixin:
         browser = combo.get_active_id()
         if browser is not None:
             self.service.repository.set_yt_dlp_cookies_browser(browser)
+            if hasattr(self, "clear_recommended_cache"):
+                getattr(self, "clear_recommended_cache")()
             self._update_privacy_help()
 
             if browser and self.service.repository.show_recommended_videos() is True:
                 if hasattr(self, "reload_recommended"):
-                    getattr(self, "reload_recommended")()
+                    getattr(self, "reload_recommended")(force=True)
 
             if (
                 browser

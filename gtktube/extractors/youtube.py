@@ -253,6 +253,28 @@ class YoutubeExtractor:
             chapters=self._chapters(info),
         )
 
+    def video_metadata(
+        self,
+        url: str,
+        cookies_mode: str = "never",
+        cookies_browser: str = "firefox",
+    ) -> Video:
+        options = {
+            **self._base_options(),
+            "noplaylist": True,
+        }
+        if cookies_mode in {"always", "restricted_auto"} and cookies_browser:
+            options["cookiesfrombrowser"] = (cookies_browser,)
+        try:
+            with self._youtube_dl()(options) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as exc:
+            raise ExtractorError(str(exc)) from exc
+        video = self._video_from_info(info)
+        if video.availability is None:
+            video = replace(video, availability="public")
+        return video
+
     def resolve_channel(self, url: str) -> Channel:
         info = self._extract(url, flat=True, limit=1)
         thumbnail_url = self._best_thumbnail(info)

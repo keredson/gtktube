@@ -63,11 +63,15 @@ class ThumbnailMixin:
         preserve_aspect: bool = False,
         log_label: str | None = None,
     ) -> None:
+        if getattr(self, "cleaned_up", False):
+            return
         url = self.absolute_media_url(url)
         download_url = self.absolute_media_url(download_url or url)
         path = self.thumbnail_path(url, suffix)
 
         def decode_and_set(image_path: Path) -> bool:
+            if getattr(self, "cleaned_up", False):
+                return False
             try:
                 pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
                     str(image_path),
@@ -90,15 +94,19 @@ class ThumbnailMixin:
             return False
 
         if path.exists():
-            future = self.executor.submit(
+            future = self.submit_background(
                 GdkPixbuf.Pixbuf.new_from_file_at_scale,
                 str(path),
                 width,
                 height,
                 preserve_aspect,
             )
+            if future is None:
+                return
 
             def done_cached() -> bool:
+                if getattr(self, "cleaned_up", False):
+                    return False
                 try:
                     pixbuf = future.result()
                     texture = Gdk.Texture.new_for_pixbuf(pixbuf)
@@ -112,12 +120,16 @@ class ThumbnailMixin:
                         pass
                 return False
 
-            future.add_done_callback(lambda _f: GLib.idle_add(done_cached))
+            self.schedule_background_finish(future, done_cached)
             return
 
-        future = self.executor.submit(self.download_thumbnail, download_url, path)
+        future = self.submit_background(self.download_thumbnail, download_url, path)
+        if future is None:
+            return
 
         def done_download() -> bool:
+            if getattr(self, "cleaned_up", False):
+                return False
             try:
                 downloaded = future.result()
             except Exception:
@@ -126,7 +138,7 @@ class ThumbnailMixin:
                 GLib.idle_add(decode_and_set, downloaded)
             return False
 
-        future.add_done_callback(lambda _f: GLib.idle_add(done_download))
+        self.schedule_background_finish(future, done_download)
 
     def absolute_media_url(self, url: str) -> str:
         if url.startswith("//"):

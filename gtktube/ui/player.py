@@ -64,6 +64,7 @@ class PlayerMixin:
         quality = self.selected_quality()
         self.playback_request_id += 1
         request_id = self.playback_request_id
+        self.mpv_stream_retry = None
         self.show_player_loading(video)
         self.verbose_log(
             "playback requested "
@@ -333,6 +334,52 @@ class PlayerMixin:
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
         self.show_player_error(message)
+        return False
+
+    def retry_mpv_stream_open_error(self, message: str) -> bool:
+        if self.current_playable is None:
+            return self.show_mpv_playback_error(message)
+        video = self.current_playable.video
+        request_id = self.playback_request_id
+        retry_key = (request_id, video.id)
+        if self.mpv_stream_retry == retry_key:
+            return self.show_mpv_playback_error(message)
+        self.mpv_stream_retry = retry_key
+
+        position = self.range_start_seconds
+        if position is None:
+            position = self.current_position_seconds()
+        quality = self.current_playable.quality or self.selected_quality()
+        self.verbose_log(
+            "retrying playback after stream open failure "
+            f"video={video.id} quality={quality} position={position}"
+        )
+        self.stop_pipeline(restore_stack=False, keep_player_visible=True)
+        self.show_full_player()
+        self.select_nav_page("player")
+        self.stack.set_visible_child_name("player")
+        self.show_player_buffering("Refreshing stream URL...")
+
+        def done(playable: PlayableVideo) -> None:
+            if request_id != self.playback_request_id:
+                return
+            self.load_playable(playable, resume_position=position)
+
+        def failed(exc: Exception) -> None:
+            if request_id != self.playback_request_id:
+                return
+            self.show_mpv_playback_error(str(exc) or message)
+
+        self.run_task(
+            "Refreshing stream URL...",
+            lambda: self.service.play_video(
+                video,
+                quality=quality,
+                record_play=False,
+            ),
+            done,
+            error=failed,
+        )
         return False
 
     def maybe_show_sponsorblock_prompt(
@@ -974,13 +1021,13 @@ class PlayerMixin:
                     "Try replaying the video to resolve a fresh stream URL."
                 )
                 GLib.idle_add(
-                    self.show_mpv_playback_error,
+                    self.retry_mpv_stream_open_error,
                     self.mpv_stream_error_message,
                 )
             elif "Failed to open " in message and self.mpv_stream_error_message is None:
                 self.mpv_stream_error_message = "Could not open video stream."
                 GLib.idle_add(
-                    self.show_mpv_playback_error,
+                    self.retry_mpv_stream_open_error,
                     self.mpv_stream_error_message,
                 )
         else:
@@ -998,16 +1045,17 @@ class PlayerMixin:
             if self.pending_seek_seconds is not None:
                 self.start_pending_seek_timer(delay_ms=100)
         elif event_id == self.mpv_module.MpvEventID.END_FILE:
+            reason = getattr(event, "reason", "unknown")
             error = getattr(event, "error", None)
             message = (
                 "mpv event end-file "
-                f"reason={getattr(event, 'reason', 'unknown')} "
+                f"reason={reason} "
                 f"error={error}"
             )
-            if error:
+            if self.mpv_end_file_failed(reason, error):
                 self.log(message)
                 GLib.idle_add(
-                    self.show_mpv_playback_error,
+                    self.retry_mpv_stream_open_error,
                     self.mpv_stream_error_message or "Playback failed.",
                 )
                 return
@@ -1016,12 +1064,26 @@ class PlayerMixin:
             GLib.idle_add(self.uninhibit_playback)
             GLib.idle_add(self.on_mpv_end_file)
 
+    def mpv_end_file_failed(self, reason: object, error: object) -> bool:
+        reason_text = str(reason).lower()
+        if "eof" in reason_text:
+            return False
+        if error in (None, 0, "", "success"):
+            return False
+        return True
+
     def on_mpv_end_file(self) -> None:
         if self.video_queue.get_n_items() > 0:
+            self.verbose_log(
+                "mpv end-file advancing to queued video "
+                f"queue_count={self.video_queue.get_n_items()}"
+            )
             self.play_next_in_queue()
         elif self.playlist_current_index is not None:
+            self.verbose_log("mpv end-file advancing playlist")
             self.play_next_in_playlist()
         else:
+            self.verbose_log("mpv end-file stopping player")
             self.stop_pipeline(restore_stack=False)
 
     def playlist_previous_index(self) -> int | None:
@@ -1160,6 +1222,17 @@ class PlayerMixin:
         _y: float,
     ) -> None:
         self.toggle_play_pause()
+
+    def on_current_video_context_menu(
+        self,
+        _gesture: Gtk.GestureClick,
+        _n_press: int,
+        x: float,
+        y: float,
+    ) -> None:
+        if self.current_playable is None:
+            return
+        self.show_video_context_menu(self.video, self.current_playable.video, x, y)
 
     def toggle_play_pause(self) -> None:
         if self.player is None:

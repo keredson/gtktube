@@ -121,6 +121,8 @@ class MainWindow(
         self.playlist_store = Gio.ListStore(item_type=VideoObject)
         self.playlist_current_index: int | None = None
         self.playlist_skip_set: set[int] = set()
+        self.queue_quit_confirmed = False
+        self.queue_quit_dialog: Gtk.Dialog | None = None
         self.dragging_index = -1
         self.current_playable: PlayableVideo | None = None
         self.playback_request_id = 0
@@ -151,6 +153,7 @@ class MainWindow(
         self.last_playback_diagnostics_paused = False
         self.mpv_file_loaded = False
         self.mpv_stream_error_message: str | None = None
+        self.mpv_stream_retry: tuple[int, str] | None = None
         self.selected_caption_id = "off"
         self.active_caption_url: str | None = None
         self.preferred_quality = self.service.repository.default_video_quality()
@@ -404,8 +407,75 @@ class MainWindow(
             return None
 
     def on_close_request(self, *_args: object) -> bool:
+        if (
+            not self.queue_quit_confirmed
+            and self.video_queue.get_n_items() > 0
+        ):
+            self.show_queue_quit_dialog()
+            return True
         self.cleanup()
         return False
+
+    def show_queue_quit_dialog(self) -> None:
+        if self.queue_quit_dialog is not None:
+            self.queue_quit_dialog.present()
+            return
+
+        count = self.video_queue.get_n_items()
+        dialog = Gtk.Dialog(
+            title="Save queued videos?",
+            transient_for=self,
+            modal=True,
+        )
+        dialog.add_button("Add to Watch Later", Gtk.ResponseType.ACCEPT)
+        dialog.add_button("Discard Queue", Gtk.ResponseType.REJECT)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.set_default_response(Gtk.ResponseType.REJECT)
+
+        content = dialog.get_content_area()
+        content.set_margin_top(16)
+        content.set_margin_bottom(16)
+        content.set_margin_start(16)
+        content.set_margin_end(16)
+        content.set_spacing(10)
+
+        title = Gtk.Label(label="There are videos left in the queue.", xalign=0)
+        title.add_css_class("title-4")
+        content.append(title)
+
+        noun = "video" if count == 1 else "videos"
+        message = Gtk.Label(
+            label=(
+                f"Add {count} queued {noun} to Watch Later before quitting, "
+                "or discard this session queue?"
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        content.append(message)
+
+        def response(_dialog: Gtk.Dialog, response_id: int) -> None:
+            self.queue_quit_dialog = None
+            dialog.destroy()
+            if response_id == Gtk.ResponseType.CANCEL:
+                return
+            if response_id == Gtk.ResponseType.ACCEPT:
+                self.add_queue_to_watch_later()
+            self.queue_quit_confirmed = True
+            self.close()
+
+        dialog.connect("response", response)
+        self.queue_quit_dialog = dialog
+        dialog.present()
+
+    def add_queue_to_watch_later(self) -> None:
+        videos = [
+            self.video_queue.get_item(index).video
+            for index in range(self.video_queue.get_n_items())
+        ]
+        for video in videos:
+            self.service.add_watch_later(video)
+        self.reload_watch_later()
 
     def cleanup(self) -> None:
         if self.cleaned_up:
@@ -1355,6 +1425,10 @@ class MainWindow(
         video_click = Gtk.GestureClick()
         video_click.connect("released", self.on_video_clicked)
         self.video.add_controller(video_click)
+        video_right_click = Gtk.GestureClick()
+        video_right_click.set_button(3)
+        video_right_click.connect("pressed", self.on_current_video_context_menu)
+        self.video.add_controller(video_right_click)
 
         self.video_overlay = Gtk.Overlay()
         self.video_overlay.set_child(self.video)

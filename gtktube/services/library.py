@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 
 from gtktube.db.repositories import LibraryRepository
 from gtktube.extractors.youtube import (
@@ -252,6 +253,30 @@ class LibraryService:
         browser = self.repository.yt_dlp_cookies_browser()
         videos = self.extractor.recommended_videos(browser, limit=limit)
         return self.repository.videos_with_watch_progress(videos)
+
+    def refresh_video_metadata(self, video: Video) -> Video:
+        refreshed = self.extractor.video_metadata(
+            video.url,
+            cookies_mode=self.repository.yt_dlp_cookies_mode(),
+            cookies_browser=self.repository.yt_dlp_cookies_browser(),
+        )
+        merged = replace(
+            video,
+            channel_id=refreshed.channel_id or video.channel_id,
+            channel_title=refreshed.channel_title or video.channel_title,
+            thumbnail_url=refreshed.thumbnail_url or video.thumbnail_url,
+            description=refreshed.description or video.description,
+            duration_seconds=refreshed.duration_seconds or video.duration_seconds,
+            published_at=refreshed.published_at or video.published_at,
+            view_count=(
+                refreshed.view_count
+                if refreshed.view_count is not None
+                else video.view_count
+            ),
+            availability=refreshed.availability or video.availability,
+        )
+        self._store_video_and_channel(merged)
+        return self.repository.videos_with_watch_progress([merged])[0]
 
     def import_youtube_watch_history(self, limit: int = 100) -> int:
         browser = self.repository.yt_dlp_cookies_browser()
