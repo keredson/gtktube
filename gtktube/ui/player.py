@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from ctypes import byref, c_int, c_void_p
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -133,6 +134,11 @@ class PlayerMixin:
         else:
             self.player_loading_spinner.stop()
 
+    def show_player_buffering(self, message: str) -> None:
+        self.player_loading_label.set_text(message)
+        self.player_loading_overlay.set_visible(True)
+        self.player_loading_spinner.start()
+
     def show_player_error(self, message: str) -> None:
         self.player_loading_spinner.stop()
         self.player_loading_label.set_text(message)
@@ -158,6 +164,10 @@ class PlayerMixin:
         self.quality_combo.set_active_id(playable.quality)
         self.updating_quality = False
         self.update_player_metadata(playable.video)
+        recommended_updater = getattr(self, "update_recommended_cached_video", None)
+        if callable(recommended_updater):
+            recommended_updater(playable.video)
+        self.refresh_current_video_metadata_if_needed(playable)
         self.update_subscribe_check(playable.video)
         self.update_caption_tracks(playable)
         self.update_chapters(playable)
@@ -191,7 +201,9 @@ class PlayerMixin:
         if resume > 0:
             self.suppress_sponsorblock_for_seek(resume)
 
-        self.set_player_loading(False)
+        self.mpv_file_loaded = False
+        self.mpv_stream_error_message = None
+        self.show_player_buffering("Opening stream...")
         player = self.create_player(playable)
         if player is None:
             self.hide_miniplayer()
@@ -231,7 +243,9 @@ class PlayerMixin:
     def wait_for_playback_buffer(self, player: Any, video_id: str) -> None:
         target = self.playback_buffer_target_seconds()
         started_at = time.monotonic()
-        self.set_status(f"Buffering {target:g}s before playback...")
+        message = self.playback_buffer_message(0.0, target)
+        self.set_status(message)
+        self.show_player_buffering(message)
         self.verbose_log(
             "mpv buffering before playback "
             f"video={video_id} target={target:g}s rate={self.playback_rate:g}"
@@ -256,18 +270,31 @@ class PlayerMixin:
         if player is not self.player:
             return False
 
+        if self.mpv_stream_error_message:
+            self.show_mpv_playback_error(self.mpv_stream_error_message)
+            return False
+
         elapsed = time.monotonic() - started_at
         target = self.playback_buffer_target_seconds()
         cache_duration = self.mpv_float_property("demuxer-cache-duration") or 0.0
+        message = self.playback_buffer_message(cache_duration, target)
+        if self.player_loading_label.get_text() != message:
+            self.set_status(message)
+            self.show_player_buffering(message)
         cache_state = self.mpv_property("demuxer-cache-state")
         underrun = (
             isinstance(cache_state, dict)
             and bool(cache_state.get("underrun"))
         )
-        ready = cache_duration >= target and not underrun
+        has_open_stream = self.mpv_file_loaded or cache_duration > 0
+        ready = has_open_stream and cache_duration >= target
         timed_out = elapsed >= BUFFER_START_TIMEOUT_SECONDS
         if not ready and not timed_out:
             return True
+
+        if not has_open_stream:
+            self.show_mpv_playback_error("Could not open video stream.")
+            return False
 
         try:
             player.pause = False
@@ -282,13 +309,30 @@ class PlayerMixin:
         self.last_playback_diagnostics_values = {}
         self.last_playback_diagnostics_paused = False
         self.update_playback_inhibition()
+        self.set_player_loading(False)
         self.set_status("Ready")
         self.verbose_log(
             "mpv play command accepted "
             f"video={video_id} buffered={cache_duration:.3f}s "
             f"target={target:g}s elapsed={elapsed:.3f}s "
-            f"reason={'target' if ready else 'timeout'}"
+            f"underrun={underrun} reason={'target' if ready else 'timeout'}"
         )
+        return False
+
+    def playback_buffer_message(self, cache_duration: float, target: float) -> str:
+        percent = 0
+        if target > 0:
+            ratio = min(1.0, max(0.0, cache_duration / target))
+            percent = round(ratio * 100)
+        return f"Buffering {percent}%..."
+
+    def show_mpv_playback_error(self, message: str) -> bool:
+        self.set_status(f"Playback error: {message}")
+        self.stop_pipeline(restore_stack=False, keep_player_visible=True)
+        self.show_full_player()
+        self.select_nav_page("player")
+        self.stack.set_visible_child_name("player")
+        self.show_player_error(message)
         return False
 
     def maybe_show_sponsorblock_prompt(
@@ -356,6 +400,45 @@ class PlayerMixin:
         self.miniplayer_meta.set_text(meta)
         self.set_description_text(video.description or "")
         self.update_player_share_button()
+
+    def refresh_current_video_metadata_if_needed(self, playable: PlayableVideo) -> None:
+        video = playable.video
+        if (
+            video.channel_title
+            and video.duration_seconds
+            and video.published_at
+            and video.view_count is not None
+            and video.description
+        ):
+            return
+        video_id = video.id
+        future = self.submit_background(self.service.refresh_video_metadata, video)
+        if future is None:
+            return
+
+        def done() -> bool:
+            if self.cleaned_up:
+                return False
+            try:
+                refreshed = future.result()
+            except Exception as exc:
+                self.verbose_log(f"metadata refresh failed video={video_id}: {exc}")
+                return False
+            if self.current_playable is None or self.current_playable.video.id != video_id:
+                return False
+            self.current_playable = replace(
+                self.current_playable,
+                video=refreshed,
+            )
+            self.update_player_metadata(refreshed)
+            self.update_subscribe_check(refreshed)
+            self.update_player_share_button()
+            recommended_updater = getattr(self, "update_recommended_cached_video", None)
+            if callable(recommended_updater):
+                recommended_updater(refreshed)
+            return False
+
+        self.schedule_background_finish(future, done)
 
     def update_chapters(self, playable: PlayableVideo | None) -> None:
         chapters = playable.chapters if playable and playable.chapters else []
@@ -885,6 +968,21 @@ class PlayerMixin:
         log_message = f"mpv[{level}][{prefix}] {message}"
         if level in {"error", "fatal"}:
             self.log(log_message)
+            if "HTTP error 403" in message:
+                self.mpv_stream_error_message = (
+                    "Video stream was rejected by YouTube (HTTP 403). "
+                    "Try replaying the video to resolve a fresh stream URL."
+                )
+                GLib.idle_add(
+                    self.show_mpv_playback_error,
+                    self.mpv_stream_error_message,
+                )
+            elif "Failed to open " in message and self.mpv_stream_error_message is None:
+                self.mpv_stream_error_message = "Could not open video stream."
+                GLib.idle_add(
+                    self.show_mpv_playback_error,
+                    self.mpv_stream_error_message,
+                )
         else:
             self.verbose_log(log_message)
 
@@ -896,16 +994,23 @@ class PlayerMixin:
             self.verbose_log("mpv event start-file")
         elif event_id == self.mpv_module.MpvEventID.FILE_LOADED:
             self.verbose_log("mpv event file-loaded")
+            self.mpv_file_loaded = True
             if self.pending_seek_seconds is not None:
                 self.start_pending_seek_timer(delay_ms=100)
         elif event_id == self.mpv_module.MpvEventID.END_FILE:
+            error = getattr(event, "error", None)
             message = (
                 "mpv event end-file "
                 f"reason={getattr(event, 'reason', 'unknown')} "
-                f"error={getattr(event, 'error', None)}"
+                f"error={error}"
             )
-            if getattr(event, "error", None):
+            if error:
                 self.log(message)
+                GLib.idle_add(
+                    self.show_mpv_playback_error,
+                    self.mpv_stream_error_message or "Playback failed.",
+                )
+                return
             else:
                 self.verbose_log(message)
             GLib.idle_add(self.uninhibit_playback)
@@ -916,6 +1021,8 @@ class PlayerMixin:
             self.play_next_in_queue()
         elif self.playlist_current_index is not None:
             self.play_next_in_playlist()
+        else:
+            self.stop_pipeline(restore_stack=False)
 
     def playlist_previous_index(self) -> int | None:
         if self.playlist_current_index is None:
@@ -977,14 +1084,19 @@ class PlayerMixin:
         if next_idx is not None:
             self.play_playlist_item(next_idx)
 
-    def stop_pipeline(self, restore_stack: bool = True) -> None:
+    def stop_pipeline(
+        self,
+        restore_stack: bool = True,
+        keep_player_visible: bool = False,
+    ) -> None:
         self.uninhibit_playback()
         if self.video_fullscreen:
             self.close_video_fullscreen()
-        if restore_stack:
-            self.hide_miniplayer()
-        else:
-            self.miniplayer.set_visible(False)
+        if not keep_player_visible:
+            if restore_stack:
+                self.hide_miniplayer()
+            else:
+                self.miniplayer.set_visible(False)
         if self.player is None:
             self.free_mpv_render_context()
             return
@@ -1005,6 +1117,8 @@ class PlayerMixin:
         self.last_playback_diagnostics_at = 0.0
         self.last_playback_diagnostics_values = {}
         self.last_playback_diagnostics_paused = False
+        self.mpv_file_loaded = False
+        self.mpv_stream_error_message = None
         self.update_play_pause_button()
         self.update_transport_navigation_buttons()
 
@@ -1344,9 +1458,13 @@ class PlayerMixin:
         if self.active_caption_url == track.url:
             return
         self.active_caption_url = track.url
-        future = self.executor.submit(self.download_caption_track, track)
+        future = self.submit_background(self.download_caption_track, track)
+        if future is None:
+            return
 
         def done() -> bool:
+            if self.cleaned_up:
+                return False
             try:
                 path = future.result()
             except Exception as exc:
@@ -1362,7 +1480,7 @@ class PlayerMixin:
                 self.log(f"mpv caption load failed: {exc}")
             return False
 
-        future.add_done_callback(lambda _future: GLib.idle_add(done))
+        self.schedule_background_finish(future, done)
 
     def download_caption_track(self, track: CaptionTrack) -> Path:
         path = self.caption_cache_path(track)
@@ -1587,6 +1705,8 @@ class PlayerMixin:
 
     def maybe_log_playback_diagnostics(self, current: int, duration: int) -> None:
         if not self.verbose or self.player is None:
+            return
+        if not self.mpv_file_loaded or duration <= 0:
             return
         speed = self.mpv_property("speed")
         if self.playback_rate == 1.0 and speed in (None, 1, 1.0):

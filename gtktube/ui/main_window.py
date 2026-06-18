@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import traceback
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from ctypes import CDLL, POINTER, c_char_p, c_int, c_void_p
 from ctypes.util import find_library
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -35,6 +36,7 @@ from gtktube.ui.video_grid import VideoGridMixin
 
 
 T = TypeVar("T")
+RECOMMENDED_CACHE_TTL_SECONDS = 15 * 60
 
 
 class GTKTubeApplication(Gtk.Application):
@@ -110,6 +112,11 @@ class MainWindow(
         self.caption_dir = paths.cache_dir / "captions"
         self.caption_dir.mkdir(parents=True, exist_ok=True)
         self.executor = ThreadPoolExecutor(max_workers=3)
+        self.pending_futures: set[Future[Any]] = set()
+        self.recommended_cache: list[Video] | None = None
+        self.recommended_cache_browser: str | None = None
+        self.recommended_cache_loaded_at = 0.0
+        self.loading_recommended = False
         self.video_queue = Gio.ListStore(item_type=VideoObject)
         self.playlist_store = Gio.ListStore(item_type=VideoObject)
         self.playlist_current_index: int | None = None
@@ -142,6 +149,8 @@ class MainWindow(
         self.last_playback_diagnostics_at = 0.0
         self.last_playback_diagnostics_values: dict[str, object] = {}
         self.last_playback_diagnostics_paused = False
+        self.mpv_file_loaded = False
+        self.mpv_stream_error_message: str | None = None
         self.selected_caption_id = "off"
         self.active_caption_url: str | None = None
         self.preferred_quality = self.service.repository.default_video_quality()
@@ -335,6 +344,10 @@ class MainWindow(
         GLib.timeout_add_seconds(1, self.update_playback_controls)
         GLib.timeout_add_seconds(10, self.maybe_import_youtube_watch_history_once)
         GLib.timeout_add_seconds(3600, self.maybe_import_youtube_watch_history)
+        GLib.timeout_add_seconds(
+            RECOMMENDED_CACHE_TTL_SECONDS,
+            self.maybe_refresh_recommended_cache,
+        )
         if self.enable_update_check:
             GLib.timeout_add_seconds(2, self.start_update_check)
 
@@ -378,7 +391,7 @@ class MainWindow(
         self.service.repository.set_show_recommended_videos(True)
         self.update_recommended_nav_visibility()
         self.reload_settings()
-        self.reload_recommended()
+        self.reload_recommended(force=True)
 
     def load_library(self, name: str) -> Any | None:
         path = find_library(name)
@@ -401,7 +414,16 @@ class MainWindow(
         self.save_window_size()
         self.flush_watch_range()
         self.stop_pipeline()
-        self.executor.shutdown(wait=False, cancel_futures=True)
+        for future in list(self.pending_futures):
+            future.cancel()
+        deadline = time.monotonic() + 5
+        while self.pending_futures and time.monotonic() < deadline:
+            GLib.MainContext.default().iteration(False)
+            time.sleep(0.01)
+        if self.pending_futures:
+            done, _pending = wait(self.pending_futures, timeout=0)
+            self.pending_futures.difference_update(done)
+        self.executor.shutdown(wait=not self.pending_futures, cancel_futures=True)
 
     def restore_window_size(self) -> None:
         size = self.read_window_size()
@@ -463,29 +485,39 @@ class MainWindow(
         error: Callable[[Exception], None] | None = None,
     ) -> None:
         self.set_status(label)
-        future = self.executor.submit(work)
+        future = self.submit_background(work)
+        if future is None:
+            return
 
         def finish() -> bool:
+            self.pending_futures.discard(future)
+            if self.cleaned_up:
+                return False
             try:
                 result = future.result()
-            except Exception as exc:
-                self.set_status(f"Error: {exc}")
-                if error is not None:
-                    try:
-                        error(exc)
-                    except Exception:
+            except BaseException as exc:
+                if future.cancelled():
+                    self.set_status("Ready")
+                elif isinstance(exc, Exception):
+                    self.set_status(f"Error: {exc}")
+                    if error is not None:
+                        try:
+                            error(exc)
+                        except Exception:
+                            self.log(
+                                f"{label} error callback failed:\n"
+                                f"{traceback.format_exc()}"
+                            )
+
+                    if isinstance(exc, ExtractorError):
+                        self.log(f"{label} failed: {exc}")
+                    else:
                         self.log(
-                            f"{label} error callback failed:\n"
+                            f"{label} failed with unexpected exception:\n"
                             f"{traceback.format_exc()}"
                         )
-                
-                if isinstance(exc, ExtractorError):
-                    self.log(f"{label} failed: {exc}")
                 else:
-                    self.log(
-                        f"{label} failed with unexpected exception:\n"
-                        f"{traceback.format_exc()}"
-                    )
+                    raise
             else:
                 if done is not None:
                     try:
@@ -510,7 +542,49 @@ class MainWindow(
                     )
             return False
 
-        future.add_done_callback(lambda _future: GLib.idle_add(finish))
+        def schedule_finish(_future: Future[T]) -> None:
+            if self.cleaned_up:
+                self.pending_futures.discard(_future)
+                return
+            GLib.idle_add(finish)
+
+        future.add_done_callback(schedule_finish)
+
+    def submit_background(
+        self,
+        fn: Callable[..., T],
+        *args: object,
+        **kwargs: object,
+    ) -> Future[T] | None:
+        if self.cleaned_up:
+            return None
+        try:
+            future = self.executor.submit(fn, *args, **kwargs)
+        except RuntimeError as exc:
+            if self.cleaned_up or "shutdown" in str(exc):
+                return None
+            raise
+        self.pending_futures.add(future)
+        return future
+
+    def schedule_background_finish(
+        self,
+        future: Future[Any],
+        callback: Callable[[], bool],
+    ) -> None:
+        def finish() -> bool:
+            self.pending_futures.discard(future)
+            if self.cleaned_up:
+                return False
+            return callback()
+
+        def schedule(_future: Future[Any]) -> None:
+            if self.cleaned_up:
+                self.pending_futures.discard(_future)
+                return
+            GLib.idle_add(finish)
+
+        future.add_done_callback(schedule)
 
     def reload_all_local(self) -> None:
         self.reload_feed()
@@ -559,6 +633,8 @@ class MainWindow(
             sections.remove(initial_view.page)
 
         def load_next() -> bool:
+            if self.cleaned_up:
+                return False
             try:
                 while sections:
                     section = sections.pop(0)
@@ -599,6 +675,8 @@ class MainWindow(
 
         def append_batch() -> bool:
             nonlocal index
+            if self.cleaned_up:
+                return False
             if self.grid_generations.get(id(self.watch_later_grid), 0) != generation:
                 return False
             
@@ -1612,13 +1690,14 @@ class MainWindow(
         self.recommended_show_btn.set_sensitive(bool(browser))
         if browser is not None:
             self.service.repository.set_yt_dlp_cookies_browser(browser)
+            self.clear_recommended_cache()
             self.reload_settings()
 
     def on_recommended_show_clicked(self, _btn: Gtk.Button) -> None:
         self.service.repository.set_show_recommended_videos(True)
         self.update_recommended_nav_visibility()
         self.reload_settings()
-        self.reload_recommended()
+        self.reload_recommended(force=True)
 
     def on_recommended_dismiss_clicked(self, _btn: Gtk.Button) -> None:
         self.service.repository.set_show_recommended_videos(False)
@@ -1626,15 +1705,77 @@ class MainWindow(
         self.reload_settings()
         self.navigate_to(ViewState("feed"))
 
-    def reload_recommended(self) -> None:
+    def clear_recommended_cache(self) -> None:
+        self.recommended_cache = None
+        self.recommended_cache_browser = None
+        self.recommended_cache_loaded_at = 0.0
+
+    def recommended_cache_fresh(self, browser: str) -> bool:
+        if self.recommended_cache is None:
+            return False
+        if self.recommended_cache_browser != browser:
+            return False
+        age = time.monotonic() - self.recommended_cache_loaded_at
+        return age < RECOMMENDED_CACHE_TTL_SECONDS
+
+    def maybe_refresh_recommended_cache(self) -> bool:
+        if self.current_view is None or self.current_view.page != "recommended":
+            return True
+        show = self.service.repository.show_recommended_videos()
+        browser = self.service.repository.yt_dlp_cookies_browser()
+        if show is True and browser and not self.recommended_cache_fresh(browser):
+            self.reload_recommended(force=True)
+        return True
+
+    def show_cached_recommended(self) -> None:
+        if self.recommended_cache is None:
+            return
+        self.recommended_stack.set_visible_child_name("grid")
+        self.clear_flowbox(self.recommended_grid)
+        self.populate_video_grid(self.recommended_grid, self.recommended_cache)
+
+    def update_recommended_cached_video(self, video: Video) -> None:
+        if self.recommended_cache is None:
+            return
+        updated = False
+        videos: list[Video] = []
+        for cached in self.recommended_cache:
+            if cached.id == video.id:
+                videos.append(video)
+                updated = True
+            else:
+                videos.append(cached)
+        if not updated:
+            return
+        self.recommended_cache = videos
+        if self.current_view is not None and self.current_view.page == "recommended":
+            self.show_cached_recommended()
+
+    def reload_recommended(self, force: bool = False) -> None:
         show = self.service.repository.show_recommended_videos()
         browser = self.service.repository.yt_dlp_cookies_browser()
 
         if show is True and browser:
+            if not force and self.recommended_cache_fresh(browser):
+                self.show_cached_recommended()
+                return
+            if self.loading_recommended:
+                if self.recommended_cache is not None:
+                    self.show_cached_recommended()
+                else:
+                    self.recommended_stack.set_visible_child_name("loading")
+                return
             self.recommended_stack.set_visible_child_name("loading")
             self.clear_flowbox(self.recommended_grid)
+            self.loading_recommended = True
 
             def done(videos: list[Video]) -> None:
+                current_browser = self.service.repository.yt_dlp_cookies_browser()
+                if current_browser != browser:
+                    return
+                self.recommended_cache = videos
+                self.recommended_cache_browser = browser
+                self.recommended_cache_loaded_at = time.monotonic()
                 self.recommended_stack.set_visible_child_name("grid")
                 self.populate_video_grid(self.recommended_grid, videos)
 
@@ -1648,13 +1789,18 @@ class MainWindow(
                     self.service.repository.yt_dlp_cookies_browser()
                 )
 
+            def finished() -> None:
+                self.loading_recommended = False
+
             self.run_task(
                 "Fetching recommendations...",
                 lambda: self.service.recommended_videos(limit=100),
                 done,
+                finished=finished,
                 error=failed,
             )
         else:
+            self.loading_recommended = False
             self.recommended_stack.set_visible_child_name("onboarding")
             self.recommended_onboarding_browser_combo.set_active_id(
                 self.service.repository.yt_dlp_cookies_browser()
@@ -1808,6 +1954,8 @@ class MainWindow(
 
         def append_channels_batch() -> bool:
             nonlocal channel_index
+            if self.cleaned_up:
+                return False
             if (
                 self.grid_generations.get(id(self.search_channel_grid), 0)
                 != channel_generation
@@ -1847,6 +1995,8 @@ class MainWindow(
 
         def append_batch() -> bool:
             nonlocal index
+            if self.cleaned_up:
+                return False
             if (
                 self.grid_generations.get(id(self.channel_search_results_grid), 0)
                 != generation
@@ -1892,9 +2042,13 @@ class MainWindow(
         if video.thumbnail_url or not is_playlist_url(video.url):
             return
 
-        future = self.executor.submit(self.service.playlist_thumbnail, video.url)
+        future = self.submit_background(self.service.playlist_thumbnail, video.url)
+        if future is None:
+            return
 
         def done() -> bool:
+            if self.cleaned_up:
+                return False
             try:
                 thumbnail_url = future.result()
             except Exception as exc:
@@ -1911,7 +2065,7 @@ class MainWindow(
                 )
             return False
 
-        future.add_done_callback(lambda _future: GLib.idle_add(done))
+        self.schedule_background_finish(future, done)
 
     def reload_channels(self) -> None:
         self.loaded_local_sections.add("channels")
@@ -1934,6 +2088,8 @@ class MainWindow(
 
         def append_batch() -> bool:
             nonlocal index
+            if self.cleaned_up:
+                return False
             if self.grid_generations.get(id(self.channel_grid), 0) != generation:
                 return False
 
@@ -1997,6 +2153,8 @@ class MainWindow(
 
         def append_batch() -> bool:
             nonlocal index
+            if self.cleaned_up:
+                return False
             if self.nav_generation != generation:
                 return False
 
@@ -2267,6 +2425,8 @@ class MainWindow(
 
         def append_batch() -> bool:
             nonlocal index
+            if self.cleaned_up:
+                return False
             if self.grid_generations.get(id(self.history_grid), 0) != generation:
                 return False
             
