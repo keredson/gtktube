@@ -27,6 +27,12 @@ PLAYBACK_RATES = [rate / 100 for rate in range(25, 401, 25)]
 URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>\"]+")
 BUFFER_CHECK_INTERVAL_MS = 250
 BUFFER_START_TIMEOUT_SECONDS = 20.0
+MPV_CACHE_ON_DISK = True
+MPV_CACHE_SECS = 120
+MPV_DEMUXER_READAHEAD_SECS = 60
+MPV_DEMUXER_MAX_BYTES = "512MiB"
+MPV_DEMUXER_MAX_BACK_BYTES = "64MiB"
+MPV_DEMUXER_CACHE_UNLINK_FILES = "immediate"
 
 
 class PlayerMixin:
@@ -204,6 +210,7 @@ class PlayerMixin:
 
         self.mpv_file_loaded = False
         self.mpv_stream_error_message = None
+        self.mpv_end_handled = False
         self.show_player_buffering("Opening stream...")
         player = self.create_player(playable)
         if player is None:
@@ -309,6 +316,7 @@ class PlayerMixin:
         self.last_playback_diagnostics_at = 0.0
         self.last_playback_diagnostics_values = {}
         self.last_playback_diagnostics_paused = False
+        self.mpv_file_loaded = True
         self.update_playback_inhibition()
         self.set_player_loading(False)
         self.set_status("Ready")
@@ -974,6 +982,7 @@ class PlayerMixin:
             "GTKTUBE_YTDLP_FORMAT",
             QUALITY_FORMATS.get(playable.quality, QUALITY_FORMATS["720p"]),
         )
+        player = None
         try:
             player = mpv.MPV(
                 input_default_bindings=True,
@@ -982,10 +991,13 @@ class PlayerMixin:
                 vo="libmpv",
                 ytdl=False,
                 cache="yes",
-                cache_secs=180,
-                demuxer_readahead_secs=90,
-                demuxer_max_bytes="600MiB",
-                demuxer_max_back_bytes="150MiB",
+                cache_on_disk=MPV_CACHE_ON_DISK,
+                cache_secs=MPV_CACHE_SECS,
+                demuxer_cache_dir=str(self.mpv_cache_dir),
+                demuxer_cache_unlink_files=MPV_DEMUXER_CACHE_UNLINK_FILES,
+                demuxer_readahead_secs=MPV_DEMUXER_READAHEAD_SECS,
+                demuxer_max_bytes=MPV_DEMUXER_MAX_BYTES,
+                demuxer_max_back_bytes=MPV_DEMUXER_MAX_BACK_BYTES,
                 demuxer_seekable_cache="yes",
                 ytdl_format=ytdl_format,
                 log_handler=self.on_mpv_log,
@@ -995,15 +1007,44 @@ class PlayerMixin:
             self.verbose_log(
                 "mpv player created "
                 f"version={getattr(player, 'mpv_version', 'unknown')} "
-                f"video={playable.video.id} ytdl_format={ytdl_format!r}"
+                f"video={playable.video.id} ytdl_format={ytdl_format!r} "
+                f"cache_on_disk={MPV_CACHE_ON_DISK} "
+                f"demuxer_cache_dir={self.mpv_cache_dir} "
+                f"demuxer_cache_unlink_files={MPV_DEMUXER_CACHE_UNLINK_FILES} "
+                f"cache_secs={MPV_CACHE_SECS} "
+                f"demuxer_readahead_secs={MPV_DEMUXER_READAHEAD_SECS} "
+                f"demuxer_max_bytes={MPV_DEMUXER_MAX_BYTES} "
+                f"demuxer_max_back_bytes={MPV_DEMUXER_MAX_BACK_BYTES} "
+                f"rss={self.process_rss_label()}"
             )
             player.register_event_callback(self.on_mpv_event)
+            self.register_mpv_property_observers(player)
             if not self.create_mpv_render_context(player, mpv):
                 self.log(f"mpv renderer unavailable video={playable.video.id}")
+                self.unregister_mpv_property_observers(player)
+                try:
+                    player.unregister_event_callback(self.on_mpv_event)
+                except (ValueError, AttributeError) as exc:
+                    self.verbose_log(
+                        f"mpv event callback unregister skipped: {exc}"
+                    )
                 player.terminate()
                 return None
             return player
         except Exception as exc:
+            if player is not None:
+                self.unregister_mpv_property_observers(player)
+                try:
+                    player.unregister_event_callback(self.on_mpv_event)
+                except (ValueError, AttributeError) as callback_exc:
+                    self.verbose_log(
+                        "mpv event callback unregister skipped: "
+                        f"{callback_exc}"
+                    )
+                try:
+                    player.terminate()
+                except Exception as terminate_exc:
+                    self.log(f"mpv terminate failed: {terminate_exc}")
             self.set_status(f"Could not create mpv player: {exc}")
             self.log(f"mpv player creation failed: {exc}")
             return None
@@ -1061,8 +1102,127 @@ class PlayerMixin:
                 return
             else:
                 self.verbose_log(message)
-            GLib.idle_add(self.uninhibit_playback)
-            GLib.idle_add(self.on_mpv_end_file)
+            GLib.idle_add(self.handle_mpv_end_file, "event")
+
+    def register_mpv_property_observers(self, player: Any) -> None:
+        self.mpv_property_observers = []
+        self.mpv_observed_time_pos = None
+        self.mpv_observed_duration = None
+        names = (
+            "eof-reached",
+            "idle-active",
+            "core-idle",
+            "time-pos",
+            "duration",
+            "pause",
+        )
+        for name in names:
+            def observer(
+                property_name: str,
+                value: object,
+                observed_player: Any = player,
+            ) -> None:
+                self.on_mpv_property_changed(observed_player, property_name, value)
+
+            try:
+                player.observe_property(name, observer)
+            except Exception as exc:
+                self.verbose_log(f"mpv property observer failed name={name}: {exc}")
+            else:
+                self.mpv_property_observers.append((name, observer))
+
+    def unregister_mpv_property_observers(self, player: Any) -> None:
+        for name, observer in self.mpv_property_observers:
+            try:
+                player.unobserve_property(name, observer)
+            except Exception as exc:
+                self.verbose_log(
+                    "mpv property observer unregister skipped "
+                    f"name={name}: {exc}"
+                )
+        self.mpv_property_observers = []
+
+    def on_mpv_property_changed(
+        self,
+        player: Any,
+        property_name: str,
+        value: object,
+    ) -> None:
+        if player is not self.player:
+            return
+        if property_name == "time-pos":
+            try:
+                self.mpv_observed_time_pos = (
+                    None if value is None else float(value)
+                )
+            except (TypeError, ValueError):
+                self.mpv_observed_time_pos = None
+        elif property_name == "duration":
+            try:
+                self.mpv_observed_duration = (
+                    None if value is None else float(value)
+                )
+            except (TypeError, ValueError):
+                self.mpv_observed_duration = None
+
+        should_log = property_name in {
+            "eof-reached",
+            "idle-active",
+            "core-idle",
+            "pause",
+        }
+        if should_log or (property_name == "time-pos" and value in (None, 0, 0.0)):
+            self.verbose_log(
+                "mpv property change "
+                f"video={self.current_playable.video.id if self.current_playable else 'none'} "
+                f"name={property_name} "
+                f"value={value!r} "
+                f"observed_time_pos={self.mpv_observed_time_pos!r} "
+                f"observed_duration={self.mpv_observed_duration!r} "
+                f"file_loaded={self.mpv_file_loaded} "
+                f"end_handled={self.mpv_end_handled} "
+                f"queue_count={self.video_queue.get_n_items()} "
+                f"playlist_index={self.playlist_current_index}"
+            )
+
+        observed_near_end = self.mpv_observed_near_end()
+        playback_observed = self.mpv_file_loaded or observed_near_end
+        if self.mpv_end_handled or not playback_observed:
+            return
+        eof_signal = property_name == "eof-reached" and (
+            bool(value) or (value is None and observed_near_end)
+        )
+        idle_signal = (
+            property_name in {"idle-active", "core-idle"}
+            and bool(value)
+            and observed_near_end
+        )
+        if not eof_signal and not idle_signal:
+            return
+        has_next_video = (
+            self.video_queue.get_n_items() > 0
+            or self.playlist_next_index() is not None
+        )
+        if not has_next_video:
+            return
+        self.verbose_log(
+            "mpv eof detected from property observer "
+            f"name={property_name} "
+            f"value={value!r} "
+            f"queue_count={self.video_queue.get_n_items()} "
+            f"playlist_index={self.playlist_current_index}"
+        )
+        GLib.idle_add(self.handle_mpv_end_file, f"property:{property_name}")
+
+    def mpv_observed_near_end(self) -> bool:
+        if self.mpv_observed_time_pos is None or self.mpv_observed_duration is None:
+            return False
+        if self.mpv_observed_duration <= 0:
+            return False
+        return self.mpv_observed_time_pos >= max(
+            0.0,
+            self.mpv_observed_duration - 10.0,
+        )
 
     def mpv_end_file_failed(self, reason: object, error: object) -> bool:
         reason_text = str(reason).lower()
@@ -1085,6 +1245,25 @@ class PlayerMixin:
         else:
             self.verbose_log("mpv end-file stopping player")
             self.stop_pipeline(restore_stack=False)
+
+    def handle_mpv_end_file(self, source: str) -> bool:
+        if self.mpv_end_handled:
+            self.verbose_log(
+                "mpv eof handler ignored "
+                f"source={source} already_handled=True"
+            )
+            return False
+        self.mpv_end_handled = True
+        self.verbose_log(
+            "mpv eof handler "
+            f"source={source} "
+            f"queue_count={self.video_queue.get_n_items()} "
+            f"playlist_index={self.playlist_current_index} "
+            f"current_video={self.current_playable.video.id if self.current_playable else 'none'}"
+        )
+        self.uninhibit_playback("eof-handler")
+        self.on_mpv_end_file()
+        return False
 
     def playlist_previous_index(self) -> int | None:
         if self.playlist_current_index is None:
@@ -1131,6 +1310,11 @@ class PlayerMixin:
     def play_next_in_queue(self) -> None:
         if self.video_queue.get_n_items() > 0:
             item = self.video_queue.get_item(0)
+            self.verbose_log(
+                "up next selecting next video "
+                f"video={item.video.id} "
+                f"queue_count_before={self.video_queue.get_n_items()}"
+            )
             self.video_queue.remove(0)
             self.queue_pane.set_visible(self.video_queue.get_n_items() > 0)
             self.update_transport_navigation_buttons()
@@ -1151,7 +1335,7 @@ class PlayerMixin:
         restore_stack: bool = True,
         keep_player_visible: bool = False,
     ) -> None:
-        self.uninhibit_playback()
+        self.uninhibit_playback("stop-pipeline")
         if self.video_fullscreen:
             self.close_video_fullscreen()
         if not keep_player_visible:
@@ -1162,16 +1346,20 @@ class PlayerMixin:
         if self.player is None:
             self.free_mpv_render_context()
             return
+        player = self.player
+        self.player = None
         self.free_mpv_render_context()
+        self.unregister_mpv_property_observers(player)
         try:
-            self.player.unregister_event_callback(self.on_mpv_event)
+            player.unregister_event_callback(self.on_mpv_event)
         except (ValueError, AttributeError) as exc:
             self.verbose_log(f"mpv event callback unregister skipped: {exc}")
         try:
-            self.player.terminate()
+            player.terminate()
         except Exception as exc:
             self.log(f"mpv terminate failed: {exc}")
-        self.player = None
+        finally:
+            self.release_unused_native_memory()
         self.mpv_module = None
         self.active_caption_url = None
         self.range_start_seconds = None
@@ -1181,8 +1369,39 @@ class PlayerMixin:
         self.last_playback_diagnostics_paused = False
         self.mpv_file_loaded = False
         self.mpv_stream_error_message = None
+        self.mpv_end_handled = False
         self.update_play_pause_button()
         self.update_transport_navigation_buttons()
+        self.verbose_log(f"mpv player stopped rss={self.process_rss_label()}")
+
+    def process_rss_bytes(self) -> int | None:
+        try:
+            with open("/proc/self/status", "r", encoding="utf-8") as status:
+                for line in status:
+                    if line.startswith("VmRSS:"):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            return int(parts[1]) * 1024
+        except OSError:
+            return None
+        return None
+
+    def process_rss_label(self) -> str:
+        rss = self.process_rss_bytes()
+        if rss is None:
+            return "unknown"
+        return f"{rss / (1024 * 1024):.1f}MiB"
+
+    def release_unused_native_memory(self) -> None:
+        try:
+            import ctypes
+
+            libc = ctypes.CDLL(None)
+            trim = getattr(libc, "malloc_trim", None)
+            if trim is not None:
+                trim(0)
+        except Exception:
+            pass
 
     def on_close_player_clicked(self, _button: Gtk.Button) -> None:
         self.close_current_video()
@@ -1258,7 +1477,7 @@ class PlayerMixin:
 
     def update_playback_inhibition(self) -> None:
         if self.player is None or bool(getattr(self.player, "pause", False)):
-            self.uninhibit_playback()
+            self.uninhibit_playback("player-paused-or-missing")
             return
         self.inhibit_playback()
 
@@ -1277,7 +1496,7 @@ class PlayerMixin:
             self.playback_inhibit_cookie = int(cookie)
             self.verbose_log("screensaver inhibited for playback")
 
-    def uninhibit_playback(self) -> bool:
+    def uninhibit_playback(self, reason: str = "unspecified") -> bool:
         cookie = self.playback_inhibit_cookie
         if cookie is None:
             return False
@@ -1285,7 +1504,7 @@ class PlayerMixin:
         if app is not None:
             app.uninhibit(cookie)
         self.playback_inhibit_cookie = None
-        self.verbose_log("screensaver inhibition released")
+        self.verbose_log(f"screensaver inhibition released reason={reason}")
         return False
 
     def on_fullscreen_clicked(self, _button: Gtk.Button) -> None:
@@ -1700,6 +1919,8 @@ class PlayerMixin:
         return False
 
     def flush_watch_range(self) -> bool:
+        if self.cleaned_up:
+            return False
         if self.current_playable is None or self.player is None:
             return True
         current = self.current_position_seconds()
@@ -1756,6 +1977,8 @@ class PlayerMixin:
         return max(0, int(duration))
 
     def update_playback_controls(self) -> bool:
+        if self.cleaned_up:
+            return False
         current = self.current_position_seconds()
         duration = self.current_duration_seconds()
         upper = max(duration, current, 1)

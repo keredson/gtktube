@@ -217,9 +217,47 @@ class LibraryRepository:
             )
 
     def upsert_videos(self, videos: Iterable[Video]) -> None:
-        with self._lock:
+        now = utcnow()
+        with self._lock, self.connection:
             for video in videos:
-                self.upsert_video(video)
+                self.connection.execute(
+                    """
+                    INSERT INTO videos (
+                        id, channel_id, title, url, kind, thumbnail_url, duration_seconds,
+                        published_at, view_count, description, availability, discovered_at,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        channel_id = COALESCE(excluded.channel_id, videos.channel_id),
+                        title = excluded.title,
+                        url = excluded.url,
+                        kind = excluded.kind,
+                        thumbnail_url = COALESCE(excluded.thumbnail_url, videos.thumbnail_url),
+                        duration_seconds = COALESCE(excluded.duration_seconds, videos.duration_seconds),
+                        published_at = COALESCE(excluded.published_at, videos.published_at),
+                        view_count = COALESCE(excluded.view_count, videos.view_count),
+                        description = COALESCE(excluded.description, videos.description),
+                        availability = COALESCE(excluded.availability, videos.availability),
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        video.id,
+                        video.channel_id,
+                        video.title,
+                        video.url,
+                        video.kind,
+                        video.thumbnail_url,
+                        video.duration_seconds,
+                        video.published_at,
+                        video.view_count,
+                        video.description,
+                        video.availability,
+                        now,
+                        now,
+                        now,
+                    ),
+                )
 
     def set_video_availability(self, video_id: str, availability: str) -> None:
         now = utcnow()

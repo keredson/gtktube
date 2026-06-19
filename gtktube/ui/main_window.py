@@ -111,6 +111,8 @@ class MainWindow(
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
         self.caption_dir = paths.cache_dir / "captions"
         self.caption_dir.mkdir(parents=True, exist_ok=True)
+        self.mpv_cache_dir = paths.cache_dir / "mpv"
+        self.mpv_cache_dir.mkdir(parents=True, exist_ok=True)
         self.executor = ThreadPoolExecutor(max_workers=3)
         self.pending_futures: set[Future[Any]] = set()
         self.recommended_cache: list[Video] | None = None
@@ -151,9 +153,13 @@ class MainWindow(
         self.last_playback_diagnostics_at = 0.0
         self.last_playback_diagnostics_values: dict[str, object] = {}
         self.last_playback_diagnostics_paused = False
+        self.mpv_property_observers: list[tuple[str, Any]] = []
+        self.mpv_observed_time_pos: float | None = None
+        self.mpv_observed_duration: float | None = None
         self.mpv_file_loaded = False
         self.mpv_stream_error_message: str | None = None
         self.mpv_stream_retry: tuple[int, str] | None = None
+        self.mpv_end_handled = False
         self.selected_caption_id = "off"
         self.active_caption_url: str | None = None
         self.preferred_quality = self.service.repository.default_video_quality()
@@ -410,6 +416,7 @@ class MainWindow(
         if (
             not self.queue_quit_confirmed
             and self.video_queue.get_n_items() > 0
+            and self.queued_videos_not_watch_later()
         ):
             self.show_queue_quit_dialog()
             return True
@@ -421,14 +428,15 @@ class MainWindow(
             self.queue_quit_dialog.present()
             return
 
-        count = self.video_queue.get_n_items()
+        unsaved_count = len(self.queued_videos_not_watch_later())
         dialog = Gtk.Dialog(
-            title="Save queued videos?",
+            title="Save Up Next videos?",
             transient_for=self,
             modal=True,
         )
-        dialog.add_button("Add to Watch Later", Gtk.ResponseType.ACCEPT)
-        dialog.add_button("Discard Queue", Gtk.ResponseType.REJECT)
+        add_button = dialog.add_button("Add to Watch Later", Gtk.ResponseType.ACCEPT)
+        add_button.set_sensitive(unsaved_count > 0)
+        dialog.add_button("Discard Up Next", Gtk.ResponseType.REJECT)
         dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
         dialog.set_default_response(Gtk.ResponseType.REJECT)
 
@@ -439,16 +447,12 @@ class MainWindow(
         content.set_margin_end(16)
         content.set_spacing(10)
 
-        title = Gtk.Label(label="There are videos left in the queue.", xalign=0)
+        title = Gtk.Label(label="Save Up Next videos to Watch Later?", xalign=0)
         title.add_css_class("title-4")
         content.append(title)
 
-        noun = "video" if count == 1 else "videos"
         message = Gtk.Label(
-            label=(
-                f"Add {count} queued {noun} to Watch Later before quitting, "
-                "or discard this session queue?"
-            ),
+            label="Save Up Next videos to Watch Later before quitting?",
             xalign=0,
             wrap=True,
         )
@@ -457,7 +461,7 @@ class MainWindow(
         def response(_dialog: Gtk.Dialog, response_id: int) -> None:
             self.queue_quit_dialog = None
             dialog.destroy()
-            if response_id == Gtk.ResponseType.CANCEL:
+            if response_id not in (Gtk.ResponseType.ACCEPT, Gtk.ResponseType.REJECT):
                 return
             if response_id == Gtk.ResponseType.ACCEPT:
                 self.add_queue_to_watch_later()
@@ -468,11 +472,20 @@ class MainWindow(
         self.queue_quit_dialog = dialog
         dialog.present()
 
+    def queued_videos_not_watch_later(self) -> list[Video]:
+        videos: list[Video] = []
+        seen_ids: set[str] = set()
+        for index in range(self.video_queue.get_n_items()):
+            video = self.video_queue.get_item(index).video
+            if video.id in seen_ids:
+                continue
+            seen_ids.add(video.id)
+            if not self.service.is_watch_later(video):
+                videos.append(video)
+        return videos
+
     def add_queue_to_watch_later(self) -> None:
-        videos = [
-            self.video_queue.get_item(index).video
-            for index in range(self.video_queue.get_n_items())
-        ]
+        videos = self.queued_videos_not_watch_later()
         for video in videos:
             self.service.add_watch_later(video)
         self.reload_watch_later()
@@ -664,10 +677,14 @@ class MainWindow(
         self.reload_recent_searches()
 
     def maybe_import_youtube_watch_history_once(self) -> bool:
+        if self.cleaned_up:
+            return False
         self.maybe_import_youtube_watch_history()
         return False
 
     def maybe_import_youtube_watch_history(self, force: bool = False) -> bool:
+        if self.cleaned_up:
+            return False
         if self.importing_youtube_history:
             return True
         if not self.service.repository.import_youtube_watch_history_enabled():
@@ -736,6 +753,8 @@ class MainWindow(
     def reload_watch_later(self) -> None:
         self.loaded_local_sections.add("watch_later")
         videos = self.service.watch_later_videos()
+        self.watch_later_videos = videos
+        self.watch_later_add_all_button.set_sensitive(bool(videos))
         self.clear_flowbox(self.watch_later_grid)
         self.grid_generations[id(self.watch_later_grid)] = (
             self.grid_generations.get(id(self.watch_later_grid), 0) + 1
@@ -769,6 +788,29 @@ class MainWindow(
             return False
 
         GLib.idle_add(append_batch)
+
+    def play_all_watch_later(self, _button: Gtk.Button) -> None:
+        videos = getattr(self, "watch_later_videos", None)
+        if videos is None:
+            videos = self.service.watch_later_videos()
+            self.watch_later_videos = videos
+        if not videos:
+            return
+        while self.video_queue.get_n_items() > 0:
+            self.video_queue.remove(0)
+        for video in videos[1:]:
+            self.video_queue.append(VideoObject(video))
+        self.queue_pane.set_visible(self.video_queue.get_n_items() > 0)
+        self.playlist_pane.set_visible(False)
+        self.playlist_current_index = None
+        self.update_playlist_rows()
+        self.update_transport_navigation_buttons()
+        self.verbose_log(
+            "watch later play all "
+            f"first_video={videos[0].id} "
+            f"up_next_count={self.video_queue.get_n_items()}"
+        )
+        self.play_video(videos[0], hide_sidebar=False)
 
     def build_feed_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -1215,8 +1257,23 @@ class MainWindow(
     def build_watch_later_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
 
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        header.set_margin_top(12)
+        header.set_margin_start(12)
+        header.set_margin_end(12)
+        title = Gtk.Label(label="Watch Later", xalign=0, hexpand=True)
+        title.add_css_class("title-4")
+        header.append(title)
+        self.watch_later_add_all_button = Gtk.Button(label="Play all")
+        self.watch_later_add_all_button.set_sensitive(False)
+        self.watch_later_add_all_button.connect(
+            "clicked", self.play_all_watch_later
+        )
+        header.append(self.watch_later_add_all_button)
+        page.append(header)
+
         self.watch_later_grid = self.create_video_grid()
-        self.watch_later_grid.set_margin_top(12)
+        self.watch_later_grid.set_margin_top(4)
         self.watch_later_grid.set_margin_bottom(12)
         self.watch_later_grid.set_margin_start(12)
         self.watch_later_grid.set_margin_end(12)
@@ -1524,6 +1581,15 @@ class MainWindow(
         self.caption_combo.set_visible(False)
         self.player_controls.append(self.caption_combo)
 
+        self.player_chapters_icon = Gtk.Image.new_from_icon_name(
+            "view-list-symbolic"
+        )
+        self.player_chapters_button = Gtk.MenuButton(child=self.player_chapters_icon)
+        self.player_chapters_button.set_tooltip_text("Chapters")
+        self.player_chapters_button.set_sensitive(False)
+        self.player_chapters_button.set_visible(False)
+        self.player_controls.append(self.player_chapters_button)
+
         self.fullscreen_icon = Gtk.Image.new_from_icon_name("view-fullscreen-symbolic")
         self.fullscreen_button = Gtk.Button(child=self.fullscreen_icon)
         self.fullscreen_button.set_tooltip_text("Fullscreen video")
@@ -1588,15 +1654,6 @@ class MainWindow(
             "toggled", self.on_player_description_toggled
         )
         player_actions.append(self.player_description_button)
-
-        self.player_chapters_icon = Gtk.Image.new_from_icon_name(
-            "view-list-symbolic"
-        )
-        self.player_chapters_button = Gtk.MenuButton(child=self.player_chapters_icon)
-        self.player_chapters_button.set_tooltip_text("Chapters")
-        self.player_chapters_button.set_sensitive(False)
-        self.player_chapters_button.set_visible(False)
-        player_actions.append(self.player_chapters_button)
 
         self.player_chapters_popover = Gtk.Popover()
         self.player_chapters_button.set_popover(self.player_chapters_popover)
@@ -1793,6 +1850,8 @@ class MainWindow(
         return age < RECOMMENDED_CACHE_TTL_SECONDS
 
     def maybe_refresh_recommended_cache(self) -> bool:
+        if self.cleaned_up:
+            return False
         if self.current_view is None or self.current_view.page != "recommended":
             return True
         show = self.service.repository.show_recommended_videos()

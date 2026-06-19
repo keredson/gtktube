@@ -50,7 +50,7 @@ class ContextMenuMixin:
             )
             actions.append(open_channel)
 
-        add_queue = Gtk.Button(label="Add to queue")
+        add_queue = Gtk.Button(label="Add to Up Next")
         add_queue.add_css_class("flat")
         add_queue.set_halign(Gtk.Align.FILL)
         add_queue.connect(
@@ -234,7 +234,7 @@ class ContextMenuMixin:
         )
         actions.append(not_interested)
 
-        add_queue = Gtk.Button(label="Add to queue")
+        add_queue = Gtk.Button(label="Add to Up Next")
         add_queue.add_css_class("flat")
         add_queue.set_halign(Gtk.Align.FILL)
         add_queue.connect(
@@ -307,7 +307,7 @@ class ContextMenuMixin:
             )
             actions.append(open_channel)
 
-        add_queue = Gtk.Button(label="Add to queue")
+        add_queue = Gtk.Button(label="Add to Up Next")
         add_queue.add_css_class("flat")
         add_queue.set_halign(Gtk.Align.FILL)
         add_queue.connect(
@@ -379,7 +379,7 @@ class ContextMenuMixin:
         )
         actions.append(play_now)
 
-        remove_queue = Gtk.Button(label="Remove from queue")
+        remove_queue = Gtk.Button(label="Remove from Up Next")
         remove_queue.add_css_class("flat")
         remove_queue.set_halign(Gtk.Align.FILL)
         remove_queue.connect(
