@@ -1573,13 +1573,14 @@ class MainWindow(
         self.speed_combo.connect("changed", self.on_speed_changed)
         self.player_controls.append(self.speed_combo)
 
-        self.caption_combo = Gtk.ComboBoxText()
-        self.caption_combo.append("off", "None")
-        self.caption_combo.set_active_id("off")
-        self.caption_combo.set_tooltip_text("Subtitles")
-        self.caption_combo.connect("changed", self.on_caption_changed)
-        self.caption_combo.set_visible(False)
-        self.player_controls.append(self.caption_combo)
+        self.caption_icon = Gtk.Image.new_from_icon_name(
+            "media-view-subtitles-symbolic"
+        )
+        self.caption_button = Gtk.MenuButton(child=self.caption_icon)
+        self.caption_button.set_tooltip_text("Subtitles")
+        self.caption_button.set_sensitive(False)
+        self.caption_button.set_visible(False)
+        self.player_controls.append(self.caption_button)
 
         self.player_chapters_icon = Gtk.Image.new_from_icon_name(
             "view-list-symbolic"
@@ -1657,6 +1658,23 @@ class MainWindow(
 
         self.player_chapters_popover = Gtk.Popover()
         self.player_chapters_button.set_popover(self.player_chapters_popover)
+
+        self.caption_popover = Gtk.Popover()
+        self.caption_button.set_popover(self.caption_popover)
+        captions_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.caption_popover.set_child(captions_box)
+        self.caption_list = Gtk.ListBox()
+        self.caption_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.caption_list.connect("row-activated", self.on_caption_row_activated)
+        captions_scroller = Gtk.ScrolledWindow(hexpand=True)
+        captions_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        captions_scroller.set_propagate_natural_height(True)
+        captions_scroller.set_propagate_natural_width(True)
+        captions_scroller.set_min_content_width(260)
+        captions_scroller.set_max_content_height(220)
+        captions_scroller.set_child(self.caption_list)
+        captions_box.append(captions_scroller)
+
         chapters_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         chapters_box.set_size_request(320, 260)
         self.player_chapters_popover.set_child(chapters_box)

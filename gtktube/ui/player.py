@@ -1697,11 +1697,11 @@ class PlayerMixin:
     def update_caption_tracks(self, playable: PlayableVideo | None) -> None:
         previous_selection = self.selected_caption_id
         self.updating_captions = True
-        self.caption_combo.remove_all()
-        self.caption_combo.append("off", "Subtitles: Off")
+        self.clear_caption_rows()
+        self.caption_list.append(self.caption_row("Subtitles: Off"))
         captions = playable.captions if playable and playable.captions else []
         for track in captions:
-            self.caption_combo.append(track.id, track.label)
+            self.caption_list.append(self.caption_row(track.label))
         active_id = (
             previous_selection
             if previous_selection != "off"
@@ -1709,18 +1709,62 @@ class PlayerMixin:
             else "off"
         )
         self.selected_caption_id = active_id
-        self.caption_combo.set_active_id(active_id)
-        self.caption_combo.set_visible(bool(captions))
+        self.update_caption_selection()
+        self.caption_button.set_visible(bool(captions))
+        self.caption_button.set_sensitive(bool(captions))
         self.updating_captions = False
+
+    def clear_caption_rows(self) -> None:
+        child = self.caption_list.get_first_child()
+        while child is not None:
+            next_child = child.get_next_sibling()
+            self.caption_list.remove(child)
+            child = next_child
+
+    def caption_row(self, label: str) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow()
+        row.set_activatable(True)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(10)
+        box.set_margin_end(10)
+        title_label = Gtk.Label(label=label, xalign=0, hexpand=True)
+        title_label.set_ellipsize(Pango.EllipsizeMode.END)
+        box.append(title_label)
+        row.set_child(box)
+        return row
+
+    def update_caption_selection(self) -> None:
+        captions = self.current_playable.captions if self.current_playable else []
+        selected_index = 0
+        if self.selected_caption_id != "off":
+            for index, track in enumerate(captions, start=1):
+                if track.id == self.selected_caption_id:
+                    selected_index = index
+                    break
+        child = self.caption_list.get_first_child()
+        while child is not None:
+            if child.get_index() == selected_index:
+                self.caption_list.select_row(child)
+                break
+            child = child.get_next_sibling()
+        selected_track = self.selected_caption_track()
+        if selected_track is None:
+            self.caption_button.set_tooltip_text("Subtitles: Off")
+        else:
+            self.caption_button.set_tooltip_text(f"Subtitles: {selected_track.label}")
 
     def toggle_subtitles(self) -> None:
         captions = self.current_playable.captions if self.current_playable else []
         if not captions:
             return
         if self.selected_caption_id == "off":
-            self.caption_combo.set_active_id(captions[0].id)
+            self.selected_caption_id = captions[0].id
         else:
-            self.caption_combo.set_active_id("off")
+            self.selected_caption_id = "off"
+        self.update_caption_selection()
+        self.apply_selected_caption()
 
     def selected_caption_track(self) -> CaptionTrack | None:
         if self.current_playable is None or self.selected_caption_id == "off":
@@ -1730,10 +1774,21 @@ class PlayerMixin:
                 return track
         return None
 
-    def on_caption_changed(self, _combo: Gtk.ComboBoxText) -> None:
+    def on_caption_row_activated(
+        self, _listbox: Gtk.ListBox, row: Gtk.ListBoxRow
+    ) -> None:
         if self.updating_captions:
             return
-        self.selected_caption_id = self.caption_combo.get_active_id() or "off"
+        captions = self.current_playable.captions if self.current_playable else []
+        index = row.get_index()
+        if index <= 0:
+            self.selected_caption_id = "off"
+        elif index - 1 < len(captions):
+            self.selected_caption_id = captions[index - 1].id
+        else:
+            return
+        self.caption_popover.popdown()
+        self.update_caption_selection()
         self.apply_selected_caption()
 
     def apply_selected_caption(self) -> None:
