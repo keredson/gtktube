@@ -1199,12 +1199,6 @@ class PlayerMixin:
         )
         if not eof_signal and not idle_signal:
             return
-        has_next_video = (
-            self.video_queue.get_n_items() > 0
-            or self.playlist_next_index() is not None
-        )
-        if not has_next_video:
-            return
         self.verbose_log(
             "mpv eof detected from property observer "
             f"name={property_name} "
@@ -1239,12 +1233,14 @@ class PlayerMixin:
                 f"queue_count={self.video_queue.get_n_items()}"
             )
             self.play_next_in_queue()
-        elif self.playlist_current_index is not None:
+            return
+        next_playlist_index = self.playlist_next_index()
+        if next_playlist_index is not None:
             self.verbose_log("mpv end-file advancing playlist")
-            self.play_next_in_playlist()
-        else:
-            self.verbose_log("mpv end-file stopping player")
-            self.stop_pipeline(restore_stack=False)
+            self.play_playlist_item(next_playlist_index)
+            return
+        self.verbose_log("mpv end-file stopping player")
+        self.stop_pipeline(restore_stack=False, keep_player_visible=True)
 
     def handle_mpv_end_file(self, source: str) -> bool:
         if self.mpv_end_handled:
@@ -1455,6 +1451,8 @@ class PlayerMixin:
 
     def toggle_play_pause(self) -> None:
         if self.player is None:
+            if self.current_playable is not None:
+                self.start_playback(self.current_playable, resume_position=0)
             return
         try:
             self.player.pause = not bool(getattr(self.player, "pause", False))
