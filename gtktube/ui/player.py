@@ -227,6 +227,7 @@ class PlayerMixin:
     def set_prefetch_progress_text(self, text: str) -> None:
         self.player_meta.set_text(text)
         self.miniplayer_meta.set_text(text)
+        self.player_loading_label.set_text(text)
 
     def load_playable_if_current(
         self, playable: PlayableVideo, request_id: int
