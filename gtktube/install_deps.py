@@ -4,6 +4,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+from importlib import resources
 
 try:
     import gi
@@ -14,15 +15,18 @@ except (ImportError, ModuleNotFoundError, ValueError):
     Gtk = None  # type: ignore[assignment]
 
 
-PACKAGES = [
-    "python3-gi",
-    "python3-gi-cairo",
-    "gir1.2-gtk-4.0",
-    "gir1.2-adw-1",
-    "libmpv2",
-    "python3-mpv",
-    "nodejs",
-]
+def apt_packages() -> list[str]:
+    text = resources.files("gtktube").joinpath("assets/apt-packages.txt").read_text(
+        encoding="utf-8"
+    )
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+PACKAGES = apt_packages()
 
 
 def missing_packages() -> list[str]:

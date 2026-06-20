@@ -82,6 +82,9 @@ sudo apt-get install -y \
 
 The same package list is used by `scripts/install-apt-deps.sh` and the in-app
 dependency installer.
+Python dependencies, including yt-dlp, python-mpv, and SecretStorage for browser
+cookie extraction, are declared in `pyproject.toml`. `requirements.txt` installs
+that same project dependency set for source checkouts.
 
 ## Run
 

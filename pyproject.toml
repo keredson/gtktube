@@ -14,6 +14,7 @@ dependencies = [
     "packaging>=24.0",
     "yt-dlp>=2025.1.15",
     "python-mpv>=1.0.8",
+    "SecretStorage>=3.3.3",
 ]
 
 [project.urls]
@@ -27,7 +28,7 @@ gtktube = "gtktube.app:main"
 include = ["gtktube*"]
 
 [tool.setuptools.package-data]
-gtktube = ["assets/gtktube.png"]
+gtktube = ["assets/gtktube.png", "assets/apt-packages.txt"]
 
 [tool.setuptools.data-files]
 "share/applications" = ["packaging/local.gtktube.GTKTube.desktop"]
