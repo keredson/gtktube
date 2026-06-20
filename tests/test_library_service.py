@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 
 from gtktube.db.migrations import migrate
 from gtktube.db.repositories import LibraryRepository
@@ -65,6 +67,31 @@ class RefreshExtractor:
         ]
 
 
+class DownloadExtractor:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.quality: str | None = None
+        self.output_template: str | None = None
+
+    def download_video(
+        self,
+        url: str,
+        target_dir: Path,
+        cookies_mode: str = "never",
+        cookies_browser: str = "firefox",
+        progress=None,
+        quality: str = "best",
+        output_template: str = "%(title).200B [%(id)s].%(ext)s",
+    ) -> None:
+        self.calls += 1
+        self.quality = quality
+        self.output_template = output_template
+        filename = output_template.replace("%(title).200B", "Cached")
+        filename = filename.replace("%(id)s", "video1")
+        filename = filename.replace("%(ext)s", "mp4")
+        Path(target_dir, filename).write_bytes(b"video")
+
+
 class LibraryServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.connection = sqlite3.connect(":memory:")
@@ -126,6 +153,25 @@ class LibraryServiceTests(unittest.TestCase):
             [video.id for video in self.repository.channel_playlists("chan1")],
             ["playlist1"],
         )
+
+    def test_prefetch_playback_video_uses_quality_cache_key(self) -> None:
+        extractor = DownloadExtractor()
+        service = LibraryService(self.repository, extractor)  # type: ignore[arg-type]
+        video = Video(
+            id="video1",
+            title="Video One",
+            url="https://example.test/watch?v=video1",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir)
+            path = service.prefetch_playback_video(video, "1080p", cache_dir)
+            cached = service.prefetch_playback_video(video, "1080p", cache_dir)
+
+        self.assertEqual(extractor.calls, 1)
+        self.assertEqual(extractor.quality, "1080p")
+        self.assertIn("[video1] [1080p]", path.name)
+        self.assertEqual(cached.name, path.name)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,9 @@ SPONSORBLOCK_CATEGORIES = [
 ]
 DEFAULT_SPONSORBLOCK_CATEGORIES = ["sponsor"]
 DEFAULT_REFRESH_WORKERS = 10
+USER_SELECTABLE_QUALITIES = [
+    quality for quality in QUALITY_FORMATS if quality != "best"
+]
 SPONSORBLOCK_CATEGORY_LABELS = {
     "sponsor": "Sponsors",
     "selfpromo": "Self-promotion",
@@ -259,6 +262,26 @@ class LibraryRepository:
                     ),
                 )
 
+    def video(self, video_id: str) -> Video | None:
+        videos = self._videos_query(
+            """
+            SELECT
+                v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
+                v.thumbnail_url, v.description, v.duration_seconds,
+                v.published_at, v.view_count, v.availability,
+                COALESCE(wp.percent_watched, 0) AS percent_watched,
+                wp.watch_range_string,
+                COALESCE(wh.completed, 0) AS completed
+            FROM videos v
+            LEFT JOIN channels c ON c.id = v.channel_id
+            LEFT JOIN watch_progress wp ON wp.video_id = v.id
+            LEFT JOIN watch_history wh ON wh.video_id = v.id
+            WHERE v.id = ?
+            """,
+            (video_id,),
+        )
+        return videos[0] if videos else None
+
     def set_video_availability(self, video_id: str, availability: str) -> None:
         now = utcnow()
         with self._lock, self.connection:
@@ -409,15 +432,33 @@ class LibraryRepository:
         self.clear_setting("feed_daily_channel_limit")
 
     def default_video_quality(self) -> str:
-        quality = self.setting("default_video_quality", "720p")
-        return quality if quality in QUALITY_FORMATS else "720p"
+        _mode, quality = self.default_playback_option()
+        return quality if quality in USER_SELECTABLE_QUALITIES else "720p"
+
+    def default_playback_mode(self) -> str:
+        mode, _quality = self.default_playback_option()
+        return mode
+
+    def default_playback_option(self) -> tuple[str, str]:
+        value = self.setting("default_video_quality", "streaming:720p")
+        if ":" not in value:
+            quality = value if value in USER_SELECTABLE_QUALITIES else "720p"
+            return ("streaming", quality)
+        mode, quality = value.split(":", 1)
+        if mode not in {"streaming", "prefetch"}:
+            mode = "streaming"
+        if quality not in USER_SELECTABLE_QUALITIES:
+            quality = "720p"
+        return mode, quality
 
     def has_default_video_quality_override(self) -> bool:
         return self.has_setting("default_video_quality")
 
-    def set_default_video_quality(self, quality: str) -> None:
-        if quality in QUALITY_FORMATS:
-            self.set_setting("default_video_quality", quality)
+    def set_default_video_quality(self, quality: str, mode: str = "streaming") -> None:
+        if quality in USER_SELECTABLE_QUALITIES:
+            if mode not in {"streaming", "prefetch"}:
+                mode = "streaming"
+            self.set_setting("default_video_quality", f"{mode}:{quality}")
 
     def clear_default_video_quality(self) -> None:
         self.clear_setting("default_video_quality")

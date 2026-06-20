@@ -113,8 +113,13 @@ class MainWindow(
         self.caption_dir.mkdir(parents=True, exist_ok=True)
         self.mpv_cache_dir = paths.cache_dir / "mpv"
         self.mpv_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.playback_cache_dir = paths.cache_dir / "playback-cache"
+        self.playback_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.download_dir = paths.data_dir / "downloads"
+        self.download_dir.mkdir(parents=True, exist_ok=True)
         self.executor = ThreadPoolExecutor(max_workers=3)
         self.pending_futures: set[Future[Any]] = set()
+        self.download_menu_items: dict[object, dict[str, Any]] = {}
         self.recommended_cache: list[Video] | None = None
         self.recommended_cache_browser: str | None = None
         self.recommended_cache_loaded_at = 0.0
@@ -150,6 +155,7 @@ class MainWindow(
         self.updating_captions = False
         self.updating_settings = False
         self.playback_rate = 1.0
+        self.preferred_playback_mode = self.service.repository.default_playback_mode()
         self.last_playback_diagnostics_at = 0.0
         self.last_playback_diagnostics_values: dict[str, object] = {}
         self.last_playback_diagnostics_paused = False
@@ -254,6 +260,34 @@ class MainWindow(
         )
         self.header.pack_end(self.context_unsubscribe_button)
 
+        downloads_menu_button_box = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL,
+            spacing=4,
+        )
+        downloads_menu_button_box.append(
+            Gtk.Image.new_from_icon_name("folder-download-symbolic")
+        )
+        self.downloads_menu_progress_label = Gtk.Label(label="")
+        self.downloads_menu_progress_label.add_css_class("dim-label")
+        self.downloads_menu_progress_label.set_visible(False)
+        downloads_menu_button_box.append(self.downloads_menu_progress_label)
+        self.downloads_menu_button = Gtk.MenuButton(child=downloads_menu_button_box)
+        self.downloads_menu_button.set_tooltip_text("Downloads")
+        self.downloads_menu_button.set_visible(False)
+        self.header.pack_end(self.downloads_menu_button)
+
+        self.downloads_menu_popover = Gtk.Popover()
+        self.downloads_menu_button.set_popover(self.downloads_menu_popover)
+        downloads_menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        downloads_menu_box.set_margin_top(6)
+        downloads_menu_box.set_margin_bottom(6)
+        downloads_menu_box.set_margin_start(6)
+        downloads_menu_box.set_margin_end(6)
+        self.downloads_menu_popover.set_child(downloads_menu_box)
+        self.active_downloads_list = Gtk.ListBox()
+        self.active_downloads_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        downloads_menu_box.append(self.active_downloads_list)
+
         self.about_button = Gtk.Button(
             child=Gtk.Image.new_from_icon_name("help-about-symbolic")
         )
@@ -322,6 +356,7 @@ class MainWindow(
             ("search", "Search"),
             ("history", "History"),
             ("watch_later", "Watch Later"),
+            ("downloads", "Downloads"),
             ("settings", "Settings"),
             ("channels", "Channels"),
         ]:
@@ -336,6 +371,7 @@ class MainWindow(
         self.build_feed_page()
         self.build_recommended_page()
         self.build_watch_later_page()
+        self.build_downloads_page()
         self.build_settings_page()
         self.build_channels_page()
         self.build_search_page()
@@ -379,6 +415,7 @@ class MainWindow(
             "search": "system-search-symbolic",
             "history": "document-open-recent-symbolic",
             "watch_later": "clock-symbolic",
+            "downloads": "folder-download-symbolic",
             "settings": "preferences-system-symbolic",
             "channels": "folder-symbolic",
         }
@@ -674,6 +711,7 @@ class MainWindow(
         self.reload_channels()
         self.reload_history()
         self.reload_watch_later()
+        self.reload_downloads()
         self.reload_recent_searches()
 
     def maybe_import_youtube_watch_history_once(self) -> bool:
@@ -715,7 +753,14 @@ class MainWindow(
         return True
 
     def schedule_deferred_local_reloads(self, initial_view: ViewState) -> None:
-        sections = ["feed", "channels", "history", "watch_later", "recent_searches"]
+        sections = [
+            "feed",
+            "channels",
+            "history",
+            "watch_later",
+            "downloads",
+            "recent_searches",
+        ]
         if initial_view.page in sections:
             sections.remove(initial_view.page)
 
@@ -735,6 +780,8 @@ class MainWindow(
                         self.reload_history()
                     elif section == "watch_later":
                         self.reload_watch_later()
+                    elif section == "downloads":
+                        self.reload_downloads()
                     elif section == "recent_searches":
                         self.reload_recent_searches()
                     return bool(sections)
@@ -1299,6 +1346,401 @@ class MainWindow(
 
         self.stack.add_named(page, "watch_later")
 
+    def build_downloads_page(self) -> None:
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        header.set_margin_top(12)
+        header.set_margin_start(12)
+        header.set_margin_end(12)
+        title = Gtk.Label(label="Downloads", xalign=0, hexpand=True)
+        title.add_css_class("title-4")
+        header.append(title)
+
+        refresh_button = Gtk.Button(
+            child=Gtk.Image.new_from_icon_name("view-refresh-symbolic")
+        )
+        refresh_button.set_tooltip_text("Refresh downloads")
+        refresh_button.connect("clicked", lambda _button: self.reload_downloads())
+        header.append(refresh_button)
+
+        open_folder_button = Gtk.Button(label="Open folder")
+        open_folder_button.connect("clicked", self.on_open_downloads_folder)
+        header.append(open_folder_button)
+        page.append(header)
+
+        downloads_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        downloads_content.set_margin_top(4)
+        downloads_content.set_margin_bottom(12)
+        downloads_content.set_margin_start(12)
+        downloads_content.set_margin_end(12)
+
+        self.downloads_grid = self.create_video_grid()
+        downloads_content.append(self.downloads_grid)
+
+        self.downloads_empty_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=12,
+            vexpand=True,
+            hexpand=True,
+        )
+        self.downloads_empty_box.set_valign(Gtk.Align.CENTER)
+        self.downloads_empty_box.set_halign(Gtk.Align.CENTER)
+        empty_icon = Gtk.Image.new_from_icon_name("folder-download-symbolic")
+        empty_icon.set_pixel_size(64)
+        empty_icon.add_css_class("dim-label")
+        self.downloads_empty_box.append(empty_icon)
+        empty_label = Gtk.Label(label="No downloads")
+        empty_label.add_css_class("title-4")
+        empty_label.add_css_class("dim-label")
+        self.downloads_empty_box.append(empty_label)
+        downloads_content.append(self.downloads_empty_box)
+
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_child(downloads_content)
+        page.append(scroller)
+
+        self.stack.add_named(page, "downloads")
+
+    def reload_downloads(self) -> None:
+        self.loaded_local_sections.add("downloads")
+        downloads = self.service.downloaded_videos(self.download_dir)
+        self.clear_flowbox(self.downloads_grid)
+        self.grid_generations[id(self.downloads_grid)] = (
+            self.grid_generations.get(id(self.downloads_grid), 0) + 1
+        )
+        for video, path in downloads:
+            self.append_video_tile(
+                self.downloads_grid,
+                video,
+                on_context_menu=(
+                    lambda parent, _video, x, y, v=video, p=path:
+                    self.show_download_context_menu(parent, v, p, x, y)
+                ),
+            )
+        has_downloads = bool(downloads)
+        self.downloads_grid.set_visible(has_downloads)
+        self.downloads_empty_box.set_visible(not has_downloads)
+
+    def show_download_context_menu(
+        self,
+        parent: Gtk.Widget,
+        video: Video,
+        path: Path,
+        x: float,
+        y: float,
+    ) -> None:
+        popover = Gtk.Popover()
+        popover.set_parent(parent)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        actions.set_margin_top(6)
+        actions.set_margin_bottom(6)
+        actions.set_margin_start(6)
+        actions.set_margin_end(6)
+        popover.set_child(actions)
+
+        copy_url = Gtk.Button(label="Copy URL")
+        copy_url.add_css_class("flat")
+        copy_url.set_halign(Gtk.Align.FILL)
+        copy_url.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "copy")
+        )
+        actions.append(copy_url)
+
+        open_video = Gtk.Button(label="Open video")
+        open_video.add_css_class("flat")
+        open_video.set_halign(Gtk.Align.FILL)
+        open_video.connect(
+            "clicked", lambda _button: self.activate_video_menu(popover, video, "video")
+        )
+        actions.append(open_video)
+
+        delete_file = Gtk.Button(label="Delete download")
+        delete_file.add_css_class("flat")
+        delete_file.set_halign(Gtk.Align.FILL)
+        delete_file.connect(
+            "clicked", lambda _button: self.delete_download(popover, video, path)
+        )
+        actions.append(delete_file)
+
+        rectangle = Gdk.Rectangle()
+        rectangle.x = int(x)
+        rectangle.y = int(y)
+        rectangle.width = 1
+        rectangle.height = 1
+        popover.set_pointing_to(rectangle)
+        popover.popup()
+
+    def delete_download(
+        self,
+        popover: Gtk.Popover,
+        video: Video,
+        path: Path,
+    ) -> None:
+        popover.popdown()
+        popover.unparent()
+        try:
+            path.unlink()
+        except OSError as exc:
+            self.set_status(f"Could not delete download: {exc}")
+            return
+        self.set_status(f"Deleted download for {video.title}")
+        self.reload_downloads()
+
+    def download_video(self, video: Video) -> None:
+        download_id = object()
+        self.download_menu_items[download_id] = {
+            "video": video,
+            "title": video.title,
+            "status": "Starting",
+            "progress": 0.0,
+            "download_parts": {},
+            "done": False,
+        }
+        self.update_active_downloads_menu(rebuild_rows=True)
+
+        def progress(update: dict[str, object]) -> None:
+            if self.cleaned_up:
+                return
+            GLib.idle_add(self.update_download_progress, download_id, update)
+
+        self.set_status(f"Downloading {video.title}...")
+        future = self.submit_background(
+            self.service.download_video,
+            video,
+            self.download_dir,
+            progress=progress,
+        )
+        if future is None:
+            self.download_menu_items.pop(download_id, None)
+            self.update_active_downloads_menu(rebuild_rows=True)
+            return
+
+        def done() -> bool:
+            item = self.download_menu_items.get(download_id)
+            try:
+                path = future.result()
+            except Exception as exc:
+                if item is not None:
+                    item["status"] = "Failed"
+                    item["done"] = True
+                    item["error"] = str(exc)
+                    item["progress"] = 0.0
+                    self.update_active_downloads_menu(rebuild_rows=True)
+                self.set_status(f"Download failed: {exc}")
+                self.log(f"Download failed for {video.id}: {exc}")
+                return False
+            if item is not None:
+                item["status"] = ""
+                item["done"] = True
+                item["path"] = path
+                item["progress"] = 1.0
+                self.update_active_downloads_menu(rebuild_rows=True)
+            self.reload_downloads()
+            self.set_status(f"Downloaded {path.name}")
+            return False
+
+        self.schedule_background_finish(future, done)
+
+    def update_download_progress(
+        self,
+        download_id: object,
+        update: dict[str, object],
+    ) -> bool:
+        item = self.download_menu_items.get(download_id)
+        if item is None or item.get("done"):
+            return False
+        status = str(update.get("status") or "")
+        part = self.download_progress_part(update)
+        if status == "downloading":
+            downloaded = self.download_progress_number(update.get("downloaded_bytes"))
+            total = self.download_progress_number(update.get("total_bytes"))
+            if total <= 0:
+                total = self.download_progress_number(update.get("total_bytes_estimate"))
+            if total > 0:
+                self.set_download_part_progress(item, part, downloaded / total)
+            else:
+                item["status"] = "Downloading"
+        elif status == "finished":
+            self.set_download_part_progress(item, part, 1.0)
+            if float(item.get("progress") or 0.0) >= 1.0:
+                item["status"] = "Processing"
+        self.update_download_menu_item_widgets(item)
+        self.update_active_downloads_menu(rebuild_rows=False)
+        return False
+
+    def download_progress_part(self, update: dict[str, object]) -> str:
+        info = update.get("info_dict")
+        if not isinstance(info, dict):
+            return "single"
+        vcodec = str(info.get("vcodec") or "")
+        acodec = str(info.get("acodec") or "")
+        has_video = bool(vcodec and vcodec != "none")
+        has_audio = bool(acodec and acodec != "none")
+        if has_video and not has_audio:
+            return "video"
+        if has_audio and not has_video:
+            return "audio"
+        return "single"
+
+    def set_download_part_progress(
+        self,
+        item: dict[str, Any],
+        part: str,
+        fraction: float,
+    ) -> None:
+        parts = item.setdefault("download_parts", {})
+        if not isinstance(parts, dict):
+            parts = {}
+            item["download_parts"] = parts
+        parts[part] = max(0.0, min(1.0, fraction))
+        if "single" in parts:
+            total = float(parts["single"])
+        else:
+            total = (
+                0.9 * float(parts.get("video", 0.0))
+                + 0.1 * float(parts.get("audio", 0.0))
+            )
+        item["progress"] = max(float(item.get("progress") or 0.0), min(1.0, total))
+        item["status"] = f"{round(float(item['progress']) * 100)}%"
+
+    def download_progress_number(self, value: object) -> float:
+        if isinstance(value, (int, float)):
+            return float(value)
+        return 0.0
+
+    def update_active_downloads_menu(self, rebuild_rows: bool = True) -> None:
+        item_count = len(self.download_menu_items)
+        active_count = sum(
+            1 for item in self.download_menu_items.values() if not item.get("done")
+        )
+        self.downloads_menu_button.set_visible(item_count > 0)
+        if item_count == 0:
+            self.downloads_menu_progress_label.set_visible(False)
+            self.downloads_menu_popover.popdown()
+            return
+        if active_count > 0:
+            active_progress = [
+                float(item.get("progress") or 0.0)
+                for item in self.download_menu_items.values()
+                if not item.get("done")
+            ]
+            aggregate_progress = sum(active_progress) / max(1, len(active_progress))
+            self.downloads_menu_progress_label.set_label(
+                f"{round(aggregate_progress * 100)}%"
+            )
+            self.downloads_menu_progress_label.set_visible(True)
+            self.downloads_menu_button.set_tooltip_text(
+                "Active download"
+                if active_count == 1
+                else f"{active_count} active downloads"
+            )
+        else:
+            self.downloads_menu_progress_label.set_visible(False)
+            self.downloads_menu_button.set_tooltip_text("Downloads")
+        if rebuild_rows:
+            self.clear_listbox(self.active_downloads_list)
+            for item in reversed(list(self.download_menu_items.values())):
+                self.active_downloads_list.append(self.active_download_row(item))
+        else:
+            for item in self.download_menu_items.values():
+                self.update_download_menu_item_widgets(item)
+
+    def update_download_menu_item_widgets(self, item: dict[str, Any]) -> None:
+        status_label = item.get("status_label")
+        if isinstance(status_label, Gtk.Label):
+            status_label.set_label(str(item.get("status") or ""))
+        progress_bar = item.get("progress_bar")
+        if isinstance(progress_bar, Gtk.ProgressBar):
+            progress_bar.set_fraction(float(item.get("progress") or 0.0))
+
+    def active_download_row(self, item: dict[str, Any]) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow()
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
+        video = item.get("video")
+        if isinstance(video, Video):
+            if not item.get("error"):
+                row.set_activatable(True)
+                row.connect("activate", self.on_download_menu_row_activated, video)
+        if isinstance(video, Video) and video.thumbnail_url:
+            thumbnail = Gtk.Picture()
+            thumbnail.set_size_request(57, 32)
+            thumbnail.set_can_shrink(False)
+            thumbnail.set_content_fit(Gtk.ContentFit.COVER)
+            self.load_thumbnail(
+                video,
+                thumbnail,
+                width=57,
+                height=32,
+                preserve_aspect=False,
+            )
+            box.append(thumbnail)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        content.set_hexpand(True)
+        content.set_valign(Gtk.Align.CENTER)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        title = Gtk.Label(
+            label=str(item.get("title") or "Download"),
+            xalign=0,
+            hexpand=True,
+        )
+        title.set_ellipsize(Pango.EllipsizeMode.END)
+        title.set_max_width_chars(38)
+        header.append(title)
+
+        status = Gtk.Label(label=str(item.get("status") or ""), xalign=1)
+        status.add_css_class("dim-label")
+        item["status_label"] = status
+        header.append(status)
+        error = item.get("error")
+        if error:
+            error_icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+            error_icon.set_tooltip_text(str(error))
+            error_icon.add_css_class("dim-label")
+            header.append(error_icon)
+        content.append(header)
+
+        if not item.get("done"):
+            progress_bar = Gtk.ProgressBar()
+            progress_bar.set_fraction(float(item.get("progress") or 0.0))
+            progress_bar.set_size_request(280, -1)
+            item["progress_bar"] = progress_bar
+            content.append(progress_bar)
+        else:
+            item.pop("progress_bar", None)
+        box.append(content)
+        row.set_child(box)
+        return row
+
+    def on_download_menu_row_activated(
+        self,
+        _row: Gtk.ListBoxRow,
+        video: Video,
+    ) -> None:
+        self.downloads_menu_popover.popdown()
+        self.play_video(video)
+
+    def clear_listbox(self, listbox: Gtk.ListBox) -> None:
+        child = listbox.get_first_child()
+        while child is not None:
+            next_child = child.get_next_sibling()
+            listbox.remove(child)
+            child = next_child
+
+    def on_open_downloads_folder(self, _button: Gtk.Button) -> None:
+        self.open_local_path(self.download_dir)
+
+    def open_local_path(self, path: Path) -> None:
+        try:
+            Gtk.show_uri(self, path.resolve().as_uri(), Gdk.CURRENT_TIME)
+        except Exception as exc:
+            self.set_status(f"Could not open {path}: {exc}")
+
     def build_history_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
 
@@ -1560,9 +2002,8 @@ class MainWindow(
         self.player_controls.append(self.duration_label)
 
         self.quality_combo = Gtk.ComboBoxText()
-        for quality in QUALITY_FORMATS:
-            self.quality_combo.append(quality, quality)
-        self.quality_combo.set_active_id(self.preferred_quality)
+        self.populate_quality_combo()
+        self.update_quality_combo_tooltip()
         self.quality_combo.connect("changed", self.on_quality_changed)
         self.player_controls.append(self.quality_combo)
 

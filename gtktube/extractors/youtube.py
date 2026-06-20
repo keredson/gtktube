@@ -4,7 +4,7 @@ import os
 import shutil
 import urllib.parse
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable
 
 from babel import Locale
 
@@ -274,6 +274,43 @@ class YoutubeExtractor:
         if video.availability is None:
             video = replace(video, availability="public")
         return video
+
+    def download_video(
+        self,
+        url: str,
+        target_dir: os.PathLike[str] | str,
+        cookies_mode: str = "never",
+        cookies_browser: str = "firefox",
+        progress: Callable[[dict[str, Any]], None] | None = None,
+        quality: str = "best",
+        output_template: str = "%(title).200B [%(id)s].%(ext)s",
+    ) -> None:
+        target_template = os.fspath(
+            os.path.join(
+                os.fspath(target_dir),
+                output_template,
+            )
+        )
+        selected_quality = quality if quality in QUALITY_FORMATS else "best"
+        options = {
+            **self._base_options(),
+            "skip_download": False,
+            "noplaylist": True,
+            "format": QUALITY_FORMATS[selected_quality],
+            "outtmpl": target_template,
+            "merge_output_format": "mp4",
+            "continuedl": True,
+            "nopart": False,
+        }
+        if progress is not None:
+            options["progress_hooks"] = [progress]
+        if cookies_mode in {"always", "restricted_auto"} and cookies_browser:
+            options["cookiesfrombrowser"] = (cookies_browser,)
+        try:
+            with self._youtube_dl()(options) as ydl:
+                ydl.extract_info(url, download=True)
+        except Exception as exc:
+            raise ExtractorError(str(exc)) from exc
 
     def resolve_channel(self, url: str) -> Channel:
         info = self._extract(url, flat=True, limit=1)

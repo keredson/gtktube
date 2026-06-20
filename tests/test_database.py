@@ -239,22 +239,42 @@ class DatabaseTests(unittest.TestCase):
 
     def test_default_video_quality_uses_code_default_until_overridden(self) -> None:
         self.assertEqual(self.repository.default_video_quality(), "720p")
+        self.assertEqual(self.repository.default_playback_mode(), "streaming")
         self.assertFalse(self.repository.has_default_video_quality_override())
 
-        self.repository.set_default_video_quality("1080p")
+        self.repository.set_default_video_quality("1080p", mode="prefetch")
 
         self.assertEqual(self.repository.default_video_quality(), "1080p")
+        self.assertEqual(self.repository.default_playback_mode(), "prefetch")
         self.assertTrue(self.repository.has_default_video_quality_override())
+        row = self.connection.execute(
+            "SELECT value FROM settings WHERE key = 'default_video_quality'"
+        ).fetchone()
+        self.assertEqual(row["value"], "prefetch:1080p")
 
         self.repository.clear_default_video_quality()
 
         self.assertEqual(self.repository.default_video_quality(), "720p")
+        self.assertEqual(self.repository.default_playback_mode(), "streaming")
         self.assertFalse(self.repository.has_default_video_quality_override())
+
+    def test_default_video_quality_accepts_legacy_quality_only_values(self) -> None:
+        self.repository.set_setting("default_video_quality", "1080p")
+
+        self.assertEqual(self.repository.default_video_quality(), "1080p")
+        self.assertEqual(self.repository.default_playback_mode(), "streaming")
+
+    def test_default_video_quality_treats_best_as_unselectable(self) -> None:
+        self.repository.set_setting("default_video_quality", "prefetch:best")
+
+        self.assertEqual(self.repository.default_video_quality(), "720p")
+        self.assertEqual(self.repository.default_playback_mode(), "prefetch")
 
     def test_default_video_quality_ignores_unknown_quality(self) -> None:
         self.repository.set_default_video_quality("potato")
 
         self.assertEqual(self.repository.default_video_quality(), "720p")
+        self.assertEqual(self.repository.default_playback_mode(), "streaming")
         self.assertFalse(self.repository.has_default_video_quality_override())
 
     def test_youtube_watch_history_import_is_off_by_default(self) -> None:

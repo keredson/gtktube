@@ -6,7 +6,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk  # noqa: E402
 
 from gtktube.db.repositories import SPONSORBLOCK_CATEGORIES, SPONSORBLOCK_CATEGORY_LABELS
-from gtktube.extractors.youtube import QUALITY_FORMATS
+from gtktube.ui.player import USER_SELECTABLE_QUALITIES
 
 
 class SettingsMixin:
@@ -160,8 +160,16 @@ class SettingsMixin:
         quality_row.append(self.default_quality_reset_button)
 
         self.default_quality_combo = Gtk.ComboBoxText()
-        for quality in QUALITY_FORMATS:
-            self.default_quality_combo.append(quality, quality)
+        for quality in USER_SELECTABLE_QUALITIES:
+            self.default_quality_combo.append(
+                self.quality_option_id("streaming", quality),
+                f"⇄ {quality}",
+            )
+        for quality in USER_SELECTABLE_QUALITIES:
+            self.default_quality_combo.append(
+                self.quality_option_id("prefetch", quality),
+                f"↓ {quality}",
+            )
         self.default_quality_combo.connect(
             "changed",
             self.on_default_quality_changed,
@@ -356,8 +364,14 @@ class SettingsMixin:
         self.refresh_workers_reset_button.set_visible(
             self.service.repository.has_refresh_worker_count_override()
         )
+        self.preferred_playback_mode = self.service.repository.default_playback_mode()
         self.preferred_quality = self.service.repository.default_video_quality()
-        self.default_quality_combo.set_active_id(self.preferred_quality)
+        self.default_quality_combo.set_active_id(
+            self.quality_option_id(
+                self.preferred_playback_mode,
+                self.preferred_quality,
+            )
+        )
         self.default_quality_reset_button.set_visible(
             self.service.repository.has_default_video_quality_override()
         )
@@ -411,22 +425,33 @@ class SettingsMixin:
     def on_default_quality_changed(self, combo: Gtk.ComboBoxText) -> None:
         if self.updating_settings:
             return
-        quality = combo.get_active_id()
-        if not quality:
+        option = self.parse_quality_option_id(combo.get_active_id())
+        if option is None:
             return
+        mode, quality = option
+        self.preferred_playback_mode = mode
         self.preferred_quality = quality
-        self.service.repository.set_default_video_quality(quality)
+        self.service.repository.set_default_video_quality(quality, mode=mode)
         self.default_quality_reset_button.set_visible(True)
         self.updating_quality = True
-        self.quality_combo.set_active_id(quality)
+        self.quality_combo.set_active_id(
+            self.quality_option_id(mode, quality)
+        )
         self.updating_quality = False
+        self.update_quality_combo_tooltip()
 
     def on_default_quality_reset_clicked(self, _button: Gtk.Button) -> None:
         self.service.repository.clear_default_video_quality()
         self.reload_settings()
         self.updating_quality = True
-        self.quality_combo.set_active_id(self.preferred_quality)
+        self.quality_combo.set_active_id(
+            self.quality_option_id(
+                self.preferred_playback_mode,
+                self.preferred_quality,
+            )
+        )
         self.updating_quality = False
+        self.update_quality_combo_tooltip()
 
     def _update_privacy_help(self) -> None:
         mode = self.cookies_mode_combo.get_active_id()

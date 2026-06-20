@@ -229,6 +229,8 @@ class ChromeMixin:
             self.reload_history()
         elif view.page == "watch_later":
             self.reload_watch_later()
+        elif view.page == "downloads":
+            self.reload_downloads()
         elif view.page == "settings":
             self.reload_settings()
 

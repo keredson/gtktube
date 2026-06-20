@@ -24,6 +24,9 @@ from gtktube.ui.types import ViewState
 
 
 PLAYBACK_RATES = [rate / 100 for rate in range(25, 401, 25)]
+USER_SELECTABLE_QUALITIES = [
+    quality for quality in QUALITY_FORMATS if quality != "best"
+]
 URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>\"]+")
 BUFFER_CHECK_INTERVAL_MS = 250
 BUFFER_START_TIMEOUT_SECONDS = 20.0
@@ -76,12 +79,154 @@ class PlayerMixin:
             "playback requested "
             f"video={video.id} quality={quality} url={video.url}"
         )
+        downloaded_path = self.service.downloaded_file_for_video(
+            self.download_dir,
+            video.id,
+        )
+        if downloaded_path is not None:
+            self.verbose_log(
+                "playback using downloaded file "
+                f"video={video.id} path={downloaded_path}"
+            )
+            self.run_task(
+                "Opening downloaded video...",
+                lambda: self.service.play_downloaded_video(
+                    video,
+                    downloaded_path,
+                ),
+                lambda playable: self.load_playable_if_current(playable, request_id),
+                error=lambda exc: self.show_player_error_if_current(exc, request_id),
+            )
+            return
+        if self.selected_playback_mode() == "prefetch":
+            cached_path = self.service.playback_cache_file_for_video(
+                self.playback_cache_dir,
+                video.id,
+                quality,
+            )
+            if cached_path is not None:
+                self.verbose_log(
+                    "playback using prefetch cache "
+                    f"video={video.id} quality={quality} path={cached_path}"
+                )
+                self.run_task(
+                    "Opening pre-fetched video...",
+                    lambda: self.service.play_cached_video(
+                        video,
+                        cached_path,
+                        quality,
+                    ),
+                    lambda playable: self.load_playable_if_current(
+                        playable,
+                        request_id,
+                    ),
+                    error=lambda exc: self.show_player_error_if_current(exc, request_id),
+                )
+                return
+            self.verbose_log(
+                "playback prefetch starting "
+                f"video={video.id} quality={quality}"
+            )
+            prefetch_parts: dict[str, float] = {}
+
+            def progress(update: dict[str, object]) -> None:
+                if getattr(self, "cleaned_up", False):
+                    return
+                GLib.idle_add(
+                    self.update_prefetch_progress,
+                    request_id,
+                    prefetch_parts,
+                    update,
+                )
+
+            self.run_task(
+                "Pre-fetching video...",
+                lambda: self.play_prefetched_video(video, quality, progress),
+                lambda playable: self.load_playable_if_current(playable, request_id),
+                error=lambda exc: self.show_player_error_if_current(exc, request_id),
+            )
+            return
         self.run_task(
             "Resolving video...",
             lambda: self.service.play_video(video, quality=quality),
             lambda playable: self.load_playable_if_current(playable, request_id),
             error=lambda exc: self.show_player_error_if_current(exc, request_id),
         )
+
+    def play_prefetched_video(
+        self,
+        video: Video,
+        quality: str,
+        progress: Callable[[dict[str, object]], None] | None = None,
+        record_play: bool = True,
+    ) -> PlayableVideo:
+        path = self.service.prefetch_playback_video(
+            video,
+            quality,
+            self.playback_cache_dir,
+            progress=progress,
+        )
+        return self.service.play_cached_video(
+            video,
+            path,
+            quality,
+            record_play=record_play,
+        )
+
+    def update_prefetch_progress(
+        self,
+        request_id: int,
+        parts: dict[str, float],
+        update: dict[str, object],
+    ) -> bool:
+        if request_id != self.playback_request_id:
+            return False
+        status = str(update.get("status") or "")
+        if status not in {"downloading", "finished"}:
+            return False
+        part = self.prefetch_progress_part(update)
+        if status == "finished":
+            parts[part] = 1.0
+        else:
+            downloaded = self.prefetch_progress_number(update.get("downloaded_bytes"))
+            total = self.prefetch_progress_number(update.get("total_bytes"))
+            if total <= 0:
+                total = self.prefetch_progress_number(update.get("total_bytes_estimate"))
+            if total <= 0:
+                self.set_prefetch_progress_text("Pre-fetching video...")
+                return False
+            parts[part] = max(0.0, min(1.0, downloaded / total))
+        if "single" in parts:
+            progress = parts["single"]
+        else:
+            progress = 0.9 * parts.get("video", 0.0) + 0.1 * parts.get("audio", 0.0)
+        percent = round(progress * 100)
+        self.verbose_log(f"playback prefetch progress percent={percent}")
+        self.set_prefetch_progress_text(f"Pre-fetching video {percent}%...")
+        return False
+
+    def prefetch_progress_part(self, update: dict[str, object]) -> str:
+        info = update.get("info_dict")
+        if not isinstance(info, dict):
+            return "single"
+        vcodec = str(info.get("vcodec") or "")
+        acodec = str(info.get("acodec") or "")
+        has_video = bool(vcodec and vcodec != "none")
+        has_audio = bool(acodec and acodec != "none")
+        if has_video and not has_audio:
+            return "video"
+        if has_audio and not has_video:
+            return "audio"
+        return "single"
+
+    def prefetch_progress_number(self, value: object) -> float:
+        if isinstance(value, (int, float)):
+            return float(value)
+        return 0.0
+
+    def set_prefetch_progress_text(self, text: str) -> None:
+        self.player_meta.set_text(text)
+        self.miniplayer_meta.set_text(text)
 
     def load_playable_if_current(
         self, playable: PlayableVideo, request_id: int
@@ -124,6 +269,7 @@ class PlayerMixin:
         self.update_player_share_button()
         self.elapsed_label.set_text("0:00")
         self.duration_label.set_text("0:00")
+        self.update_quality_control(None)
         self.updating_scrubber = True
         self.scrubber.set_range(0, 1)
         self.scrubber.set_value(0)
@@ -167,9 +313,7 @@ class PlayerMixin:
         self.stop_pipeline(restore_stack=False)
         self.current_playable = playable
         self.update_header_subtitle(ViewState("player"))
-        self.updating_quality = True
-        self.quality_combo.set_active_id(playable.quality)
-        self.updating_quality = False
+        self.update_quality_control(playable)
         self.update_player_metadata(playable.video)
         recommended_updater = getattr(self, "update_recommended_cached_video", None)
         if callable(recommended_updater):
@@ -1425,6 +1569,7 @@ class PlayerMixin:
         self.update_player_share_button()
         self.update_caption_tracks(None)
         self.update_chapters(None)
+        self.update_quality_control(None)
 
     def on_play_pause_clicked(self, _button: Gtk.Button) -> None:
         self.toggle_play_pause()
@@ -1653,24 +1798,134 @@ class PlayerMixin:
     def selected_quality(self) -> str:
         return self.preferred_quality
 
+    def selected_playback_mode(self) -> str:
+        return self.preferred_playback_mode
+
+    def quality_option_id(self, mode: str, quality: str) -> str:
+        return f"{mode}:{quality}"
+
+    def parse_quality_option_id(self, active_id: str | None) -> tuple[str, str] | None:
+        if active_id is None:
+            return None
+        if ":" not in active_id:
+            return ("streaming", active_id) if active_id in QUALITY_FORMATS else None
+        mode, quality = active_id.split(":", 1)
+        if mode not in {"streaming", "prefetch"} or quality not in QUALITY_FORMATS:
+            return None
+        return mode, quality
+
+    def populate_quality_combo(
+        self,
+        active_id: str | None = None,
+        downloaded_quality: str | None = None,
+    ) -> None:
+        self.updating_quality = True
+        self.quality_combo.remove_all()
+        if downloaded_quality:
+            self.quality_combo.append("downloaded", f"↓ {downloaded_quality}")
+        for quality in USER_SELECTABLE_QUALITIES:
+            self.quality_combo.append(
+                self.quality_option_id("streaming", quality),
+                f"⇄ {quality}",
+            )
+        for quality in USER_SELECTABLE_QUALITIES:
+            self.quality_combo.append(
+                self.quality_option_id("prefetch", quality),
+                f"↓ {quality}",
+            )
+        self.quality_combo.set_active_id(
+            active_id
+            or self.quality_option_id(
+                self.preferred_playback_mode,
+                self.preferred_quality,
+            )
+        )
+        self.updating_quality = False
+
+    def is_downloaded_playable(self, playable: PlayableVideo | None = None) -> bool:
+        playable = playable or self.current_playable
+        return bool(playable and playable.resolved_quality == "downloaded")
+
+    def update_quality_control(self, playable: PlayableVideo | None = None) -> None:
+        playable = playable or self.current_playable
+        if self.is_downloaded_playable(playable):
+            quality = playable.quality if playable is not None else "local"
+            self.populate_quality_combo("downloaded", downloaded_quality=quality)
+            self.quality_combo.set_tooltip_text(
+                f"Playing downloaded file ({quality})"
+            )
+            return
+        active_id = self.quality_option_id(
+            self.preferred_playback_mode,
+            self.preferred_quality,
+        )
+        self.populate_quality_combo(active_id)
+        self.update_quality_combo_tooltip()
+        self.quality_combo.set_visible(True)
+
     def on_quality_changed(self, _combo: Gtk.ComboBoxText) -> None:
         if self.updating_quality:
             return
-        quality = self.quality_combo.get_active_id()
-        if quality:
-            self.preferred_quality = quality
+        active_id = self.quality_combo.get_active_id()
+        if active_id == "downloaded":
+            return
+        option = self.parse_quality_option_id(active_id)
+        if option is None:
+            return
+        mode, quality = option
+        self.preferred_playback_mode = mode
+        self.preferred_quality = quality
+        self.update_quality_combo_tooltip()
+        self.service.repository.set_default_video_quality(quality, mode=mode)
 
         if self.current_playable is None:
+            return
+        if self.is_downloaded_playable():
+            self.update_quality_control()
             return
         position = self.current_position_seconds()
         video = self.current_playable.video
         quality = self.selected_quality()
         self.flush_watch_range()
+        if self.selected_playback_mode() == "prefetch":
+            request_id = self.playback_request_id
+            prefetch_parts: dict[str, float] = {}
+
+            def progress(update: dict[str, object]) -> None:
+                if getattr(self, "cleaned_up", False):
+                    return
+                GLib.idle_add(
+                    self.update_prefetch_progress,
+                    request_id,
+                    prefetch_parts,
+                    update,
+                )
+
+            self.run_task(
+                f"Pre-fetching {quality}...",
+                lambda: self.play_prefetched_video(
+                    video,
+                    quality,
+                    progress,
+                    record_play=False,
+                ),
+                lambda playable: self.load_playable_at(playable, position),
+            )
+            return
         self.run_task(
             f"Switching to {quality}...",
             lambda: self.service.play_video(video, quality=quality, record_play=False),
             lambda playable: self.load_playable_at(playable, position),
         )
+
+    def update_quality_combo_tooltip(self) -> None:
+        quality = self.selected_quality()
+        if self.selected_playback_mode() == "prefetch":
+            self.quality_combo.set_tooltip_text(
+                f"Pre-fetch {quality}: download to temporary playback cache before playing"
+            )
+            return
+        self.quality_combo.set_tooltip_text(f"Stream {quality}")
 
     def speed_id(self, rate: float) -> str:
         return f"{rate:.2f}"

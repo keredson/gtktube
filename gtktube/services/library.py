@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import random
+import re
+import shutil
+import subprocess
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
+from pathlib import Path
 
 from gtktube.db.repositories import LibraryRepository
 from gtktube.extractors.youtube import (
     ExtractorError,
+    QUALITY_FORMATS,
     RestrictedVideoError,
     YoutubeExtractor,
 )
 from gtktube.models import Channel, PlayableVideo, SearchResults, Video
+
+
+PLAYBACK_CACHE_MAX_AGE_SECONDS = 3 * 24 * 60 * 60
+PLAYBACK_CACHE_PART_MAX_AGE_SECONDS = 6 * 60 * 60
+PLAYBACK_CACHE_MAX_BYTES = 10 * 1024 * 1024 * 1024
 
 
 class LibraryService:
@@ -277,6 +288,235 @@ class LibraryService:
         )
         self._store_video_and_channel(merged)
         return self.repository.videos_with_watch_progress([merged])[0]
+
+    def downloaded_files(self, target_dir: Path) -> list[Path]:
+        if not target_dir.exists():
+            return []
+        files = [
+            path
+            for path in target_dir.iterdir()
+            if path.is_file()
+            and not path.name.endswith((".part", ".ytdl", ".temp", ".tmp"))
+        ]
+        return sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)
+
+    def downloaded_file_for_video(self, target_dir: Path, video_id: str) -> Path | None:
+        needle = f"[{video_id}]"
+        for path in self.downloaded_files(target_dir):
+            if needle in path.name:
+                return path
+        return None
+
+    def downloaded_videos(self, target_dir: Path) -> list[tuple[Video, Path]]:
+        downloads: list[tuple[Video, Path]] = []
+        for path in self.downloaded_files(target_dir):
+            video_id = self.downloaded_video_id(path)
+            if video_id is None:
+                continue
+            video = self.repository.video(video_id)
+            if video is None:
+                video = Video(
+                    id=video_id,
+                    title=self.downloaded_video_title(path, video_id),
+                    url=f"https://www.youtube.com/watch?v={video_id}",
+                )
+            downloads.append((video, path))
+        return downloads
+
+    def downloaded_video_id(self, path: Path) -> str | None:
+        match = re.search(r"\[([A-Za-z0-9_-]{6,})\](?:\.[^.]+)?$", path.name)
+        return match.group(1) if match else None
+
+    def downloaded_video_title(self, path: Path, video_id: str) -> str:
+        title = re.sub(rf"\s*\[{re.escape(video_id)}\](?:\.[^.]+)?$", "", path.name)
+        return title.strip() or path.stem
+
+    def download_video(
+        self,
+        video: Video,
+        target_dir: Path,
+        progress: Callable[[dict[str, object]], None] | None = None,
+    ) -> Path:
+        self._store_video_and_channel(video)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        existing = self.downloaded_file_for_video(target_dir, video.id)
+        if existing is not None:
+            return existing
+        before = {path.resolve() for path in self.downloaded_files(target_dir)}
+        self.extractor.download_video(
+            video.url,
+            target_dir,
+            cookies_mode=self.repository.yt_dlp_cookies_mode(),
+            cookies_browser=self.repository.yt_dlp_cookies_browser(),
+            progress=progress,
+        )
+        files = self.downloaded_files(target_dir)
+        for path in files:
+            if path.resolve() not in before and f"[{video.id}]" in path.name:
+                return path
+        raise ExtractorError("Download finished but no output file was found")
+
+    def playback_cache_file_for_video(
+        self,
+        target_dir: Path,
+        video_id: str,
+        quality: str,
+    ) -> Path | None:
+        needle = f"[{video_id}] [{quality}]"
+        for path in self.downloaded_files(target_dir):
+            if needle in path.name:
+                self.touch_file(path)
+                return path
+        return None
+
+    def prefetch_playback_video(
+        self,
+        video: Video,
+        quality: str,
+        target_dir: Path,
+        progress: Callable[[dict[str, object]], None] | None = None,
+    ) -> Path:
+        self._store_video_and_channel(video)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        self.prune_playback_cache(target_dir)
+        selected_quality = quality if quality in QUALITY_FORMATS else "720p"
+        existing = self.playback_cache_file_for_video(
+            target_dir,
+            video.id,
+            selected_quality,
+        )
+        if existing is not None:
+            return existing
+        before = {path.resolve() for path in self.downloaded_files(target_dir)}
+        self.extractor.download_video(
+            video.url,
+            target_dir,
+            cookies_mode=self.repository.yt_dlp_cookies_mode(),
+            cookies_browser=self.repository.yt_dlp_cookies_browser(),
+            progress=progress,
+            quality=selected_quality,
+            output_template=f"%(title).200B [%(id)s] [{selected_quality}].%(ext)s",
+        )
+        for path in self.downloaded_files(target_dir):
+            if (
+                path.resolve() not in before
+                and f"[{video.id}] [{selected_quality}]" in path.name
+            ):
+                self.touch_file(path)
+                self.prune_playback_cache(target_dir)
+                return path
+        raise ExtractorError("Pre-fetch finished but no output file was found")
+
+    def play_cached_video(
+        self,
+        video: Video,
+        path: Path,
+        quality: str,
+        record_play: bool = True,
+    ) -> PlayableVideo:
+        self.touch_file(path)
+        self._store_video_and_channel(video)
+        if record_play:
+            self.repository.record_play_started(video.id)
+        return PlayableVideo(
+            video=video,
+            stream_url=str(path),
+            quality=quality,
+            resolved_quality=f"cached {quality}",
+            chapters=self.repository.video_chapters(video.id),
+        )
+
+    def prune_playback_cache(self, target_dir: Path) -> None:
+        if not target_dir.exists():
+            return
+        now = time.time()
+        files: list[Path] = []
+        for path in target_dir.iterdir():
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            is_partial = path.name.endswith((".part", ".ytdl", ".temp", ".tmp"))
+            max_age = (
+                PLAYBACK_CACHE_PART_MAX_AGE_SECONDS
+                if is_partial
+                else PLAYBACK_CACHE_MAX_AGE_SECONDS
+            )
+            if now - stat.st_mtime > max_age:
+                self.unlink_quietly(path)
+                continue
+            if not is_partial:
+                files.append(path)
+        files.sort(key=lambda path: path.stat().st_mtime)
+        total_size = sum(path.stat().st_size for path in files if path.exists())
+        while total_size > PLAYBACK_CACHE_MAX_BYTES and files:
+            path = files.pop(0)
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            self.unlink_quietly(path)
+            total_size -= size
+
+    def touch_file(self, path: Path) -> None:
+        try:
+            path.touch(exist_ok=True)
+        except OSError:
+            pass
+
+    def unlink_quietly(self, path: Path) -> None:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+    def play_downloaded_video(
+        self,
+        video: Video,
+        path: Path,
+        record_play: bool = True,
+    ) -> PlayableVideo:
+        self._store_video_and_channel(video)
+        if record_play:
+            self.repository.record_play_started(video.id)
+        quality = self.downloaded_video_quality(path)
+        return PlayableVideo(
+            video=video,
+            stream_url=str(path),
+            quality=quality,
+            resolved_quality="downloaded",
+            chapters=self.repository.video_chapters(video.id),
+        )
+
+    def downloaded_video_quality(self, path: Path) -> str:
+        ffprobe = shutil.which("ffprobe")
+        if not ffprobe:
+            return "local"
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=height",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            height = int(result.stdout.strip().splitlines()[0])
+        except (OSError, subprocess.SubprocessError, IndexError, ValueError):
+            return "local"
+        return f"{height}p" if height > 0 else "local"
 
     def import_youtube_watch_history(self, limit: int = 100) -> int:
         browser = self.repository.yt_dlp_cookies_browser()

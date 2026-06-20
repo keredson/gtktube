@@ -6,11 +6,39 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, Gtk  # noqa: E402
 
+from gtktube.extractors.youtube import is_playlist_url
 from gtktube.models import Channel, Video
 from gtktube.ui.types import VideoObject
 
 
 class ContextMenuMixin:
+    def append_download_video_action(
+        self,
+        actions: Gtk.Box,
+        popover: Gtk.Popover,
+        video: Video,
+    ) -> None:
+        if is_playlist_url(video.url):
+            return
+        downloaded_path = self.service.downloaded_file_for_video(
+            self.download_dir,
+            video.id,
+        )
+        download = Gtk.Button(
+            label="Already downloaded" if downloaded_path is not None else "Download"
+        )
+        download.add_css_class("flat")
+        download.set_halign(Gtk.Align.FILL)
+        if downloaded_path is not None:
+            download.set_sensitive(False)
+            download.set_tooltip_text(str(downloaded_path))
+        else:
+            download.connect(
+                "clicked",
+                lambda _button: self.activate_video_menu(popover, video, "download"),
+            )
+        actions.append(download)
+
     def show_video_context_menu(
         self, parent: Gtk.Widget, video: Video, x: float, y: float
     ) -> None:
@@ -39,6 +67,8 @@ class ContextMenuMixin:
             "clicked", lambda _button: self.activate_video_menu(popover, video, "video")
         )
         actions.append(open_video)
+
+        self.append_download_video_action(actions, popover, video)
 
         if video.channel_id and video.channel_title:
             open_channel = Gtk.Button(label="Open channel")
@@ -217,6 +247,8 @@ class ContextMenuMixin:
         )
         actions.append(open_video)
 
+        self.append_download_video_action(actions, popover, video)
+
         mark_played = Gtk.Button(label="Mark as played")
         mark_played.add_css_class("flat")
         mark_played.set_halign(Gtk.Align.FILL)
@@ -296,6 +328,8 @@ class ContextMenuMixin:
             "clicked", lambda _button: self.activate_video_menu(popover, video, "video")
         )
         actions.append(open_video)
+
+        self.append_download_video_action(actions, popover, video)
 
         if video.channel_id and video.channel_title:
             open_channel = Gtk.Button(label="Open channel")
@@ -379,6 +413,8 @@ class ContextMenuMixin:
         )
         actions.append(play_now)
 
+        self.append_download_video_action(actions, popover, video)
+
         remove_queue = Gtk.Button(label="Remove from Up Next")
         remove_queue.add_css_class("flat")
         remove_queue.set_halign(Gtk.Align.FILL)
@@ -429,6 +465,8 @@ class ContextMenuMixin:
         elif action == "watch_later":
             self.service.add_watch_later(video)
             self.reload_watch_later()
+        elif action == "download":
+            self.download_video(video)
         elif action == "played":
             self.service.repository.mark_played(video.id, video.duration_seconds)
             self.reload_history()
@@ -479,6 +517,8 @@ class ContextMenuMixin:
             "clicked", lambda _: self.play_from_playlist(popover, row.get_index())
         )
         actions.append(play_now)
+
+        self.append_download_video_action(actions, popover, video)
 
         toggle_skip = Gtk.Button(label="Skip")
         toggle_skip.add_css_class("flat")
