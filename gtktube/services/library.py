@@ -187,7 +187,7 @@ class LibraryService:
         self,
         limit_per_channel: int = 30,
         max_workers: int | None = None,
-        progress: Callable[[Channel, bool], None] | None = None,
+        progress: Callable[[Channel, str], None] | None = None,
     ) -> None:
         channels = self.repository.subscribed_channels()
         if not channels:
@@ -207,7 +207,7 @@ class LibraryService:
 
         def refresh(channel: Channel) -> None:
             if progress is not None:
-                progress(channel, True)
+                progress(channel, "start")
             try:
                 is_initial_import = not self.repository.channel_videos(channel.id, 1)
                 self.refresh_channel(
@@ -215,12 +215,16 @@ class LibraryService:
                     limit=limit_per_channel,
                     clear_new_indicator=is_initial_import,
                 )
+                if progress is not None:
+                    progress(channel, "updated")
             except Exception:
                 self.repository.mark_channel_refresh(channel.id, success=False)
+                if progress is not None:
+                    progress(channel, "failed")
                 raise
             finally:
                 if progress is not None:
-                    progress(channel, False)
+                    progress(channel, "finish")
 
         errors: list[BaseException] = []
         with ThreadPoolExecutor(max_workers=worker_count) as executor:

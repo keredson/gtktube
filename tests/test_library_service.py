@@ -94,7 +94,7 @@ class DownloadExtractor:
 
 class LibraryServiceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.connection = sqlite3.connect(":memory:")
+        self.connection = sqlite3.connect(":memory:", check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         migrate(self.connection)
@@ -152,6 +152,30 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual(
             [video.id for video in self.repository.channel_playlists("chan1")],
             ["playlist1"],
+        )
+
+    def test_refresh_subscriptions_reports_channel_updated(self) -> None:
+        channel = Channel(
+            id="chan1",
+            title="Channel One",
+            url="https://example.test/channel",
+        )
+        self.repository.upsert_channel(channel, subscribed=True)
+        service = LibraryService(self.repository, RefreshExtractor())  # type: ignore[arg-type]
+        events: list[tuple[str, str]] = []
+
+        service.refresh_subscriptions(
+            max_workers=1,
+            progress=lambda refreshed, event: events.append((refreshed.id, event)),
+        )
+
+        self.assertEqual(
+            events,
+            [
+                ("chan1", "start"),
+                ("chan1", "updated"),
+                ("chan1", "finish"),
+            ],
         )
 
     def test_prefetch_playback_video_uses_quality_cache_key(self) -> None:

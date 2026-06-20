@@ -185,6 +185,11 @@ class MainWindow(
         self.channel_video_search_channel_id: str | None = None
         self.loading_more_videos = False
         self.importing_youtube_history = False
+        self.refreshing_subscriptions = False
+        self.pending_feed_refresh = False
+        self.pending_feed_refresh_channel_ids: set[str] = set()
+        self.feed_tile_ids: list[str] = []
+        self.feed_tile_widgets: dict[str, Gtk.Widget] = {}
         self.refreshing_channel_ids: set[str] = set()
         self.grid_generations: dict[int, int] = {}
         self.nav_generation = 0
@@ -385,6 +390,7 @@ class MainWindow(
         initial_view = self.initial_view_state()
         self.navigate_to(initial_view, record=False)
         self.schedule_deferred_local_reloads(initial_view)
+        GLib.timeout_add_seconds(2, self.maybe_auto_refresh_subscriptions)
         GLib.timeout_add_seconds(5, self.flush_watch_range)
         GLib.timeout_add_seconds(1, self.update_playback_controls)
         GLib.timeout_add_seconds(10, self.maybe_import_youtube_watch_history_once)
@@ -2142,18 +2148,39 @@ class MainWindow(
         return grid
 
     def on_refresh_subscriptions(self, _button: Gtk.Button) -> None:
+        self.refresh_subscriptions()
+
+    def maybe_auto_refresh_subscriptions(self) -> bool:
+        if self.cleaned_up:
+            return False
+        channels = self.service.repository.subscribed_channels()
+        if not any(
+            self.service.repository.channel_needs_refresh(channel.id)
+            for channel in channels
+        ):
+            return False
+        self.refresh_subscriptions()
+        return False
+
+    def refresh_subscriptions(self) -> None:
+        if self.refreshing_subscriptions:
+            return
+
         def done(_result: None) -> None:
             self.reload_channels()
-            self.reload_feed()
+            self.schedule_incremental_feed_refresh()
 
         def finished() -> None:
+            self.refreshing_subscriptions = False
             self.refreshing_channel_ids.clear()
             self.reload_channels()
+            self.schedule_incremental_feed_refresh()
             self.set_context_refresh_loading(False)
 
-        def progress(channel: Channel, active: bool) -> None:
-            GLib.idle_add(self.set_channel_refreshing, channel.id, active)
+        def progress(channel: Channel, event: str) -> None:
+            GLib.idle_add(self.on_subscription_refresh_progress, channel, event)
 
+        self.refreshing_subscriptions = True
         self.set_context_refresh_loading(True)
         self.run_task(
             "Refreshing subscriptions...",
@@ -2164,6 +2191,49 @@ class MainWindow(
             done,
             finished=finished,
         )
+
+    def on_subscription_refresh_progress(
+        self,
+        channel: Channel,
+        event: str,
+    ) -> bool:
+        if event == "start":
+            self.set_channel_refreshing(channel.id, True)
+            return False
+        if event in {"finish", "failed"}:
+            self.set_channel_refreshing(channel.id, False)
+            if event == "failed":
+                self.reload_channels()
+            return False
+        if event == "updated":
+            self.set_channel_refreshing(channel.id, False)
+            self.schedule_incremental_feed_refresh(channel.id)
+            if self.current_view and self.current_view.channel_id == channel.id:
+                self.apply_view_state(self.current_view)
+            return False
+        return False
+
+    def schedule_incremental_feed_refresh(self, channel_id: str | None = None) -> None:
+        if channel_id is not None:
+            self.pending_feed_refresh_channel_ids.add(channel_id)
+        if self.pending_feed_refresh:
+            return
+        self.pending_feed_refresh = True
+
+        def refresh() -> bool:
+            self.pending_feed_refresh = False
+            channel_ids = set(self.pending_feed_refresh_channel_ids)
+            self.pending_feed_refresh_channel_ids.clear()
+            if self.cleaned_up:
+                return False
+            if self.current_view and self.current_view.page == "feed":
+                if self.current_view.channel_id is None:
+                    self.refresh_feed_tiles(channel_ids)
+                else:
+                    self.apply_view_state(self.current_view)
+            return False
+
+        GLib.timeout_add(500, refresh)
 
     def on_feed_scroll(self, adjustment: Gtk.Adjustment) -> None:
         if self.loading_more_videos:
@@ -2518,13 +2588,94 @@ class MainWindow(
         self.loaded_local_sections.add("feed")
         videos = self.service.repository.subscription_feed(self.feed_limit)
         self.clear_flowbox(self.feed_grid)
+        self.feed_tile_ids = []
+        self.feed_tile_widgets = {}
         self.grid_generations[id(self.feed_grid)] = (
             self.grid_generations.get(id(self.feed_grid), 0) + 1
         )
-        self.append_video_grid_batched(self.feed_grid, videos)
+        self.append_feed_grid_batched(videos)
         has_videos = bool(videos)
         self.feed_grid.set_visible(has_videos)
         self.feed_empty_box.set_visible(not has_videos)
+
+    def append_feed_grid_batched(self, videos: list[Video]) -> None:
+        index = 0
+        generation = self.grid_generations.get(id(self.feed_grid), 0)
+
+        def append_batch() -> bool:
+            nonlocal index
+            if self.cleaned_up:
+                return False
+            if self.grid_generations.get(id(self.feed_grid)) != generation:
+                return False
+            end = min(index + 8, len(videos))
+            for video in videos[index:end]:
+                wrapper = self.append_video_tile(self.feed_grid, video)
+                self.feed_tile_ids.append(video.id)
+                self.feed_tile_widgets[video.id] = wrapper
+            index = end
+            return index < len(videos)
+
+        GLib.idle_add(append_batch)
+
+    def refresh_feed_tiles(self, updated_channel_ids: set[str]) -> None:
+        self.grid_generations[id(self.feed_grid)] = (
+            self.grid_generations.get(id(self.feed_grid), 0) + 1
+        )
+        videos = self.service.repository.subscription_feed(self.feed_limit)
+        has_videos = bool(videos)
+        self.feed_grid.set_visible(has_videos)
+        self.feed_empty_box.set_visible(not has_videos)
+        if not has_videos:
+            self.clear_flowbox(self.feed_grid)
+            self.feed_tile_ids = []
+            self.feed_tile_widgets = {}
+            return
+        if not self.feed_tile_ids:
+            self.reload_feed()
+            return
+
+        videos_by_id = {video.id: video for video in videos}
+        desired_ids = [video.id for video in videos]
+        current_ids = list(self.feed_tile_ids)
+
+        for video_id in list(current_ids):
+            if video_id not in videos_by_id:
+                wrapper = self.feed_tile_widgets.pop(video_id, None)
+                if wrapper is not None:
+                    self.feed_grid.remove(wrapper)
+                current_ids.remove(video_id)
+
+        for index, video_id in enumerate(desired_ids):
+            video = videos_by_id[video_id]
+            wrapper = self.feed_tile_widgets.get(video_id)
+            should_replace = (
+                wrapper is not None
+                and video.channel_id in updated_channel_ids
+            )
+            if wrapper is None:
+                wrapper = self.wrap_tile_widget(self.video_tile(video))
+                self.feed_grid.insert(wrapper, index)
+                self.feed_tile_widgets[video_id] = wrapper
+                current_ids.insert(index, video_id)
+                continue
+            if should_replace:
+                old_index = current_ids.index(video_id)
+                self.feed_grid.remove(wrapper)
+                wrapper = self.wrap_tile_widget(self.video_tile(video))
+                self.feed_grid.insert(wrapper, index)
+                self.feed_tile_widgets[video_id] = wrapper
+                current_ids.pop(old_index)
+                current_ids.insert(index, video_id)
+                continue
+            current_index = current_ids.index(video_id)
+            if current_index != index:
+                self.feed_grid.remove(wrapper)
+                self.feed_grid.insert(wrapper, index)
+                current_ids.pop(current_index)
+                current_ids.insert(index, video_id)
+
+        self.feed_tile_ids = desired_ids
 
     def populate_search_results(self, results: SearchResults) -> None:
         self.clear_flowbox(self.search_channel_grid)

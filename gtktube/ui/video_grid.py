@@ -76,8 +76,11 @@ class VideoGridMixin:
         video: Video,
         on_clicked: Callable[[Gtk.Widget], None] | None = None,
         on_context_menu: Callable[[Gtk.Widget, Video, float, float], None] | None = None,
-    ) -> None:
-        self.append_tile_widget(grid, self.video_tile(video, on_clicked, on_context_menu))
+    ) -> Gtk.Widget:
+        return self.append_tile_widget(
+            grid,
+            self.video_tile(video, on_clicked, on_context_menu),
+        )
 
     def append_short_tile(
         self,
@@ -88,14 +91,19 @@ class VideoGridMixin:
     ) -> None:
         self.append_tile_widget(grid, self.short_tile(video, on_clicked, on_context_menu))
 
-    def append_tile_widget(self, grid: Gtk.FlowBox, tile: Gtk.Widget) -> None:
+    def wrap_tile_widget(self, tile: Gtk.Widget) -> Gtk.Widget:
         wrapper = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         wrapper.set_size_request(VIDEO_TILE_WIDTH, -1)
         wrapper.set_hexpand(False)
         wrapper.set_halign(Gtk.Align.START)
         wrapper.set_valign(Gtk.Align.START)
         wrapper.append(tile)
+        return wrapper
+
+    def append_tile_widget(self, grid: Gtk.FlowBox, tile: Gtk.Widget) -> Gtk.Widget:
+        wrapper = self.wrap_tile_widget(tile)
         grid.append(wrapper)
+        return wrapper
 
     def video_tile(
         self,
