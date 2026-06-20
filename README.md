@@ -66,6 +66,23 @@ GTKTube also needs GTK4/PyGObject, libmpv, and a JavaScript runtime for yt-dlp
 from your Linux distribution.
 If required system dependencies are missing, the app can launch a small installer helper.
 
+On Debian/Ubuntu, install the system dependencies with:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y \
+  python3-gi \
+  python3-gi-cairo \
+  gir1.2-gtk-4.0 \
+  gir1.2-adw-1 \
+  libmpv2 \
+  python3-mpv \
+  nodejs
+```
+
+The same package list is used by `scripts/install-apt-deps.sh` and the in-app
+dependency installer.
+
 ## Run
 
 GTKTube installs a desktop app entry, so you can launch it from your normal Linux app launcher.
