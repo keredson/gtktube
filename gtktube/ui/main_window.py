@@ -2222,10 +2222,10 @@ class MainWindow(
             for channel in channels
         ):
             return False
-        self.refresh_subscriptions()
+        self.refresh_subscriptions(max_workers=1)
         return False
 
-    def refresh_subscriptions(self) -> None:
+    def refresh_subscriptions(self, max_workers: int | None = None) -> None:
         if self.refreshing_subscriptions:
             return
 
@@ -2248,7 +2248,9 @@ class MainWindow(
         self.run_task(
             "Refreshing subscriptions...",
             lambda: self.service.refresh_subscriptions(
-                max_workers=self.service.repository.refresh_worker_count(),
+                max_workers=max_workers
+                if max_workers is not None
+                else self.service.repository.refresh_worker_count(),
                 progress=progress,
             ),
             done,

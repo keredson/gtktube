@@ -388,10 +388,43 @@ class PlayerMixin:
 
         self.range_start_seconds = resume if resume > 0 else 0
         self.apply_selected_caption()
-        self.wait_for_playback_buffer(player, playable.video.id)
+        if self.is_local_file_playable(playable):
+            self.start_local_file_playback(player, playable.video.id)
+        else:
+            self.wait_for_playback_buffer(player, playable.video.id)
         self.show_full_player()
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
+
+    def is_local_file_playable(self, playable: PlayableVideo) -> bool:
+        resolved_quality = playable.resolved_quality or ""
+        return (
+            resolved_quality == "downloaded"
+            or resolved_quality.startswith("cached ")
+        )
+
+    def start_local_file_playback(self, player: Any, video_id: str) -> None:
+        try:
+            player.pause = False
+            player.speed = self.playback_rate
+        except Exception as exc:
+            self.set_status(f"Playback error: {exc}")
+            self.log(f"mpv local playback start failed video={video_id}: {exc}")
+            self.stop_pipeline()
+            return
+
+        self.last_playback_diagnostics_at = 0.0
+        self.last_playback_diagnostics_values = {}
+        self.last_playback_diagnostics_paused = False
+        self.mpv_file_loaded = True
+        self.update_playback_inhibition()
+        self.set_player_loading(False)
+        self.set_status("Ready")
+        self.verbose_log(
+            "mpv play command accepted "
+            f"video={video_id} local_file=True buffered=skipped "
+            f"rate={self.playback_rate:g}"
+        )
 
     def wait_for_playback_buffer(self, player: Any, video_id: str) -> None:
         target = self.playback_buffer_target_seconds()
