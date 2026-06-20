@@ -62,19 +62,27 @@ class UpgradeController:
 
         self.append_upgrade_command(content)
 
-        dialog.add_button("Not now", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Open PyPI", Gtk.ResponseType.HELP)
-        dialog.add_button("Upgrade and restart", Gtk.ResponseType.ACCEPT)
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        content.append(footer)
+        footer.append(Gtk.Box(hexpand=True))
+        not_now_button = Gtk.Button(label="Not now")
+        open_pypi_button = Gtk.Button(label="Open PyPI")
+        upgrade_button = Gtk.Button(label="Upgrade and restart")
+        upgrade_button.add_css_class("suggested-action")
+        footer.append(not_now_button)
+        footer.append(open_pypi_button)
+        footer.append(upgrade_button)
 
-        def response(_dialog: Gtk.Dialog, response_id: int) -> None:
-            if response_id == Gtk.ResponseType.ACCEPT:
-                self.run_upgrade_and_restart(dialog)
-                return
-            elif response_id == Gtk.ResponseType.HELP:
-                Gtk.show_uri(self.parent, update.project_url, Gdk.CURRENT_TIME)
+        def open_pypi() -> None:
+            Gtk.show_uri(self.parent, update.project_url, Gdk.CURRENT_TIME)
             dialog.destroy()
 
-        dialog.connect("response", response)
+        not_now_button.connect("clicked", lambda _button: dialog.destroy())
+        open_pypi_button.connect("clicked", lambda _button: open_pypi())
+        upgrade_button.connect(
+            "clicked",
+            lambda _button: self.run_upgrade_and_restart(dialog, upgrade_button),
+        )
         dialog.present()
 
     def append_upgrade_command(self, container: Gtk.Box) -> None:
@@ -88,10 +96,6 @@ class UpgradeController:
         dialog: Gtk.Dialog | None = None,
         action: Gtk.Button | None = None,
     ) -> None:
-        if dialog is not None and action is None:
-            widget = dialog.get_widget_for_response(Gtk.ResponseType.ACCEPT)
-            if isinstance(widget, Gtk.Button):
-                action = widget
         if isinstance(action, Gtk.Button):
             action.set_sensitive(False)
             spinner = Gtk.Spinner()

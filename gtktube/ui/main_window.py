@@ -33,6 +33,7 @@ from gtktube.ui.styles import APP_CSS
 from gtktube.ui.thumbnails import ThumbnailMixin
 from gtktube.ui.types import VideoObject, ViewState
 from gtktube.ui.video_grid import VideoGridMixin
+from gtktube.update_check import UpdateInfo
 
 
 T = TypeVar("T")
@@ -47,6 +48,7 @@ class GTKTubeApplication(Gtk.Application):
         force_update_dialog: bool = False,
         enable_update_check: bool = True,
         verbose: bool = False,
+        debug_modal: str | None = None,
     ):
         super().__init__(
             application_id="local.gtktube.GTKTube",
@@ -57,6 +59,7 @@ class GTKTubeApplication(Gtk.Application):
         self.force_update_dialog = force_update_dialog
         self.enable_update_check = enable_update_check
         self.verbose = verbose
+        self.debug_modal = debug_modal
         self.activation_error: BaseException | None = None
 
     def do_activate(self) -> None:
@@ -68,6 +71,7 @@ class GTKTubeApplication(Gtk.Application):
                 force_update_dialog=self.force_update_dialog,
                 enable_update_check=self.enable_update_check,
                 verbose=self.verbose,
+                debug_modal=self.debug_modal,
             )
             window.present()
         except Exception as exc:
@@ -100,6 +104,7 @@ class MainWindow(
         force_update_dialog: bool = False,
         enable_update_check: bool = True,
         verbose: bool = False,
+        debug_modal: str | None = None,
     ):
         super().__init__(application=app, title="GTKTube")
         self.service = service
@@ -107,6 +112,7 @@ class MainWindow(
         self.force_update_dialog = force_update_dialog
         self.enable_update_check = enable_update_check
         self.verbose = verbose
+        self.debug_modal = debug_modal
         self.thumbnail_dir = paths.cache_dir / "thumbnails"
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
         self.caption_dir = paths.cache_dir / "captions"
@@ -401,6 +407,43 @@ class MainWindow(
         )
         if self.enable_update_check:
             GLib.timeout_add_seconds(2, self.start_update_check)
+        if self.debug_modal:
+            GLib.idle_add(self.show_debug_modal, self.debug_modal)
+
+    def show_debug_modal(self, name: str) -> bool:
+        if name == "open-url":
+            self.show_open_url_dialog()
+        elif name == "import-subscriptions":
+            self.show_import_subscription_channels_dialog()
+        elif name == "sponsorblock":
+            self.maybe_show_sponsorblock_prompt()
+        elif name == "up-next-quit":
+            self.video_queue.append(
+                VideoObject(
+                    Video(
+                        id="debug-up-next",
+                        title="Debug Up Next Video",
+                        url="https://www.youtube.com/watch?v=debug-up-next",
+                    )
+                )
+            )
+            self.queue_pane.set_visible(True)
+            self.show_queue_quit_dialog()
+        elif name == "update":
+            self.show_update_dialog(
+                UpdateInfo(
+                    current_version="0.0.0",
+                    latest_version="999.0.0",
+                    project_url="https://pypi.org/project/gtktube/",
+                )
+            )
+        else:
+            self.log(
+                "unknown debug modal "
+                f"{name!r}; expected one of open-url, import-subscriptions, "
+                "sponsorblock, up-next-quit, update"
+            )
+        return False
 
     def install_css(self) -> None:
         display = Gdk.Display.get_default()
@@ -477,18 +520,13 @@ class MainWindow(
             transient_for=self,
             modal=True,
         )
-        add_button = dialog.add_button("Add to Watch Later", Gtk.ResponseType.ACCEPT)
-        add_button.set_sensitive(unsaved_count > 0)
-        dialog.add_button("Discard Up Next", Gtk.ResponseType.REJECT)
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        dialog.set_default_response(Gtk.ResponseType.REJECT)
 
         content = dialog.get_content_area()
         content.set_margin_top(16)
         content.set_margin_bottom(16)
         content.set_margin_start(16)
         content.set_margin_end(16)
-        content.set_spacing(10)
+        content.set_spacing(18)
 
         title = Gtk.Label(label="Save Up Next videos to Watch Later?", xalign=0)
         title.add_css_class("title-4")
@@ -501,17 +539,34 @@ class MainWindow(
         )
         content.append(message)
 
-        def response(_dialog: Gtk.Dialog, response_id: int) -> None:
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        content.append(footer)
+        footer.append(Gtk.Box(hexpand=True))
+        cancel_button = Gtk.Button(label="Cancel")
+        discard_button = Gtk.Button(label="Discard Up Next")
+        add_button = Gtk.Button(label="Add to Watch Later")
+        add_button.add_css_class("suggested-action")
+        add_button.set_sensitive(unsaved_count > 0)
+        footer.append(cancel_button)
+        footer.append(discard_button)
+        footer.append(add_button)
+
+        def finish_quit(save_queue: bool) -> None:
             self.queue_quit_dialog = None
             dialog.destroy()
-            if response_id not in (Gtk.ResponseType.ACCEPT, Gtk.ResponseType.REJECT):
-                return
-            if response_id == Gtk.ResponseType.ACCEPT:
+            if save_queue:
                 self.add_queue_to_watch_later()
             self.queue_quit_confirmed = True
             self.close()
 
-        dialog.connect("response", response)
+        def cancel_quit() -> None:
+            self.queue_quit_dialog = None
+            dialog.destroy()
+
+        cancel_button.connect("clicked", lambda _button: cancel_quit())
+        discard_button.connect("clicked", lambda _button: finish_quit(False))
+        add_button.connect("clicked", lambda _button: finish_quit(True))
+        dialog.connect("close-request", lambda _dialog: (cancel_quit(), True)[1])
         self.queue_quit_dialog = dialog
         dialog.present()
 

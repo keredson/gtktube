@@ -51,12 +51,9 @@ class ChromeMixin:
     def show_open_url_dialog(self) -> None:
         dialog = Gtk.Dialog(title="Open URL", transient_for=self, modal=True)
         dialog.set_default_size(560, -1)
-        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Open", Gtk.ResponseType.OK)
-        dialog.set_default_response(Gtk.ResponseType.OK)
 
         content = dialog.get_content_area()
-        content.set_spacing(8)
+        content.set_spacing(18)
         content.set_margin_top(12)
         content.set_margin_bottom(12)
         content.set_margin_start(12)
@@ -68,13 +65,24 @@ class ChromeMixin:
         entry.set_activates_default(True)
         content.append(entry)
 
-        def response(_dialog: Gtk.Dialog, response_id: int) -> None:
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        content.append(footer)
+        footer.append(Gtk.Box(hexpand=True))
+        cancel_button = Gtk.Button(label="Cancel")
+        open_button = Gtk.Button(label="Open")
+        open_button.add_css_class("suggested-action")
+        footer.append(cancel_button)
+        footer.append(open_button)
+
+        def open_entry() -> None:
             url = entry.get_text().strip()
             dialog.close()
-            if response_id == Gtk.ResponseType.OK and url:
+            if url:
                 self.open_url(url)
 
-        dialog.connect("response", response)
+        cancel_button.connect("clicked", lambda _button: dialog.close())
+        open_button.connect("clicked", lambda _button: open_entry())
+        entry.connect("activate", lambda _entry: open_entry())
         dialog.present()
         entry.grab_focus()
 

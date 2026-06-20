@@ -55,6 +55,7 @@ class StartupOptions:
         database_path: Path | None = None,
         install_desktop: bool = False,
         verbose: bool = False,
+        debug_modal: str | None = None,
     ):
         self.gtk_argv = gtk_argv
         self.show_upgrade = show_upgrade
@@ -62,6 +63,7 @@ class StartupOptions:
         self.database_path = database_path
         self.install_desktop = install_desktop
         self.verbose = verbose
+        self.debug_modal = debug_modal
 
 
 def parse_startup_options(argv: list[str]) -> StartupOptions:
@@ -71,6 +73,7 @@ def parse_startup_options(argv: list[str]) -> StartupOptions:
     database_path: Path | None = None
     install_desktop = False
     verbose = False
+    debug_modal: str | None = None
     index = 1
     while index < len(argv):
         arg = argv[index]
@@ -82,6 +85,13 @@ def parse_startup_options(argv: list[str]) -> StartupOptions:
             install_desktop = True
         elif arg in {"-v", "--verbose"}:
             verbose = True
+        elif arg == "--debug-modal":
+            index += 1
+            if index >= len(argv):
+                raise ValueError("--debug-modal requires a modal name")
+            debug_modal = argv[index]
+        elif arg.startswith("--debug-modal="):
+            debug_modal = arg.split("=", 1)[1]
         elif arg == "--db":
             index += 1
             if index >= len(argv):
@@ -99,6 +109,7 @@ def parse_startup_options(argv: list[str]) -> StartupOptions:
         database_path=database_path,
         install_desktop=install_desktop,
         verbose=verbose,
+        debug_modal=debug_modal,
     )
 
 
@@ -347,6 +358,7 @@ def main(argv: list[str] | None = None) -> int:
         force_update_dialog=options.show_upgrade,
         enable_update_check=installed_command or options.show_upgrade,
         verbose=options.verbose,
+        debug_modal=options.debug_modal,
     )
     previous_sigint = signal.getsignal(signal.SIGINT)
 

@@ -573,20 +573,32 @@ class PlayerMixin:
         )
         content.append(message)
 
-        dialog.add_button("Not now", Gtk.ResponseType.CANCEL)
-        dialog.add_button("Enable SponsorBlock", Gtk.ResponseType.ACCEPT)
-        dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+        responded = False
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        content.append(footer)
+        footer.append(Gtk.Box(hexpand=True))
+        not_now_button = Gtk.Button(label="Not now")
+        enable_button = Gtk.Button(label="Enable SponsorBlock")
+        enable_button.add_css_class("suggested-action")
+        footer.append(not_now_button)
+        footer.append(enable_button)
 
-        def response(_dialog: Gtk.Dialog, response_id: int) -> None:
+        def respond(enable: bool) -> None:
+            nonlocal responded
+            if responded:
+                return
+            responded = True
             repository.set_sponsorblock_prompt_shown()
-            if response_id == Gtk.ResponseType.ACCEPT:
+            if enable:
                 repository.set_sponsorblock_enabled(True)
                 self.reload_settings()
             dialog.destroy()
             if after_response is not None:
                 after_response()
 
-        dialog.connect("response", response)
+        not_now_button.connect("clicked", lambda _button: respond(False))
+        enable_button.connect("clicked", lambda _button: respond(True))
+        dialog.connect("close-request", lambda _dialog: (respond(False), True)[1])
         dialog.present()
         return True
 
