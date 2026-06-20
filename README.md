@@ -15,18 +15,28 @@ The feed has no algorithm. It just shows recent videos from the channels you sub
 - No tracking by GTKTube.
 - Search YouTube for videos and channels without signing in.
 - Personalized home feed with recommended videos (requires browser cookies).
-- Subscribe and unsubscribe locally; no Google account, OAuth, cookies, or account sync.
+- Subscribe and unsubscribe locally; no Google account or OAuth required.
+- Optionally import your YouTube subscriptions one time from browser cookies.
 - Play videos inside the GTK app with libmpv.
 - Choose playback quality and speed, including speeds up to 4x.
+- Choose streaming or prefetch playback per quality/speed option; prefetch downloads
+  the selected stream to a temporary app cache before playback to avoid throttling.
 - Use normal playback shortcuts for play/pause, seeking, fullscreen, and speed changes.
 - Keep watching while browsing with a mini-player.
 - Save videos to Watch Later.
+- Queue videos in Up Next and optionally save remaining queued videos to Watch Later
+  when quitting.
+- Download videos into GTKTube-managed local storage and play downloaded copies
+  automatically when available.
 - Track watch history locally, including watched time ranges rather than only a last position.
 - Search and review local watch history.
-- Optionally configure yt-dlp to extract browser cookies to play age-restricted and members-only videos.
+- Optionally configure yt-dlp to extract browser cookies for age-restricted,
+  members-only, recommendations, watch-history import, and subscription import features.
 - Optionally use SponsorBlock to show and skip community-maintained segment ranges.
+- Show video chapters, captions, SponsorBlock segments, and chapter ticks in the player.
 - Limit how many videos a single channel can put in each feed day.
-- Refresh subscriptions in parallel with per-channel progress in the sidebar.
+- Refresh subscriptions in parallel with per-channel progress in the sidebar, including
+  automatic startup refreshes for channels that are due.
 - Check PyPI for updates and upgrade/restart from inside the app.
 - Store thumbnails on disk and app data in SQLite.
 
@@ -80,6 +90,14 @@ Useful startup flags:
 
 Development runs with `python -m gtktube` do not auto-install a desktop launcher or check PyPI for upgrades.
 
+Developer-only modal preview flag:
+
+- `python -m gtktube --debug-modal=open-url`
+- `python -m gtktube --debug-modal=import-subscriptions`
+- `python -m gtktube --debug-modal=sponsorblock`
+- `python -m gtktube --debug-modal=up-next-quit`
+- `python -m gtktube --debug-modal=update`
+
 ## Updates
 
 When launched from an installed `gtktube` command, GTKTube checks PyPI for newer
@@ -92,8 +110,10 @@ installs use `python3 -m pip install --upgrade gtktube`.
 GTKTube keeps its state on your machine:
 
 - subscriptions and watch history in SQLite
-- thumbnail cache under the user cache directory
-- no Google account integration
+- thumbnails, mpv cache files, and temporary prefetch playback cache under the user cache directory
+- downloaded videos under the user data directory
+- optional one-time browser-cookie reads for importing YouTube subscriptions
+  and watch history
 - no cloud sync
 - no analytics or tracking by GTKTube
 
