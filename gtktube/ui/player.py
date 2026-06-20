@@ -1172,39 +1172,61 @@ class PlayerMixin:
             "GTKTUBE_YTDLP_FORMAT",
             QUALITY_FORMATS.get(playable.quality, QUALITY_FORMATS["720p"]),
         )
+        is_local_file = self.is_local_file_playable(playable)
+        mpv_options: dict[str, object] = {
+            "input_default_bindings": True,
+            "input_vo_keyboard": True,
+            "osc": True,
+            "vo": "libmpv",
+            "ytdl": False,
+            "ytdl_format": ytdl_format,
+            "log_handler": self.on_mpv_log,
+            "loglevel": "warn" if self.verbose else "error",
+        }
+        if is_local_file:
+            mpv_options.update(
+                {
+                    "cache": "no",
+                    "demuxer_seekable_cache": "no",
+                }
+            )
+        else:
+            mpv_options.update(
+                {
+                    "cache": "yes",
+                    "cache_on_disk": MPV_CACHE_ON_DISK,
+                    "cache_secs": MPV_CACHE_SECS,
+                    "demuxer_cache_dir": str(self.mpv_cache_dir),
+                    "demuxer_cache_unlink_files": MPV_DEMUXER_CACHE_UNLINK_FILES,
+                    "demuxer_readahead_secs": MPV_DEMUXER_READAHEAD_SECS,
+                    "demuxer_max_bytes": MPV_DEMUXER_MAX_BYTES,
+                    "demuxer_max_back_bytes": MPV_DEMUXER_MAX_BACK_BYTES,
+                    "demuxer_seekable_cache": "yes",
+                }
+            )
         player = None
         try:
-            player = mpv.MPV(
-                input_default_bindings=True,
-                input_vo_keyboard=True,
-                osc=True,
-                vo="libmpv",
-                ytdl=False,
-                cache="yes",
-                cache_on_disk=MPV_CACHE_ON_DISK,
-                cache_secs=MPV_CACHE_SECS,
-                demuxer_cache_dir=str(self.mpv_cache_dir),
-                demuxer_cache_unlink_files=MPV_DEMUXER_CACHE_UNLINK_FILES,
-                demuxer_readahead_secs=MPV_DEMUXER_READAHEAD_SECS,
-                demuxer_max_bytes=MPV_DEMUXER_MAX_BYTES,
-                demuxer_max_back_bytes=MPV_DEMUXER_MAX_BACK_BYTES,
-                demuxer_seekable_cache="yes",
-                ytdl_format=ytdl_format,
-                log_handler=self.on_mpv_log,
-                loglevel="warn" if self.verbose else "error",
-            )
+            player = mpv.MPV(**mpv_options)
             self.mpv_module = mpv
+            cache_log = (
+                "cache=no"
+                if is_local_file
+                else (
+                    f"cache_on_disk={MPV_CACHE_ON_DISK} "
+                    f"demuxer_cache_dir={self.mpv_cache_dir} "
+                    f"demuxer_cache_unlink_files={MPV_DEMUXER_CACHE_UNLINK_FILES} "
+                    f"cache_secs={MPV_CACHE_SECS} "
+                    f"demuxer_readahead_secs={MPV_DEMUXER_READAHEAD_SECS} "
+                    f"demuxer_max_bytes={MPV_DEMUXER_MAX_BYTES} "
+                    f"demuxer_max_back_bytes={MPV_DEMUXER_MAX_BACK_BYTES}"
+                )
+            )
             self.verbose_log(
                 "mpv player created "
                 f"version={getattr(player, 'mpv_version', 'unknown')} "
                 f"video={playable.video.id} ytdl_format={ytdl_format!r} "
-                f"cache_on_disk={MPV_CACHE_ON_DISK} "
-                f"demuxer_cache_dir={self.mpv_cache_dir} "
-                f"demuxer_cache_unlink_files={MPV_DEMUXER_CACHE_UNLINK_FILES} "
-                f"cache_secs={MPV_CACHE_SECS} "
-                f"demuxer_readahead_secs={MPV_DEMUXER_READAHEAD_SECS} "
-                f"demuxer_max_bytes={MPV_DEMUXER_MAX_BYTES} "
-                f"demuxer_max_back_bytes={MPV_DEMUXER_MAX_BACK_BYTES} "
+                f"local_file={is_local_file} "
+                f"{cache_log} "
                 f"rss={self.process_rss_label()}"
             )
             player.register_event_callback(self.on_mpv_event)
@@ -1243,6 +1265,9 @@ class PlayerMixin:
         message = text.strip()
         if not message:
             return
+        GLib.idle_add(self.handle_mpv_log, level, prefix, message)
+
+    def handle_mpv_log(self, level: str, prefix: str, message: str) -> bool:
         log_message = f"mpv[{level}][{prefix}] {message}"
         if level in {"error", "fatal"}:
             self.log(log_message)
@@ -1263,11 +1288,24 @@ class PlayerMixin:
                 )
         else:
             self.verbose_log(log_message)
+        return False
 
     def on_mpv_event(self, event: Any) -> None:
         if self.mpv_module is None:
             return
         event_id = event.event_id
+        reason = getattr(event, "reason", "unknown")
+        error = getattr(event, "error", None)
+        GLib.idle_add(self.handle_mpv_event, event_id, reason, error)
+
+    def handle_mpv_event(
+        self,
+        event_id: object,
+        reason: object,
+        error: object,
+    ) -> bool:
+        if self.mpv_module is None:
+            return False
         if event_id == self.mpv_module.MpvEventID.START_FILE:
             self.verbose_log("mpv event start-file")
         elif event_id == self.mpv_module.MpvEventID.FILE_LOADED:
@@ -1276,8 +1314,6 @@ class PlayerMixin:
             if self.pending_seek_seconds is not None:
                 self.start_pending_seek_timer(delay_ms=100)
         elif event_id == self.mpv_module.MpvEventID.END_FILE:
-            reason = getattr(event, "reason", "unknown")
-            error = getattr(event, "error", None)
             message = (
                 "mpv event end-file "
                 f"reason={reason} "
@@ -1293,6 +1329,7 @@ class PlayerMixin:
             else:
                 self.verbose_log(message)
             GLib.idle_add(self.handle_mpv_end_file, "event")
+        return False
 
     def register_mpv_property_observers(self, player: Any) -> None:
         self.mpv_property_observers = []
@@ -1312,7 +1349,12 @@ class PlayerMixin:
                 value: object,
                 observed_player: Any = player,
             ) -> None:
-                self.on_mpv_property_changed(observed_player, property_name, value)
+                GLib.idle_add(
+                    self.on_mpv_property_changed,
+                    observed_player,
+                    property_name,
+                    value,
+                )
 
             try:
                 player.observe_property(name, observer)
