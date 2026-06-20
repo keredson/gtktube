@@ -484,6 +484,43 @@ class YoutubeExtractor:
         except Exception as exc:
             raise ExtractorError(str(exc)) from exc
 
+    def subscription_channels(
+        self,
+        cookies_browser: str,
+        limit: int = 500,
+    ) -> list[Channel]:
+        if not cookies_browser:
+            raise ExtractorError("YouTube channel import requires browser cookies")
+        options = {
+            **self._base_options(),
+            "extract_flat": "in_playlist",
+            "cookiesfrombrowser": (cookies_browser,),
+            "playlistend": limit,
+        }
+        try:
+            with self._youtube_dl()(options) as ydl:
+                info = ydl.extract_info(
+                    "https://www.youtube.com/feed/channels",
+                    download=False,
+                )
+        except Exception as exc:
+            raise ExtractorError(str(exc)) from exc
+
+        channels: list[Channel] = []
+        seen: set[str] = set()
+        for entry in self._entries(info):
+            if not entry:
+                continue
+            try:
+                channel = self._channel_from_info(entry)
+            except ExtractorError:
+                continue
+            if channel.id in seen:
+                continue
+            seen.add(channel.id)
+            channels.append(channel)
+        return channels
+
     def watch_history(self, cookies_browser: str, limit: int = 100) -> list[Video]:
         if not cookies_browser:
             raise ExtractorError("YouTube watch history import requires browser cookies")

@@ -88,6 +88,20 @@ class LibraryService:
         )
         return self.repository.channel(channel.id) or channel
 
+    def youtube_subscription_channels(
+        self,
+        browser: str,
+        limit: int = 500,
+    ) -> list[Channel]:
+        if not browser:
+            raise ExtractorError("YouTube channel import requires browser cookies")
+        return self.extractor.subscription_channels(browser, limit=limit)
+
+    def import_subscription_channels(self, channels: list[Channel]) -> int:
+        for channel in channels:
+            self.repository.upsert_channel(channel, subscribed=True)
+        return len(channels)
+
     def subscribe_to_video_channel(self, video: Video) -> Channel:
         if video.channel_id and video.channel_title:
             channel = Channel(

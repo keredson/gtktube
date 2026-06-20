@@ -1220,6 +1220,14 @@ class MainWindow(
         )
         self.channel_empty_help.add_css_class("dim-label")
         self.channel_empty_box.append(self.channel_empty_help)
+        self.channel_import_button = Gtk.Button(label="Import channels")
+        self.channel_import_button.add_css_class("suggested-action")
+        self.channel_import_button.set_halign(Gtk.Align.CENTER)
+        self.channel_import_button.connect(
+            "clicked",
+            self.on_import_subscription_channels_clicked,
+        )
+        self.channel_empty_box.append(self.channel_import_button)
         channel_results.append(self.channel_empty_box)
 
         scroller = Gtk.ScrolledWindow(vexpand=True)
@@ -2854,11 +2862,13 @@ class MainWindow(
                     self.channel_empty_help.set_label(
                         "No subscribed channels matched this search."
                     )
+                    self.channel_import_button.set_visible(False)
                 else:
                     self.channel_empty_title.set_label("No subscribed channels")
                     self.channel_empty_help.set_label(
                         "Open a channel URL or subscribe from a video to add channels."
                     )
+                    self.channel_import_button.set_visible(not channels)
             return False
 
         GLib.idle_add(append_batch)

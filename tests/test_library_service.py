@@ -20,6 +20,20 @@ class FakeExtractor:
         self.browser = cookies_browser
         return self.videos[:limit]
 
+    def subscription_channels(
+        self,
+        cookies_browser: str,
+        limit: int = 500,
+    ) -> list[Channel]:
+        self.browser = cookies_browser
+        return [
+            Channel(
+                id="chan1",
+                title="Channel One",
+                url="https://www.youtube.com/channel/chan1",
+            )
+        ][:limit]
+
 
 class RefreshExtractor:
     def resolve_channel(self, url: str) -> Channel:
@@ -128,6 +142,32 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertTrue(video.completed)
         self.assertEqual(video.watch_ranges, [(0, 120)])
         self.assertIsNotNone(self.repository.youtube_watch_history_last_import_at())
+
+    def test_youtube_subscription_channels_uses_browser_cookies(self) -> None:
+        extractor = FakeExtractor([])
+        service = LibraryService(self.repository, extractor)  # type: ignore[arg-type]
+
+        channels = service.youtube_subscription_channels("firefox")
+
+        self.assertEqual(extractor.browser, "firefox")
+        self.assertEqual([channel.id for channel in channels], ["chan1"])
+
+    def test_import_subscription_channels_stores_selected_channels(self) -> None:
+        service = LibraryService(self.repository, FakeExtractor([]))  # type: ignore[arg-type]
+
+        count = service.import_subscription_channels(
+            [
+                Channel(
+                    id="chan1",
+                    title="Channel One",
+                    url="https://www.youtube.com/channel/chan1",
+                )
+            ]
+        )
+
+        self.assertEqual(count, 1)
+        channels = self.repository.subscribed_channels()
+        self.assertEqual([channel.id for channel in channels], ["chan1"])
 
     def test_refresh_channel_stores_videos_shorts_and_playlists(self) -> None:
         channel = Channel(

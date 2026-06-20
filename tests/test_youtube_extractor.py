@@ -84,6 +84,48 @@ class JavascriptRuntimeTest(unittest.TestCase):
 
 
 class ChannelPaginationTest(unittest.TestCase):
+    def test_subscription_channels_use_browser_cookies(self) -> None:
+        class FakeYoutubeDL:
+            calls: list[tuple[dict[str, object], str]] = []
+
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(
+                self,
+                target: str,
+                download: bool = False,
+            ) -> dict[str, object]:
+                self.calls.append((self.options, target))
+                return {
+                    "entries": [
+                        {
+                            "id": "chan1",
+                            "title": "Channel One",
+                            "url": "https://www.youtube.com/channel/chan1",
+                            "webpage_url": "https://www.youtube.com/channel/chan1",
+                        }
+                    ]
+                }
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        channels = extractor.subscription_channels("firefox", limit=25)
+
+        options, target = FakeYoutubeDL.calls[0]
+        self.assertEqual(target, "https://www.youtube.com/feed/channels")
+        self.assertEqual(options["cookiesfrombrowser"], ("firefox",))
+        self.assertEqual(options["playlistend"], 25)
+        self.assertEqual(channels[0].id, "chan1")
+        self.assertEqual(channels[0].title, "Channel One")
+
     def test_channel_uploads_uses_flat_playlist_slice(self) -> None:
         class FakeYoutubeDL:
             calls: list[tuple[dict[str, object], str]] = []

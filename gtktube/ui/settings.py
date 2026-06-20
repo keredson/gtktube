@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import re
+
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk  # noqa: E402
+from gi.repository import Gtk, Pango  # noqa: E402
 
 from gtktube.db.repositories import SPONSORBLOCK_CATEGORIES, SPONSORBLOCK_CATEGORY_LABELS
+from gtktube.extractors.youtube import ExtractorError
+from gtktube.models import Channel
 from gtktube.ui.player import USER_SELECTABLE_QUALITIES
 
 
@@ -268,6 +272,40 @@ class SettingsMixin:
         )
         self.youtube_history_row.append(self.youtube_history_import_switch)
 
+        self.import_channels_row = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=12
+        )
+        self.import_channels_row.set_valign(Gtk.Align.CENTER)
+        page.append(self.import_channels_row)
+
+        import_channels_labels = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True
+        )
+        self.import_channels_row.append(import_channels_labels)
+        import_channels_label = Gtk.Label(
+            label="Import YouTube subscriptions",
+            xalign=0,
+        )
+        import_channels_labels.append(import_channels_label)
+        import_channels_help = Gtk.Label(
+            label=(
+                "One-time import. Requires browser cookies, then adds your "
+                "YouTube subscriptions as GTKTube channels."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        import_channels_help.add_css_class("dim-label")
+        import_channels_labels.append(import_channels_help)
+
+        self.import_channels_button = Gtk.Button(label="Import channels")
+        self.import_channels_button.set_valign(Gtk.Align.CENTER)
+        self.import_channels_button.connect(
+            "clicked",
+            self.on_import_subscription_channels_clicked,
+        )
+        self.import_channels_row.append(self.import_channels_button)
+
         self.browser_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.browser_row.set_valign(Gtk.Align.CENTER)
         page.append(self.browser_row)
@@ -525,6 +563,382 @@ class SettingsMixin:
         if state and hasattr(self, "maybe_import_youtube_watch_history"):
             getattr(self, "maybe_import_youtube_watch_history")(force=True)
         return False
+
+    def on_import_subscription_channels_clicked(self, _button: Gtk.Button) -> None:
+        self.show_import_subscription_channels_dialog()
+
+    def show_import_subscription_channels_dialog(self) -> None:
+        dialog = Gtk.Dialog(
+            title="Import YouTube subscriptions",
+            transient_for=self,
+            modal=True,
+        )
+        back_button = Gtk.Button(label="Back")
+        back_button.set_visible(False)
+        preview_button = Gtk.Button(label="Preview")
+        preview_button.add_css_class("suggested-action")
+        preview_button.set_sensitive(False)
+        import_button = Gtk.Button(label="Import selected")
+        import_button.add_css_class("suggested-action")
+        import_button.set_visible(False)
+        import_button.set_sensitive(False)
+        cancel_button = Gtk.Button(label="Cancel")
+        dialog.set_default_size(540, -1)
+
+        content = dialog.get_content_area()
+        content.set_margin_top(24)
+        content.set_margin_bottom(18)
+        content.set_margin_start(24)
+        content.set_margin_end(24)
+        content.set_spacing(18)
+
+        stack = Gtk.Stack()
+        stack.set_hhomogeneous(False)
+        stack.set_vhomogeneous(False)
+        content.append(stack)
+
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        footer.set_valign(Gtk.Align.CENTER)
+        content.append(footer)
+
+        footer.append(back_button)
+        footer_spacer = Gtk.Box(hexpand=True)
+        footer.append(footer_spacer)
+        footer.append(cancel_button)
+        footer.append(preview_button)
+        footer.append(import_button)
+
+        intro_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        intro_page.set_halign(Gtk.Align.CENTER)
+        intro_page.set_valign(Gtk.Align.START)
+        intro_page.set_size_request(500, -1)
+        stack.add_named(intro_page, "intro")
+
+        intro_title = Gtk.Label(label="Import channels from YouTube", xalign=0)
+        intro_title.add_css_class("title-4")
+        intro_title.set_max_width_chars(54)
+        intro_page.append(intro_title)
+
+        intro_text = Gtk.Label(
+            label=(
+                "GTKTube can use browser cookies one time to read the "
+                "subscriptions from your signed-in YouTube account. After the "
+                "preview loads, choose which new channels to add. Existing "
+                "GTKTube subscriptions are skipped."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        intro_text.set_max_width_chars(64)
+        intro_page.append(intro_text)
+
+        browser_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        browser_row.set_valign(Gtk.Align.CENTER)
+        intro_page.append(browser_row)
+
+        browser_label = Gtk.Label(label="Browser cookies", xalign=0, hexpand=True)
+        browser_row.append(browser_label)
+
+        browser_combo = Gtk.ComboBoxText()
+        browser_combo.set_valign(Gtk.Align.CENTER)
+        browser_combo.append("", "Choose browser")
+        try:
+            for browser in self.service.supported_browsers():
+                browser_combo.append(browser, browser.capitalize())
+        except ExtractorError as exc:
+            self.log(str(exc))
+        browser_combo.set_active_id(self.service.repository.yt_dlp_cookies_browser())
+        browser_row.append(browser_combo)
+
+        intro_help = Gtk.Label(
+            label=(
+                "The browser choice is only used for this import and does not "
+                "change the saved cookie preference."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        intro_help.set_max_width_chars(64)
+        intro_help.add_css_class("dim-label")
+        intro_page.append(intro_help)
+
+        intro_loading_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        intro_loading_row.set_valign(Gtk.Align.CENTER)
+        intro_loading_spinner = Gtk.Spinner()
+        intro_loading_row.append(intro_loading_spinner)
+        intro_loading_label = Gtk.Label(
+            label="Loading YouTube subscriptions...",
+            xalign=0,
+        )
+        intro_loading_label.add_css_class("dim-label")
+        intro_loading_row.append(intro_loading_label)
+        intro_loading_row.set_visible(False)
+        intro_page.append(intro_loading_row)
+
+        intro_error = Gtk.Label(label="", xalign=0, wrap=True)
+        intro_error.set_max_width_chars(64)
+        intro_error.add_css_class("error")
+        intro_error.set_visible(False)
+        intro_page.append(intro_error)
+
+        preview_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        stack.add_named(preview_page, "preview")
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        preview_page.append(actions)
+        select_all_button = Gtk.Button(label="Select all")
+        select_none_button = Gtk.Button(label="Select none")
+        select_all_button.set_sensitive(False)
+        select_none_button.set_sensitive(False)
+        actions.append(select_all_button)
+        actions.append(select_none_button)
+
+        status_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        status_row.set_valign(Gtk.Align.CENTER)
+        preview_page.append(status_row)
+        spinner = Gtk.Spinner()
+        status_row.append(spinner)
+        status_label = Gtk.Label(
+            label="",
+            xalign=0,
+            hexpand=True,
+        )
+        status_label.add_css_class("dim-label")
+        status_row.append(status_label)
+
+        listbox = Gtk.ListBox()
+        listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_propagate_natural_height(True)
+        scroller.set_max_content_height(420)
+        scroller.set_child(listbox)
+        preview_page.append(scroller)
+
+        preview_channels: list[Channel] = []
+        channel_checks: dict[str, Gtk.CheckButton] = {}
+
+        def update_import_button() -> None:
+            import_button.set_sensitive(
+                any(check.get_active() for check in channel_checks.values())
+            )
+
+        def clear_preview() -> None:
+            preview_channels.clear()
+            channel_checks.clear()
+            self.clear_listbox(listbox)
+            import_button.set_sensitive(False)
+            select_all_button.set_sensitive(False)
+            select_none_button.set_sensitive(False)
+
+        def append_channel_row(channel: Channel) -> None:
+            row = Gtk.ListBoxRow()
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            box.set_margin_top(8)
+            box.set_margin_bottom(8)
+            box.set_margin_start(8)
+            box.set_margin_end(8)
+
+            check = Gtk.CheckButton()
+            check.set_active(True)
+            check.connect("toggled", lambda _check: update_import_button())
+            channel_checks[channel.id] = check
+            box.append(check)
+
+            if channel.thumbnail_url:
+                icon = Gtk.Picture()
+                icon.add_css_class("channel-avatar")
+                icon.set_size_request(32, 32)
+                icon.set_can_shrink(False)
+                icon.set_content_fit(Gtk.ContentFit.COVER)
+                self.load_channel_nav_icon(channel, icon)
+                box.append(icon)
+            else:
+                placeholder = Gtk.Image.new_from_icon_name("avatar-default-symbolic")
+                placeholder.add_css_class("channel-avatar")
+                placeholder.set_pixel_size(32)
+                placeholder.set_size_request(32, 32)
+                box.append(placeholder)
+
+            labels = Gtk.Box(
+                orientation=Gtk.Orientation.VERTICAL,
+                spacing=3,
+                hexpand=True,
+            )
+            title = Gtk.Label(label=channel.title, xalign=0, hexpand=True)
+            title.set_ellipsize(Pango.EllipsizeMode.END)
+            labels.append(title)
+            url = Gtk.Label(label=channel.url, xalign=0)
+            url.add_css_class("dim-label")
+            url.set_ellipsize(Pango.EllipsizeMode.END)
+            labels.append(url)
+            box.append(labels)
+            row.set_child(box)
+            listbox.append(row)
+
+        def set_preview_controls_sensitive(sensitive: bool) -> None:
+            browser_combo.set_sensitive(sensitive)
+            preview_button.set_sensitive(
+                sensitive and bool(browser_combo.get_active_id())
+            )
+            cancel_button.set_sensitive(sensitive)
+            select_all_button.set_sensitive(sensitive and bool(channel_checks))
+            select_none_button.set_sensitive(sensitive and bool(channel_checks))
+            if sensitive:
+                update_import_button()
+            else:
+                import_button.set_sensitive(False)
+
+        def set_intro_loading(loading: bool) -> None:
+            browser_combo.set_sensitive(not loading)
+            preview_button.set_sensitive(
+                (not loading) and bool(browser_combo.get_active_id())
+            )
+            cancel_button.set_sensitive(not loading)
+            intro_loading_row.set_visible(loading)
+            if loading:
+                intro_error.set_visible(False)
+                intro_loading_spinner.start()
+            else:
+                intro_loading_spinner.stop()
+
+        def show_intro_step() -> None:
+            stack.set_visible_child_name("intro")
+            back_button.set_visible(False)
+            preview_button.set_visible(True)
+            import_button.set_visible(False)
+            cancel_button.set_sensitive(True)
+            browser_combo.set_sensitive(True)
+            preview_button.set_sensitive(bool(browser_combo.get_active_id()))
+            dialog.set_default_size(540, -1)
+
+        def show_preview_step() -> None:
+            intro_error.set_visible(False)
+            stack.set_visible_child_name("preview")
+            back_button.set_visible(True)
+            preview_button.set_visible(False)
+            import_button.set_visible(True)
+            dialog.set_default_size(680, -1)
+
+        def import_error_message(exc: Exception) -> str:
+            message = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(exc)).strip()
+            if message.startswith("ERROR:"):
+                message = message.removeprefix("ERROR:").strip()
+            lower = message.lower()
+            if "could not find" in lower and "cookies database" in lower:
+                browser = browser_combo.get_active_text() or "selected browser"
+                return (
+                    f"Could not find a cookies database for {browser}. Choose a "
+                    "browser where you are signed in to YouTube, then try again."
+                )
+            return f"Could not load subscriptions: {message}"
+
+        def load_preview() -> None:
+            browser = browser_combo.get_active_id()
+            if not browser:
+                return
+            clear_preview()
+            set_intro_loading(True)
+            status_label.set_label("Loading YouTube subscriptions...")
+
+            def done(channels: list[Channel]) -> None:
+                new_channels = [
+                    channel
+                    for channel in channels
+                    if not self.service.repository.is_subscribed(channel.id)
+                ]
+                preview_channels.extend(new_channels)
+                for channel in new_channels:
+                    append_channel_row(channel)
+                if new_channels:
+                    status_label.set_label(
+                        f"Found {len(new_channels)} new YouTube subscriptions."
+                    )
+                else:
+                    status_label.set_label("Found 0 new YouTube subscriptions.")
+                show_preview_step()
+                set_preview_controls_sensitive(True)
+
+            def failed(exc: Exception) -> None:
+                clear_preview()
+                intro_error.set_label(import_error_message(exc))
+                intro_error.set_visible(True)
+                show_intro_step()
+
+            def finished() -> None:
+                set_intro_loading(False)
+
+            self.run_task(
+                "Loading YouTube subscriptions...",
+                lambda: self.service.youtube_subscription_channels(
+                    browser,
+                    limit=1000,
+                ),
+                done,
+                finished=finished,
+                error=failed,
+            )
+
+        def set_all(active: bool) -> None:
+            for check in channel_checks.values():
+                check.set_active(active)
+            update_import_button()
+
+        def import_selected_channels() -> None:
+            selected = [
+                channel
+                for channel in preview_channels
+                if channel_checks.get(channel.id)
+                and channel_checks[channel.id].get_active()
+            ]
+            if not selected:
+                status_label.set_label("Select at least one channel to import.")
+                return
+            set_preview_controls_sensitive(False)
+            spinner.start()
+            status_label.set_label("Importing selected channels...")
+            imported_count: int | None = None
+
+            def done(count: int) -> None:
+                nonlocal imported_count
+                imported_count = count
+                self.reload_channels()
+                self.feed_limit = 100
+                if self.current_view and self.current_view.page == "feed":
+                    self.reload_feed()
+
+            def finished() -> None:
+                if imported_count is not None:
+                    self.set_status(
+                        f"Imported {imported_count} YouTube subscriptions"
+                    )
+                    dialog.destroy()
+                    return
+                spinner.stop()
+                set_preview_controls_sensitive(True)
+
+            self.run_task(
+                "Importing YouTube subscriptions...",
+                lambda: self.service.import_subscription_channels(selected),
+                done,
+                finished=finished,
+            )
+
+        back_button.connect(
+            "clicked",
+            lambda _button: (clear_preview(), show_intro_step()),
+        )
+        browser_combo.connect(
+            "changed",
+            lambda combo: preview_button.set_sensitive(bool(combo.get_active_id())),
+        )
+        preview_button.connect("clicked", lambda _button: load_preview())
+        import_button.connect("clicked", lambda _button: import_selected_channels())
+        cancel_button.connect("clicked", lambda _button: dialog.destroy())
+        select_all_button.connect("clicked", lambda _button: set_all(True))
+        select_none_button.connect("clicked", lambda _button: set_all(False))
+        show_intro_step()
+        dialog.present()
 
     def on_sponsorblock_setting_changed(self, _widget: Gtk.Widget) -> None:
         if self.updating_settings:
