@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import re
 import shutil
+import shlex
 import subprocess
 import sys
 from importlib import resources
+
+PACKAGE_NAME_RE = re.compile(
+    r"^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9+.-]*)?$"
+)
+APT_UPDATE_ARGS = ["apt-get", "update"]
 
 try:
     import gi
@@ -19,11 +26,22 @@ def apt_packages() -> list[str]:
     text = resources.files("gtktube").joinpath("assets/apt-packages.txt").read_text(
         encoding="utf-8"
     )
-    return [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip() and not line.strip().startswith("#")
+    return validate_package_names(
+        [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+    )
+
+
+def validate_package_names(packages: list[str]) -> list[str]:
+    invalid = [
+        package for package in packages if not PACKAGE_NAME_RE.fullmatch(package)
     ]
+    if invalid:
+        raise ValueError(f"Invalid apt package name: {invalid[0]}")
+    return packages
 
 
 PACKAGES = apt_packages()
@@ -108,7 +126,6 @@ if Gtk is not None:
             if not self.missing:
                 return
 
-            command = apt_command(self.missing)
             launcher = privileged_launcher()
             if launcher is None:
                 self.message.set_text(
@@ -116,7 +133,7 @@ if Gtk is not None:
                 )
                 return
 
-            result = subprocess.run(privileged_args(launcher, command), check=False)
+            result = run_privileged_apt(launcher, self.missing)
             if result.returncode == 0:
                 self.missing = missing_packages()
                 self.refresh()
@@ -127,8 +144,12 @@ if Gtk is not None:
 
 
 def apt_command(packages: list[str]) -> str:
-    quoted = " ".join(packages)
-    return f"apt-get update && apt-get install -y {quoted}"
+    install_args = apt_install_args(packages)
+    return f"{shlex.join(APT_UPDATE_ARGS)} && {shlex.join(install_args)}"
+
+
+def apt_install_args(packages: list[str]) -> list[str]:
+    return ["apt-get", "install", "-y", *validate_package_names(packages)]
 
 
 def privileged_launcher() -> str | None:
@@ -139,10 +160,19 @@ def privileged_launcher() -> str | None:
     return None
 
 
-def privileged_args(launcher: str, command: str) -> list[str]:
+def privileged_args(launcher: str, args: list[str]) -> list[str]:
     if launcher == "gksu":
-        return ["gksu", command]
-    return ["pkexec", "sh", "-c", command]
+        return ["gksu", shlex.join(args)]
+    return ["pkexec", *args]
+
+
+def run_privileged_apt(launcher: str, packages: list[str]) -> subprocess.CompletedProcess:
+    result = subprocess.run(privileged_args(launcher, APT_UPDATE_ARGS), check=False)
+    if result.returncode != 0:
+        return result
+    return subprocess.run(
+        privileged_args(launcher, apt_install_args(packages)), check=False
+    )
 
 
 def fallback_gui_install(missing: list[str]) -> int:
@@ -176,9 +206,12 @@ def fallback_gui_install(missing: list[str]) -> int:
 
     launcher = privileged_launcher()
     if launcher is None:
-        print("Could not find pkexec or gksu. Run the command above manually.", file=sys.stderr)
+        print(
+            "Could not find pkexec or gksu. Run the command above manually.",
+            file=sys.stderr,
+        )
         return 1
-    return subprocess.run(privileged_args(launcher, command), check=False).returncode
+    return run_privileged_apt(launcher, missing).returncode
 
 
 if Gtk is not None:
