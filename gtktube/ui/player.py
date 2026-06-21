@@ -36,6 +36,8 @@ MPV_DEMUXER_READAHEAD_SECS = 60
 MPV_DEMUXER_MAX_BYTES = "512MiB"
 MPV_DEMUXER_MAX_BACK_BYTES = "64MiB"
 MPV_DEMUXER_CACHE_UNLINK_FILES = "immediate"
+PLAYBACK_DIAG_INTERVAL_SECONDS = 30
+PLAYBACK_DIAG_THRESHOLD_MIB = 1024
 
 
 class PlayerMixin:
@@ -338,6 +340,7 @@ class PlayerMixin:
     def start_playback(
         self, playable: PlayableVideo, resume_position: int | None = None
     ) -> None:
+        self.start_playback_diag_timer()
         self.verbose_log(
             "playback starting "
             f"video={playable.video.id} quality={playable.quality} "
@@ -1563,6 +1566,7 @@ class PlayerMixin:
         restore_stack: bool = True,
         keep_player_visible: bool = False,
     ) -> None:
+        self.stop_playback_diag_timer()
         self.uninhibit_playback("stop-pipeline")
         if self.video_fullscreen:
             self.close_video_fullscreen()
@@ -1630,6 +1634,29 @@ class PlayerMixin:
                 trim(0)
         except Exception:
             pass
+
+    def start_playback_diag_timer(self) -> None:
+        if getattr(self, "playback_diag_timer", None):
+            return
+        self.playback_diag_timer = GLib.timeout_add_seconds(
+            PLAYBACK_DIAG_INTERVAL_SECONDS,
+            self.on_playback_diag_timer_tick,
+        )
+
+    def stop_playback_diag_timer(self) -> None:
+        if getattr(self, "playback_diag_timer", None):
+            GLib.source_remove(self.playback_diag_timer)
+            self.playback_diag_timer = None
+
+    def on_playback_diag_timer_tick(self) -> bool:
+        rss = self.process_rss_bytes()
+        if rss is not None:
+            rss_mib = rss / (1024 * 1024)
+            self.verbose_log(f"playback diagnostics RSS={rss_mib:.1f}MiB")
+            if rss_mib > PLAYBACK_DIAG_THRESHOLD_MIB:
+                self.log(f"HIGH RSS during playback: {rss_mib:.1f}MiB")
+        self.release_unused_native_memory()
+        return True
 
     def on_close_player_clicked(self, _button: Gtk.Button) -> None:
         self.close_current_video()

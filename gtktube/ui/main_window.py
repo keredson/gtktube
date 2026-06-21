@@ -139,6 +139,7 @@ class MainWindow(
         self.dragging_index = -1
         self.current_playable: PlayableVideo | None = None
         self.playback_request_id = 0
+        self.playback_diag_timer: int | None = None
         self.sponsorblock = SponsorBlockClient()
         self.sponsorblock_segments: list[SponsorBlockSegment] = []
         self.suppressed_sponsorblock_segments: set[str] = set()
