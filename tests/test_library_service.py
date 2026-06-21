@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from gtktube.db.connection import connect
 from gtktube.db.migrations import migrate
 from gtktube.db.repositories import LibraryRepository
 from gtktube.models import Channel, Video
@@ -108,14 +109,16 @@ class DownloadExtractor:
 
 class LibraryServiceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.connection = sqlite3.connect(":memory:", check_same_thread=False)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
+        self._temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.database_path = Path(self._temp_db.name)
+        self._temp_db.close()
+        self.connection = connect(self.database_path)
         migrate(self.connection)
-        self.repository = LibraryRepository(self.connection)
+        self.repository = LibraryRepository(self.database_path)
 
     def tearDown(self) -> None:
         self.connection.close()
+        self.database_path.unlink(missing_ok=True)
 
     def test_import_youtube_watch_history_marks_videos_watched(self) -> None:
         extractor = FakeExtractor(

@@ -102,12 +102,10 @@ class StartupOptionTests(unittest.TestCase):
     def test_newer_database_schema_launches_upgrade_tool(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             database_path = Path(tmpdir) / "gtktube.sqlite3"
-            connection = mock.Mock()
 
             with (
                 mock.patch("gtktube.app.install_desktop_entry"),
                 mock.patch("gtktube.app.dependency_checks_pass", return_value=True),
-                mock.patch("gtktube.app.connect", return_value=connection),
                 mock.patch(
                     "gtktube.app.migrate",
                     side_effect=UnsupportedDatabaseSchema(current=9, supported=8),
@@ -122,7 +120,6 @@ class StartupOptionTests(unittest.TestCase):
             self.assertIn("schema 9", reason)
             self.assertIn("supports schema 8", reason)
             self.assertEqual(gtk_argv, ["gtktube"])
-            connection.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

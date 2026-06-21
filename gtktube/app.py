@@ -336,17 +336,16 @@ def main(argv: list[str] | None = None) -> int:
     paths.database_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"gtktube: database={paths.database_path}", file=sys.stderr)
 
-    connection = connect(paths.database_path)
-    try:
-        migrate(connection)
-    except UnsupportedDatabaseSchema as exc:
-        connection.close()
-        reason = (
-            f"The database uses schema {exc.current}, but this GTKTube install "
-            f"only supports schema {exc.supported}. Upgrade GTKTube to open it."
-        )
-        return run_upgrade_tool(reason, options.gtk_argv)
-    repository = LibraryRepository(connection)
+    with connect(paths.database_path) as connection:
+        try:
+            migrate(connection)
+        except UnsupportedDatabaseSchema as exc:
+            reason = (
+                f"The database uses schema {exc.current}, but this GTKTube install "
+                f"only supports schema {exc.supported}. Upgrade GTKTube to open it."
+            )
+            return run_upgrade_tool(reason, options.gtk_argv)
+    repository = LibraryRepository(paths.database_path)
     extractor = YoutubeExtractor()
     service = LibraryService(repository, extractor)
 

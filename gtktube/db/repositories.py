@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
-import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Iterable
 
+from gtktube.db.connection import connect
 from gtktube.extractors.youtube import QUALITY_FORMATS
 from gtktube.models import Channel, SponsorBlockSegment, Video, VideoChapter
 
@@ -43,14 +45,21 @@ def utcnow() -> str:
 
 
 class LibraryRepository:
-    def __init__(self, connection: sqlite3.Connection):
-        self.connection = connection
-        self._lock = threading.RLock()
+    def __init__(self, database_path: Path):
+        self._database_path = database_path
+
+    @contextlib.contextmanager
+    def _conn(self):
+        try:
+            with connect(self._database_path) as inner_conn:
+                yield inner_conn
+        finally:
+            inner_conn.close()
 
     def upsert_channel(self, channel: Channel, subscribed: bool = True) -> None:
         now = utcnow()
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 INSERT INTO channels (
                     id, title, url, handle, thumbnail_url, is_subscribed,
@@ -98,8 +107,8 @@ class LibraryRepository:
 
     def unsubscribe_channel(self, channel_id: str) -> None:
         now = utcnow()
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 UPDATE channels
                 SET is_subscribed = 0, unsubscribed_at = ?, updated_at = ?
@@ -109,8 +118,8 @@ class LibraryRepository:
             )
 
     def subscribed_channels(self) -> list[Channel]:
-        with self._lock:
-            rows = self.connection.execute(
+        with self._conn() as conn:
+            rows = conn.execute(
                 """
                 SELECT id, title, url, handle, thumbnail_url, is_subscribed
                 FROM channels
@@ -121,8 +130,8 @@ class LibraryRepository:
         return [self._channel_from_row(row) for row in rows]
 
     def channel(self, channel_id: str) -> Channel | None:
-        with self._lock:
-            row = self.connection.execute(
+        with self._conn() as conn:
+            row = conn.execute(
                 """
                 SELECT id, title, url, handle, thumbnail_url, is_subscribed
                 FROM channels
@@ -135,16 +144,16 @@ class LibraryRepository:
     def is_subscribed(self, channel_id: str | None) -> bool:
         if not channel_id:
             return False
-        with self._lock:
-            row = self.connection.execute(
+        with self._conn() as conn:
+            row = conn.execute(
                 "SELECT is_subscribed FROM channels WHERE id = ?", (channel_id,)
             ).fetchone()
         return bool(row and row["is_subscribed"])
 
     def mark_channel_refresh(self, channel_id: str, success: bool) -> None:
         now = utcnow()
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 UPDATE channels
                 SET last_checked_at = ?,
@@ -156,8 +165,8 @@ class LibraryRepository:
             )
 
     def channel_needs_refresh(self, channel_id: str, max_age_hours: int = 1) -> bool:
-        with self._lock:
-            row = self.connection.execute(
+        with self._conn() as conn:
+            row = conn.execute(
                 """
                 SELECT last_successful_check_at
                 FROM channels
@@ -179,8 +188,8 @@ class LibraryRepository:
 
     def upsert_video(self, video: Video) -> None:
         now = utcnow()
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 INSERT INTO videos (
                     id, channel_id, title, url, kind, thumbnail_url, duration_seconds,
@@ -221,9 +230,9 @@ class LibraryRepository:
 
     def upsert_videos(self, videos: Iterable[Video]) -> None:
         now = utcnow()
-        with self._lock, self.connection:
+        with self._conn() as conn:
             for video in videos:
-                self.connection.execute(
+                conn.execute(
                     """
                     INSERT INTO videos (
                         id, channel_id, title, url, kind, thumbnail_url, duration_seconds,
@@ -284,8 +293,8 @@ class LibraryRepository:
 
     def set_video_availability(self, video_id: str, availability: str) -> None:
         now = utcnow()
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 UPDATE videos
                 SET availability = ?, updated_at = ?
@@ -298,12 +307,12 @@ class LibraryRepository:
         self, video_id: str, chapters: list[VideoChapter]
     ) -> None:
         now = utcnow()
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 "DELETE FROM video_chapters WHERE video_id = ?", (video_id,)
             )
             for position, chapter in enumerate(chapters):
-                self.connection.execute(
+                conn.execute(
                     """
                     INSERT INTO video_chapters (
                         video_id, start_seconds, end_seconds, title, position,
@@ -322,8 +331,8 @@ class LibraryRepository:
                 )
 
     def video_chapters(self, video_id: str) -> list[VideoChapter]:
-        with self._lock:
-            rows = self.connection.execute(
+        with self._conn() as conn:
+            rows = conn.execute(
                 """
                 SELECT video_id, title, start_seconds, end_seconds, position
                 FROM video_chapters
@@ -340,8 +349,8 @@ class LibraryRepository:
             return []
 
         placeholders = ",".join("?" for _video in videos)
-        with self._lock:
-            rows = self.connection.execute(
+        with self._conn() as conn:
+            rows = conn.execute(
                 f"""
                 SELECT
                     v.id,
@@ -376,16 +385,16 @@ class LibraryRepository:
         ]
 
     def setting(self, key: str, default: str = "") -> str:
-        with self._lock:
-            row = self.connection.execute(
+        with self._conn() as conn:
+            row = conn.execute(
                 "SELECT value FROM settings WHERE key = ?",
                 (key,),
             ).fetchone()
         return str(row["value"]) if row else default
 
     def has_setting(self, key: str) -> bool:
-        with self._lock:
-            row = self.connection.execute(
+        with self._conn() as conn:
+            row = conn.execute(
                 "SELECT 1 FROM settings WHERE key = ?",
                 (key,),
             ).fetchone()
@@ -403,8 +412,8 @@ class LibraryRepository:
 
     def set_setting(self, key: str, value: str) -> None:
         now = utcnow()
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 INSERT INTO settings (key, value, updated_at)
                 VALUES (?, ?, ?)
@@ -416,8 +425,8 @@ class LibraryRepository:
             )
 
     def clear_setting(self, key: str) -> None:
-        with self._lock, self.connection:
-            self.connection.execute("DELETE FROM settings WHERE key = ?", (key,))
+        with self._conn() as conn:
+            conn.execute("DELETE FROM settings WHERE key = ?", (key,))
 
     def feed_daily_channel_limit(self) -> int:
         return max(1, self.int_setting("feed_daily_channel_limit", 3))
@@ -586,8 +595,8 @@ class LibraryRepository:
     ) -> tuple[list[SponsorBlockSegment], bool]:
         categories_key = self.sponsorblock_categories_key(categories)
         cache_days = cache_days or self.sponsorblock_cache_days()
-        with self._lock:
-            fetch = self.connection.execute(
+        with self._conn() as conn:
+            fetch = conn.execute(
                 """
                 SELECT fetched_at
                 FROM sponsorblock_segment_fetches
@@ -596,7 +605,7 @@ class LibraryRepository:
                 """,
                 (video_id, categories_key),
             ).fetchone()
-            rows = self.connection.execute(
+            rows = conn.execute(
                 """
                 SELECT video_id, category, action_type, start_seconds, end_seconds, uuid
                 FROM sponsorblock_segments
@@ -627,8 +636,8 @@ class LibraryRepository:
     ) -> None:
         now = utcnow()
         categories_key = self.sponsorblock_categories_key(categories)
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 DELETE FROM sponsorblock_segments
                 WHERE video_id = ?
@@ -637,7 +646,7 @@ class LibraryRepository:
                 (video_id, *categories),
             )
             for segment in segments:
-                self.connection.execute(
+                conn.execute(
                     """
                     INSERT INTO sponsorblock_segments (
                         video_id, category, action_type, start_seconds,
@@ -655,7 +664,7 @@ class LibraryRepository:
                         now,
                     ),
                 )
-            self.connection.execute(
+            conn.execute(
                 """
                 INSERT INTO sponsorblock_segment_fetches (
                     video_id, categories_key, fetched_at
@@ -668,8 +677,8 @@ class LibraryRepository:
             )
 
     def new_video_counts_by_channel(self) -> dict[str, int]:
-        with self._lock:
-            rows = self.connection.execute(
+        with self._conn() as conn:
+            rows = conn.execute(
                 """
                 SELECT
                     c.id AS channel_id,
@@ -689,8 +698,8 @@ class LibraryRepository:
 
     def clear_new_video_indicator(self, channel_id: str) -> None:
         now = utcnow()
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 UPDATE channels
                 SET new_videos_cleared_at = ?, updated_at = ?
@@ -805,8 +814,8 @@ class LibraryRepository:
         )
 
     def channel_video_count(self, channel_id: str) -> int:
-        with self._lock:
-            row = self.connection.execute(
+        with self._conn() as conn:
+            row = conn.execute(
                 """
                 SELECT COUNT(*) AS count
                 FROM videos
@@ -852,15 +861,15 @@ class LibraryRepository:
         stripped = query.strip()
         if not stripped:
             return
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 "INSERT INTO search_history (query, searched_at) VALUES (?, ?)",
                 (stripped, utcnow()),
             )
 
     def recent_searches(self, limit: int = 20) -> list[str]:
-        with self._lock:
-            rows = self.connection.execute(
+        with self._conn() as conn:
+            rows = conn.execute(
                 """
                 SELECT query
                 FROM search_history
@@ -874,8 +883,8 @@ class LibraryRepository:
 
     def add_watch_later(self, video_id: str) -> None:
         now = utcnow()
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 INSERT INTO watch_later (video_id, added_at)
                 VALUES (?, ?)
@@ -885,14 +894,14 @@ class LibraryRepository:
             )
 
     def remove_watch_later(self, video_id: str) -> None:
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 "DELETE FROM watch_later WHERE video_id = ?", (video_id,)
             )
 
     def is_watch_later(self, video_id: str) -> bool:
-        with self._lock:
-            row = self.connection.execute(
+        with self._conn() as conn:
+            row = conn.execute(
                 "SELECT 1 FROM watch_later WHERE video_id = ?", (video_id,)
             ).fetchone()
         return bool(row)
@@ -920,8 +929,8 @@ class LibraryRepository:
 
     def record_play_started(self, video_id: str) -> None:
         now = utcnow()
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 INSERT INTO watch_history (video_id, first_watched_at, last_watched_at, play_count, updated_at)
                 VALUES (?, ?, ?, 1, ?)
@@ -932,15 +941,15 @@ class LibraryRepository:
                 """,
                 (video_id, now, now, now),
             )
-            self.connection.execute(
+            conn.execute(
                 "DELETE FROM watch_later WHERE video_id = ?", (video_id,)
             )
 
     def mark_played(self, video_id: str, duration_seconds: int | None = None) -> None:
         now = utcnow()
-        with self._lock, self.connection:
+        with self._conn() as conn:
             if duration_seconds is not None and duration_seconds > 0:
-                self.connection.execute(
+                conn.execute(
                     """
                     INSERT INTO watch_ranges (
                         video_id, start_seconds, end_seconds, last_watched_at,
@@ -950,7 +959,7 @@ class LibraryRepository:
                     """,
                     (video_id, duration_seconds, now, now, now),
                 )
-            self.connection.execute(
+            conn.execute(
                 """
                 INSERT INTO watch_history (
                     video_id, first_watched_at, last_watched_at, completed,
@@ -968,18 +977,18 @@ class LibraryRepository:
             )
 
     def remove_watch_history(self, video_id: str) -> None:
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 "DELETE FROM watch_ranges WHERE video_id = ?", (video_id,)
             )
-            self.connection.execute(
+            conn.execute(
                 "DELETE FROM watch_history WHERE video_id = ?", (video_id,)
             )
 
     def hide_video(self, video_id: str, reason: str = "not_interested") -> None:
         now = utcnow()
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 INSERT INTO hidden_videos (video_id, hidden_at, reason)
                 VALUES (?, ?, ?)
@@ -1000,8 +1009,8 @@ class LibraryRepository:
         now = utcnow()
         if end_seconds <= start_seconds:
             return
-        with self._lock, self.connection:
-            self.connection.execute(
+        with self._conn() as conn:
+            conn.execute(
                 """
                 INSERT INTO watch_ranges (
                     video_id, start_seconds, end_seconds, last_watched_at,
@@ -1011,7 +1020,7 @@ class LibraryRepository:
                 """,
                 (video_id, start_seconds, end_seconds, now, now, now),
             )
-            self.connection.execute(
+            conn.execute(
                 """
                 UPDATE watch_history
                 SET completed = 1,
@@ -1028,8 +1037,8 @@ class LibraryRepository:
             )
 
     def resume_position(self, video_id: str) -> int:
-        with self._lock:
-            row = self.connection.execute(
+        with self._conn() as conn:
+            row = conn.execute(
                 """
                 SELECT end_seconds
                 FROM watch_ranges
@@ -1044,8 +1053,8 @@ class LibraryRepository:
     def _videos_query(
         self, sql: str, params: tuple[object, ...] = ()
     ) -> list[Video]:
-        with self._lock:
-            rows = self.connection.execute(sql, params).fetchall()
+        with self._conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
         return [self._video_from_row(row) for row in rows]
 
     def _video_from_row(self, row: sqlite3.Row) -> Video:

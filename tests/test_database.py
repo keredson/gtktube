@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from gtktube.db.connection import connect
 from gtktube.db.migrations import SCHEMA_VERSION, UnsupportedDatabaseSchema, migrate
@@ -12,11 +14,13 @@ from gtktube.models import Channel, SponsorBlockSegment, Video, VideoChapter
 
 class DatabaseTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.connection = sqlite3.connect(":memory:")
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
+        self._temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.database_path = Path(self._temp_db.name)
+        self._temp_db.close()
+        self.connection = connect(self.database_path)
+        self.connection.isolation_level = None
         migrate(self.connection)
-        self.repository = LibraryRepository(self.connection)
+        self.repository = LibraryRepository(self.database_path)
         self.repository.upsert_channel(
             Channel(id="chan1", title="Channel One", url="https://example.test/channel")
         )
@@ -36,6 +40,7 @@ class DatabaseTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.connection.close()
+        self.database_path.unlink(missing_ok=True)
 
     def test_migration_sets_user_version(self) -> None:
         version = self.connection.execute("PRAGMA user_version").fetchone()[0]
