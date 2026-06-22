@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import unittest
+from contextlib import redirect_stderr
 from unittest import mock
 
 from gtktube import install_deps
@@ -55,6 +57,63 @@ class InstallDepsTests(unittest.TestCase):
         self.assertEqual(
             args, ["pkexec", "sh", "-c", "apt-get update && apt-get install -y python3-gi"]
         )
+
+    def test_package_plan_splits_installable_and_unavailable_packages(self) -> None:
+        plan = install_deps.package_plan(
+            ["python3-gi", "gir1.2-clapper-0.0", "nodejs"],
+            available=lambda package: package != "gir1.2-clapper-0.0",
+        )
+
+        self.assertEqual(plan.installable, ["python3-gi", "nodejs"])
+        self.assertEqual(plan.unavailable, ["gir1.2-clapper-0.0"])
+
+    def test_fallback_does_not_run_apt_when_required_packages_are_unavailable(
+        self,
+    ) -> None:
+        with (
+            mock.patch(
+                "gtktube.install_deps.package_plan",
+                return_value=install_deps.PackagePlan(
+                    installable=[],
+                    unavailable=["gir1.2-clapper-0.0"],
+                ),
+            ),
+            mock.patch("gtktube.install_deps.run_privileged_apt") as run_apt,
+            redirect_stderr(io.StringIO()),
+        ):
+            result = install_deps.fallback_gui_install(["gir1.2-clapper-0.0"])
+
+        self.assertEqual(result, 1)
+        run_apt.assert_not_called()
+
+    def test_fallback_reports_failure_after_partial_install_when_packages_unavailable(
+        self,
+    ) -> None:
+        with (
+            mock.patch(
+                "gtktube.install_deps.package_plan",
+                return_value=install_deps.PackagePlan(
+                    installable=["python3-gi"],
+                    unavailable=["gir1.2-clapper-0.0"],
+                ),
+            ),
+            mock.patch(
+                "gtktube.install_deps.shutil.which",
+                side_effect=lambda command: "pkexec" if command == "pkexec" else None,
+            ),
+            mock.patch(
+                "gtktube.install_deps.run_privileged_apt",
+                return_value=mock.Mock(returncode=0),
+            ) as run_apt,
+            redirect_stderr(io.StringIO()),
+        ):
+            result = install_deps.fallback_gui_install(
+                ["python3-gi", "gir1.2-clapper-0.0"]
+        )
+
+        self.assertEqual(result, 1)
+        run_apt.assert_called_once()
+        self.assertEqual(run_apt.call_args.args, ("pkexec", ["python3-gi"]))
 
 
 if __name__ == "__main__":

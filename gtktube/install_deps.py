@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from importlib import resources
 from collections.abc import Callable
 
@@ -50,6 +51,12 @@ def validate_package_names(packages: list[str]) -> list[str]:
 PACKAGES = apt_packages()
 
 
+@dataclass(frozen=True)
+class PackagePlan:
+    installable: list[str]
+    unavailable: list[str]
+
+
 def missing_packages() -> list[str]:
     missing: list[str] = []
     for package in PACKAGES:
@@ -65,6 +72,42 @@ def missing_packages() -> list[str]:
     return missing
 
 
+def package_available(package: str) -> bool:
+    result = subprocess.run(
+        ["apt-cache", "show", package],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def package_plan(
+    packages: list[str],
+    available: Callable[[str], bool] = package_available,
+) -> PackagePlan:
+    installable: list[str] = []
+    unavailable: list[str] = []
+    for package in validate_package_names(packages):
+        if available(package):
+            installable.append(package)
+        else:
+            unavailable.append(package)
+    return PackagePlan(installable=installable, unavailable=unavailable)
+
+
+def unavailable_message(unavailable: list[str]) -> str:
+    packages = "\n".join(f"  {package}" for package in unavailable)
+    return (
+        "These required packages are not available from your configured apt "
+        "repositories:\n\n"
+        f"{packages}\n\n"
+        "Ubuntu releases do not always package Clapper. Add a repository that "
+        "provides these packages or use a distribution release that includes "
+        "the Clapper GTK bindings, then start GTKTube again."
+    )
+
+
 if Gtk is not None:
 
     class InstallDepsWindow(Gtk.ApplicationWindow):
@@ -73,6 +116,7 @@ if Gtk is not None:
             self.set_default_size(520, 320)
 
             self.missing = missing_packages()
+            self.plan = package_plan(self.missing)
 
             root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             root.set_margin_top(16)
@@ -110,19 +154,39 @@ if Gtk is not None:
             self.refresh()
 
         def refresh(self) -> None:
+            self.plan = package_plan(self.missing)
             if not self.missing:
                 self.message.set_text("All required Debian packages are installed.")
                 self.details.get_buffer().set_text("")
                 self.install_button.set_sensitive(False)
                 return
 
+            if not self.plan.installable:
+                self.message.set_text(
+                    "Some required Debian packages are missing, but apt cannot "
+                    "find them in your configured repositories."
+                )
+                self.details.get_buffer().set_text(
+                    unavailable_message(self.plan.unavailable)
+                )
+                self.install_button.set_sensitive(False)
+                return
+
             launcher = privileged_launcher()
-            command = apt_command(self.missing, launcher=launcher)
-            self.message.set_text(
-                "Some Debian packages are missing. Install them to continue launching "
-                "GTKTube."
-            )
-            self.details.get_buffer().set_text(command)
+            command = apt_command(self.plan.installable, launcher=launcher)
+            details = command
+            if self.plan.unavailable:
+                details += "\n\n" + unavailable_message(self.plan.unavailable)
+                self.message.set_text(
+                    "Some missing Debian packages can be installed, but other "
+                    "required packages are unavailable from apt."
+                )
+            else:
+                self.message.set_text(
+                    "Some Debian packages are missing. Install them to continue "
+                    "launching GTKTube."
+                )
+            self.details.get_buffer().set_text(details)
             self.install_button.set_sensitive(launcher is not None)
             if launcher is None:
                 self.message.set_text(
@@ -130,7 +194,7 @@ if Gtk is not None:
                 )
 
         def on_install_clicked(self, _button: Gtk.Button) -> None:
-            if not self.missing:
+            if not self.missing or not self.plan.installable:
                 return
 
             launcher = privileged_launcher()
@@ -143,13 +207,16 @@ if Gtk is not None:
             self.install_button.set_sensitive(False)
             self.message.set_text("Installing packages...")
             self.details.get_buffer().set_text(
-                f"$ {shlex.join(privileged_install_args(launcher, self.missing))}\n"
+                "$ "
+                f"{shlex.join(privileged_install_args(launcher, self.plan.installable))}"
+                "\n"
             )
+            installable = list(self.plan.installable)
 
             def work() -> None:
                 returncode = run_privileged_apt(
                     launcher,
-                    self.missing,
+                    installable,
                     emit_output=lambda text: GLib.idle_add(self.append_output, text),
                 ).returncode
                 GLib.idle_add(self.install_finished, returncode)
@@ -166,6 +233,7 @@ if Gtk is not None:
         def install_finished(self, returncode: int) -> bool:
             if returncode == 0:
                 self.missing = missing_packages()
+                self.plan = package_plan(self.missing)
                 if not self.missing:
                     self.message.set_text("Dependencies installed. Starting GTKTube...")
                     app = self.get_application()
@@ -245,11 +313,17 @@ def run_privileged_apt(
 
 
 def fallback_gui_install(missing: list[str]) -> int:
-    command = apt_command(missing)
+    plan = package_plan(missing)
+    command = apt_command(plan.installable) if plan.installable else ""
     message = (
         "GTKTube needs system packages for GTK4, PyGObject, Clapper, and GStreamer.\n\n"
         f"{command}"
     )
+    if plan.unavailable:
+        message += "\n\n" + unavailable_message(plan.unavailable)
+    if not plan.installable:
+        print(message, file=sys.stderr)
+        return 1
     if shutil.which("zenity"):
         result = subprocess.run(
             [
@@ -280,7 +354,12 @@ def fallback_gui_install(missing: list[str]) -> int:
             file=sys.stderr,
         )
         return 1
-    return run_privileged_apt(launcher, missing, emit_output=sys.stderr.write).returncode
+    result = run_privileged_apt(
+        launcher, plan.installable, emit_output=sys.stderr.write
+    )
+    if plan.unavailable and result.returncode == 0:
+        return 1
+    return result.returncode
 
 
 if Gtk is not None:

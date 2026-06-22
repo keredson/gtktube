@@ -77,6 +77,7 @@ sudo apt-get install -y \
   gir1.2-adw-1 \
   gir1.2-gstreamer-1.0 \
   gir1.2-clapper-0.0 \
+  gir1.2-clappergtk-0.0 \
   libclapper-gtk-0.0-0 \
   gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good \
@@ -85,7 +86,13 @@ sudo apt-get install -y \
 ```
 
 The same package list is used by `scripts/install-apt-deps.sh` and the in-app
-dependency installer.
+dependency installer. The embedded player requires the Clapper library and GTK
+introspection packages, which are available in Ubuntu's archive starting with
+Ubuntu 26.04. Ubuntu 24.04 packages the standalone Clapper app, but not the
+library packages GTKTube embeds. On releases where apt cannot locate the Clapper
+packages, GTKTube needs a repository or distribution release that provides
+`gir1.2-clapper-0.0`, `gir1.2-clappergtk-0.0`, and
+`libclapper-gtk-0.0-0`.
 Python dependencies, including yt-dlp and SecretStorage for browser
 cookie extraction, are declared in `pyproject.toml`. `requirements.txt` installs
 that same project dependency set for source checkouts.

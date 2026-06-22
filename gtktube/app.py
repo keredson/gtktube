@@ -40,6 +40,11 @@ GTKTube needs Clapper and GStreamer from your system packages.
 On Debian/Ubuntu:
   ./scripts/install-apt-deps.sh
 
+Ubuntu releases do not always package the Clapper library and GTK bindings.
+If apt cannot locate gir1.2-clapper-0.0, gir1.2-clappergtk-0.0, or
+libclapper-gtk-0.0-0, use a repository or distribution release that provides
+those packages.
+
 If you run GTKTube from a virtualenv, recreate it with access to system
 site-packages so it can see the Clapper and GStreamer GI bindings:
   rm -rf .venv
