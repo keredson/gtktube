@@ -14,6 +14,7 @@ from gtktube.app import (
     launched_as_installed_command,
     main,
     parse_startup_options,
+    restart_after_dependency_install,
 )
 from gtktube.db.migrations import UnsupportedDatabaseSchema
 
@@ -120,6 +121,60 @@ class StartupOptionTests(unittest.TestCase):
             self.assertIn("schema 9", reason)
             self.assertIn("supports schema 8", reason)
             self.assertEqual(gtk_argv, ["gtktube"])
+
+    def test_dependency_installer_uses_sanitized_argv(self) -> None:
+        with (
+            mock.patch(
+                "gtktube.app.dependency_checks_pass",
+                side_effect=[False, False],
+            ) as checks,
+            mock.patch("gtktube.app.launch_dependency_installer") as installer,
+        ):
+            result = main(["gtktube", "-v"])
+
+        self.assertEqual(result, 2)
+        installer.assert_called_once_with()
+        self.assertEqual(checks.call_args_list[-1], mock.call(quiet=True))
+
+    def test_launch_dependency_installer_does_not_forward_app_flags(self) -> None:
+        with mock.patch("gtktube.install_deps.main", return_value=0) as installer:
+            from gtktube.app import launch_dependency_installer
+
+            result = launch_dependency_installer()
+
+        self.assertEqual(result, 0)
+        installer.assert_called_once_with(["gtktube-deps-installer"])
+
+    def test_successful_dependency_install_restarts_python_module_launch(self) -> None:
+        with (
+            mock.patch(
+                "gtktube.app.dependency_checks_pass",
+                return_value=False,
+            ),
+            mock.patch("gtktube.app.launch_dependency_installer", return_value=0),
+            mock.patch("gtktube.app.restart_after_dependency_install") as restart,
+        ):
+            main(["/home/derek/projects/gtktube/gtktube/__main__.py", "-v"])
+
+        restart.assert_called_once_with(
+            ["/home/derek/projects/gtktube/gtktube/__main__.py", "-v"]
+        )
+
+    def test_restart_after_dependency_install_preserves_module_flags(self) -> None:
+        with mock.patch("gtktube.app.os.execv") as execv:
+            with self.assertRaises(SystemExit):
+                restart_after_dependency_install(["/path/to/gtktube/__main__.py", "-v"])
+
+        execv.assert_called_once()
+        args = execv.call_args.args
+        self.assertEqual(args[1], [mock.ANY, "-m", "gtktube", "-v"])
+
+    def test_restart_after_dependency_install_preserves_installed_command(self) -> None:
+        with mock.patch("gtktube.app.os.execvp") as execvp:
+            with self.assertRaises(SystemExit):
+                restart_after_dependency_install(["gtktube", "-v"])
+
+        execvp.assert_called_once_with("gtktube", ["gtktube", "-v"])
 
 
 if __name__ == "__main__":

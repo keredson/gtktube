@@ -6,7 +6,9 @@ import shutil
 import shlex
 import subprocess
 import sys
+import threading
 from importlib import resources
+from collections.abc import Callable
 
 PACKAGE_NAME_RE = re.compile(
     r"^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9+.-]*)?$"
@@ -17,8 +19,9 @@ try:
     import gi
 
     gi.require_version("Gtk", "4.0")
-    from gi.repository import Gtk  # type: ignore  # noqa: E402
+    from gi.repository import GLib, Gtk  # type: ignore  # noqa: E402
 except (ImportError, ModuleNotFoundError, ValueError):
+    GLib = None  # type: ignore[assignment]
     Gtk = None  # type: ignore[assignment]
 
 
@@ -113,14 +116,18 @@ if Gtk is not None:
                 self.install_button.set_sensitive(False)
                 return
 
-            command = apt_command(self.missing)
+            launcher = privileged_launcher()
+            command = apt_command(self.missing, launcher=launcher)
             self.message.set_text(
-                "Some Debian packages are missing. The installer will use pkexec if "
-                "available, otherwise gksu. If neither is installed, run this "
-                "command manually:"
+                "Some Debian packages are missing. Install them to continue launching "
+                "GTKTube."
             )
             self.details.get_buffer().set_text(command)
-            self.install_button.set_sensitive(True)
+            self.install_button.set_sensitive(launcher is not None)
+            if launcher is None:
+                self.message.set_text(
+                    "Could not find pkexec or gksu. Run the command below in a terminal."
+                )
 
         def on_install_clicked(self, _button: Gtk.Button) -> None:
             if not self.missing:
@@ -133,17 +140,52 @@ if Gtk is not None:
                 )
                 return
 
-            result = run_privileged_apt(launcher, self.missing)
-            if result.returncode == 0:
+            self.install_button.set_sensitive(False)
+            self.message.set_text("Installing packages...")
+            self.details.get_buffer().set_text(
+                f"$ {shlex.join(privileged_install_args(launcher, self.missing))}\n"
+            )
+
+            def work() -> None:
+                returncode = run_privileged_apt(
+                    launcher,
+                    self.missing,
+                    emit_output=lambda text: GLib.idle_add(self.append_output, text),
+                ).returncode
+                GLib.idle_add(self.install_finished, returncode)
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def append_output(self, text: str) -> bool:
+            buffer = self.details.get_buffer()
+            buffer.insert(buffer.get_end_iter(), text)
+            mark = buffer.create_mark(None, buffer.get_end_iter(), False)
+            self.details.scroll_to_mark(mark, 0.0, True, 0.0, 1.0)
+            return False
+
+        def install_finished(self, returncode: int) -> bool:
+            if returncode == 0:
                 self.missing = missing_packages()
+                if not self.missing:
+                    self.message.set_text("Dependencies installed. Starting GTKTube...")
+                    app = self.get_application()
+                    if app is not None:
+                        app.install_succeeded = True
+                        GLib.timeout_add(500, app.quit)
+                    return False
                 self.refresh()
-            else:
-                self.message.set_text(
-                    "Installation did not complete. The command is still shown below."
-                )
+                return False
+
+            self.message.set_text(
+                "Installation did not complete. The command output is shown below."
+            )
+            self.install_button.set_sensitive(True)
+            return False
 
 
-def apt_command(packages: list[str]) -> str:
+def apt_command(packages: list[str], launcher: str | None = None) -> str:
+    if launcher is not None:
+        return shlex.join(privileged_install_args(launcher, packages))
     install_args = apt_install_args(packages)
     return f"{shlex.join(APT_UPDATE_ARGS)} && {shlex.join(install_args)}"
 
@@ -166,12 +208,39 @@ def privileged_args(launcher: str, args: list[str]) -> list[str]:
     return ["pkexec", *args]
 
 
-def run_privileged_apt(launcher: str, packages: list[str]) -> subprocess.CompletedProcess:
-    result = subprocess.run(privileged_args(launcher, APT_UPDATE_ARGS), check=False)
-    if result.returncode != 0:
-        return result
-    return subprocess.run(
-        privileged_args(launcher, apt_install_args(packages)), check=False
+def privileged_install_args(launcher: str, packages: list[str]) -> list[str]:
+    return privileged_args(launcher, ["sh", "-c", apt_command(packages)])
+
+
+def run_command(
+    args: list[str],
+    emit_output: Callable[[str], object] | None = None,
+) -> subprocess.CompletedProcess:
+    if emit_output is None:
+        return subprocess.run(args, check=False)
+
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    for line in process.stdout:
+        emit_output(line)
+    returncode = process.wait()
+    return subprocess.CompletedProcess(args, returncode)
+
+
+def run_privileged_apt(
+    launcher: str,
+    packages: list[str],
+    emit_output: Callable[[str], object] | None = None,
+) -> subprocess.CompletedProcess:
+    return run_command(
+        privileged_install_args(launcher, packages),
+        emit_output=emit_output,
     )
 
 
@@ -211,7 +280,7 @@ def fallback_gui_install(missing: list[str]) -> int:
             file=sys.stderr,
         )
         return 1
-    return run_privileged_apt(launcher, missing).returncode
+    return run_privileged_apt(launcher, missing, emit_output=sys.stderr.write).returncode
 
 
 if Gtk is not None:
@@ -219,13 +288,15 @@ if Gtk is not None:
     class InstallDepsApp(Gtk.Application):
         def __init__(self):
             super().__init__(application_id="local.gtktube.InstallDeps")
+            self.install_succeeded = False
 
         def do_activate(self) -> None:
             window = InstallDepsWindow(self)
             window.present()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    argv = argv or ["gtktube-deps-installer"]
     if not shutil.which("dpkg-query"):
         print("This helper is intended for Debian/Ubuntu systems.", file=sys.stderr)
         return 2
@@ -236,7 +307,10 @@ def main() -> int:
             return 0
         return fallback_gui_install(missing)
     app = InstallDepsApp()
-    return app.run(sys.argv)
+    app.run(argv)
+    if app.install_succeeded or not missing_packages():
+        return 0
+    return 1
 
 
 if __name__ == "__main__":

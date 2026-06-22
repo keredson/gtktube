@@ -22,7 +22,26 @@ class InstallDepsTests(unittest.TestCase):
                 ["python3-gi", "libclapper-gtk-0.0-0;touch /tmp/pwned"]
             )
 
-    def test_run_privileged_apt_runs_update_then_install_as_argv(self) -> None:
+    def test_privileged_install_uses_single_visible_apt_command(self) -> None:
+        args = install_deps.privileged_install_args(
+            "pkexec",
+            ["python3-gi", "libclapper-gtk-0.0-0"],
+        )
+
+        self.assertEqual(
+            args,
+            [
+                "pkexec",
+                "sh",
+                "-c",
+                (
+                    "apt-get update && apt-get install -y python3-gi "
+                    "libclapper-gtk-0.0-0"
+                ),
+            ],
+        )
+
+    def test_run_privileged_apt_runs_one_command(self) -> None:
         completed = mock.Mock(returncode=0)
 
         with mock.patch(
@@ -31,15 +50,10 @@ class InstallDepsTests(unittest.TestCase):
             result = install_deps.run_privileged_apt("pkexec", ["python3-gi"])
 
         self.assertIs(result, completed)
+        run.assert_called_once()
+        args = run.call_args.args[0]
         self.assertEqual(
-            run.call_args_list,
-            [
-                mock.call(["pkexec", "apt-get", "update"], check=False),
-                mock.call(
-                    ["pkexec", "apt-get", "install", "-y", "python3-gi"],
-                    check=False,
-                ),
-            ],
+            args, ["pkexec", "sh", "-c", "apt-get update && apt-get install -y python3-gi"]
         )
 
 

@@ -179,19 +179,20 @@ def install_desktop_entry(exec_path: str) -> None:
     desktop_file.chmod(0o644)
 
 
-def ensure_pygobject() -> bool:
+def ensure_pygobject(*, quiet: bool = False) -> bool:
     try:
         import gi
 
         gi.require_version("Gtk", "4.0")
     except (ImportError, ModuleNotFoundError, ValueError) as exc:
-        print(PYGOBJECT_HELP, file=sys.stderr)
-        print(f"Original import error: {exc}", file=sys.stderr)
+        if not quiet:
+            print(PYGOBJECT_HELP, file=sys.stderr)
+            print(f"Original import error: {exc}", file=sys.stderr)
         return False
     return True
 
 
-def ensure_clapper() -> bool:
+def ensure_clapper(*, quiet: bool = False) -> bool:
     try:
         import gi
 
@@ -206,20 +207,29 @@ def ensure_clapper() -> bool:
         if Gst.ElementFactory.find("clappersink") is None:
             raise RuntimeError("GStreamer clappersink element not found")
     except (ImportError, ModuleNotFoundError, OSError, RuntimeError, ValueError) as exc:
-        print(CLAPPER_HELP, file=sys.stderr)
-        print(f"Original import error: {exc}", file=sys.stderr)
+        if not quiet:
+            print(CLAPPER_HELP, file=sys.stderr)
+            print(f"Original import error: {exc}", file=sys.stderr)
         return False
     return True
 
 
-def dependency_checks_pass() -> bool:
-    return ensure_pygobject() and ensure_clapper()
+def dependency_checks_pass(*, quiet: bool = False) -> bool:
+    return ensure_pygobject(quiet=quiet) and ensure_clapper(quiet=quiet)
 
 
-def launch_dependency_installer() -> None:
+def launch_dependency_installer() -> int:
     from .install_deps import main as install_deps_main
 
-    install_deps_main()
+    return install_deps_main(["gtktube-deps-installer"])
+
+
+def restart_after_dependency_install(argv: list[str]) -> None:
+    if launched_as_installed_command(argv[0]):
+        os.execvp(argv[0], argv)
+        raise SystemExit(0)
+    os.execv(sys.executable, [sys.executable, "-m", "gtktube", *argv[1:]])
+    raise SystemExit(0)
 
 
 def run_upgrade_tool(reason: str, gtk_argv: list[str]) -> int:
@@ -326,11 +336,13 @@ def main(argv: list[str] | None = None) -> int:
     if options.install_desktop:
         return 0
     if options.show_deps_installer:
-        launch_dependency_installer()
+        if launch_dependency_installer() == 0:
+            restart_after_dependency_install(argv)
     if not dependency_checks_pass():
         if not options.show_deps_installer:
-            launch_dependency_installer()
-        if not dependency_checks_pass():
+            if launch_dependency_installer() == 0:
+                restart_after_dependency_install(argv)
+        if not dependency_checks_pass(quiet=True):
             return 2
 
     paths = AppPaths.discover()
