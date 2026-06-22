@@ -13,7 +13,6 @@ dependencies = [
     "babel>=2.14",
     "packaging>=24.0",
     "yt-dlp>=2025.1.15",
-    "python-mpv>=1.0.8",
     "SecretStorage>=3.3.3",
 ]
 

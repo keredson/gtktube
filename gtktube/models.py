@@ -63,6 +63,8 @@ class PlayableVideo:
     quality: str
     audio_url: str | None = None
     resolved_quality: str | None = None
+    available_stream_qualities: list[str] | None = None
+    available_prefetch_qualities: list[str] | None = None
     captions: list[CaptionTrack] | None = None
     chapters: list[VideoChapter] | None = None
 

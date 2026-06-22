@@ -17,7 +17,7 @@ The feed has no algorithm. It just shows recent videos from the channels you sub
 - Personalized home feed with recommended videos (requires browser cookies).
 - Subscribe and unsubscribe locally; no Google account or OAuth required.
 - Optionally import your YouTube subscriptions one time from browser cookies.
-- Play videos inside the GTK app with libmpv.
+- Play videos inside the GTK app with Clapper/GStreamer.
 - Choose playback quality and speed, including speeds up to 4x.
 - Choose streaming or prefetch playback per quality/speed option; prefetch downloads
   the selected stream to a temporary app cache before playback to avoid throttling.
@@ -62,7 +62,7 @@ pipx install --system-site-packages gtktube
 gtktube --install-desktop
 ```
 
-GTKTube also needs GTK4/PyGObject, libmpv, and a JavaScript runtime for yt-dlp
+GTKTube also needs GTK4/PyGObject, Clapper/GStreamer, and a JavaScript runtime for yt-dlp
 from your Linux distribution.
 If required system dependencies are missing, the app can launch a small installer helper.
 
@@ -75,14 +75,18 @@ sudo apt-get install -y \
   python3-gi-cairo \
   gir1.2-gtk-4.0 \
   gir1.2-adw-1 \
-  libmpv2 \
-  python3-mpv \
+  gir1.2-gstreamer-1.0 \
+  gir1.2-clapper-0.0 \
+  libclapper-gtk-0.0-0 \
+  gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good \
+  gstreamer1.0-libav \
   nodejs
 ```
 
 The same package list is used by `scripts/install-apt-deps.sh` and the in-app
 dependency installer.
-Python dependencies, including yt-dlp, python-mpv, and SecretStorage for browser
+Python dependencies, including yt-dlp and SecretStorage for browser
 cookie extraction, are declared in `pyproject.toml`. `requirements.txt` installs
 that same project dependency set for source checkouts.
 
@@ -130,7 +134,7 @@ installs use `python3 -m pip install --upgrade gtktube`.
 GTKTube keeps its state on your machine:
 
 - subscriptions and watch history in SQLite
-- thumbnails, mpv cache files, and temporary prefetch playback cache under the user cache directory
+- thumbnails and temporary prefetch playback cache under the user cache directory
 - downloaded videos under the user data directory
 - optional one-time browser-cookie reads for importing YouTube subscriptions
   and watch history

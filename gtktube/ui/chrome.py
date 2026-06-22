@@ -11,7 +11,7 @@ from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 from gtktube import __version__
 from gtktube.extractors.youtube import is_playlist_url
-from gtktube.models import Channel
+from gtktube.models import Channel, PlayableVideo
 from gtktube.ui.types import VideoObject, ViewState
 from gtktube.ui.upgrade import UpgradeController
 from gtktube.update_check import (
@@ -116,10 +116,14 @@ class ChromeMixin:
             
             self.navigate_to(ViewState("player"))
             quality = self.selected_quality()
+
+            def done(playable: PlayableVideo) -> None:
+                self.play_video(playable.video, hide_sidebar=False)
+
             self.run_task(
                 "Resolving video...",
-                lambda: self.service.play_url(url, quality=quality),
-                self.load_playable,
+                lambda: self.service.play_url(url, quality=quality, record_play=False),
+                done,
             )
             return
 

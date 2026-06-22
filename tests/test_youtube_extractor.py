@@ -5,13 +5,32 @@ from gtktube.extractors.youtube import (
     QUALITY_FORMATS,
     RestrictedVideoError,
     YoutubeExtractor,
+    clean_ytdlp_error_message,
     is_restricted_video_error,
     is_unavailable_format_error,
+    playback_error_message,
 )
 from gtktube.models import Channel
 
 
 class RestrictedVideoErrorTest(unittest.TestCase):
+    def test_cleans_ansi_ytdlp_playback_error(self) -> None:
+        message = (
+            "\x1b[0;31mERROR:\x1b[0m [youtube] T7F9OK9Jgy8: "
+            "Join this channel to get access to members-only content like "
+            "this video, and other exclusive perks."
+        )
+
+        self.assertEqual(
+            clean_ytdlp_error_message(message),
+            "Join this channel to get access to members-only content like this "
+            "video, and other exclusive perks.",
+        )
+        self.assertEqual(
+            playback_error_message(message),
+            "This video is members-only or otherwise restricted.",
+        )
+
     def test_detects_members_only_video_error(self) -> None:
         message = (
             "ERROR: [youtube] IooHnhDG2jY: This video is available to this "
@@ -394,6 +413,64 @@ class ChannelPaginationTest(unittest.TestCase):
 
 
 class CaptionExtractionTest(unittest.TestCase):
+    def test_resolve_video_reports_available_stream_and_prefetch_qualities(self) -> None:
+        class FakeYoutubeDL:
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(
+                self,
+                target: str,
+                download: bool = False,
+            ) -> dict[str, object]:
+                return {
+                    "id": "video1",
+                    "title": "Video 1",
+                    "url": "https://stream.example/video.mp4",
+                    "formats": [
+                        {
+                            "height": 360,
+                            "vcodec": "avc1",
+                            "acodec": "mp4a",
+                        },
+                        {
+                            "height": 720,
+                            "vcodec": "avc1",
+                            "acodec": "mp4a",
+                        },
+                        {
+                            "height": 1080,
+                            "vcodec": "avc1",
+                            "acodec": "none",
+                        },
+                        {
+                            "height": None,
+                            "vcodec": "none",
+                            "acodec": "mp4a",
+                        },
+                    ],
+                }
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        playable = extractor.resolve_video(
+            "https://www.youtube.com/watch?v=video1",
+            quality="1080p",
+        )
+
+        self.assertEqual(playable.available_stream_qualities, ["360p", "720p"])
+        self.assertEqual(
+            playable.available_prefetch_qualities,
+            ["360p", "720p", "1080p"],
+        )
+
     def test_resolve_video_falls_back_when_quality_format_is_unavailable(self) -> None:
         class FakeYoutubeDL:
             calls: list[dict[str, object]] = []

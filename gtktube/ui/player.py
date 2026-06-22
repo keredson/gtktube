@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import locale
-import os
 import re
 import hashlib
 import time
 import urllib.error
 import urllib.request
-from ctypes import byref, c_int, c_void_p
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
@@ -16,9 +13,9 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from gtktube.extractors.youtube import QUALITY_FORMATS
+from gtktube.extractors.youtube import QUALITY_FORMATS, playback_error_message
 from gtktube.models import CaptionTrack, PlayableVideo, Video, VideoChapter
 from gtktube.ui.types import ViewState
 
@@ -28,16 +25,120 @@ USER_SELECTABLE_QUALITIES = [
     quality for quality in QUALITY_FORMATS if quality != "best"
 ]
 URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>\"]+")
-BUFFER_CHECK_INTERVAL_MS = 250
-BUFFER_START_TIMEOUT_SECONDS = 20.0
-MPV_CACHE_ON_DISK = True
-MPV_CACHE_SECS = 120
-MPV_DEMUXER_READAHEAD_SECS = 60
-MPV_DEMUXER_MAX_BYTES = "512MiB"
-MPV_DEMUXER_MAX_BACK_BYTES = "64MiB"
-MPV_DEMUXER_CACHE_UNLINK_FILES = "immediate"
 PLAYBACK_DIAG_INTERVAL_SECONDS = 30
 PLAYBACK_DIAG_THRESHOLD_MIB = 1024
+
+
+class ClapperPlayer:
+    backend = "clapper"
+
+    def __init__(
+        self,
+        Clapper: Any,
+        player: Any,
+        video: Gtk.Widget,
+        video_sink: Any | None,
+    ) -> None:
+        self.Clapper = Clapper
+        self.player = player
+        self.video = video
+        self.video_sink = video_sink
+        self.item: Any | None = None
+        self.state_handler_id: int | None = None
+
+    @property
+    def pause(self) -> bool:
+        return self.player.get_state() != self.Clapper.PlayerState.PLAYING
+
+    @pause.setter
+    def pause(self, paused: bool) -> None:
+        if paused:
+            self.player.pause()
+        else:
+            self.player.play()
+
+    @property
+    def speed(self) -> float:
+        return float(self.player.get_speed())
+
+    @speed.setter
+    def speed(self, value: float) -> None:
+        self.player.set_speed(float(value))
+
+    @property
+    def time_pos(self) -> float | None:
+        return float(self.player.get_position())
+
+    @property
+    def duration(self) -> float | None:
+        item = self.player.get_queue().get_current_item()
+        if item is None:
+            return None
+        duration = item.get_duration()
+        if duration <= 0:
+            return None
+        return float(duration)
+
+    def seek(
+        self,
+        seconds: int,
+        reference: str = "absolute",
+        precision: str = "keyframes",
+    ) -> None:
+        method = (
+            self.Clapper.PlayerSeekMethod.ACCURATE
+            if precision == "exact"
+            else self.Clapper.PlayerSeekMethod.NORMAL
+        )
+        self.player.seek_custom(float(max(0, seconds)), method)
+
+    def command(self, *_args: object) -> None:
+        raise NotImplementedError("Clapper backend does not support command passthrough")
+
+    def set_subtitle_path(self, path: Path | None) -> None:
+        item = self.player.get_queue().get_current_item()
+        if item is None:
+            item = self.item
+        if item is None:
+            return
+        if path is None:
+            item.set_suburi("")
+            self.player.set_subtitles_enabled(False)
+            return
+        item.set_suburi(Gio.File.new_for_path(str(path)).get_uri())
+        self.player.set_subtitles_enabled(True)
+
+    def get_property(self, name: str) -> object | None:
+        if name == "speed":
+            return self.speed
+        if name == "pause":
+            return self.pause
+        if name == "time-pos":
+            return self.time_pos
+        if name == "duration":
+            return self.duration
+        if name == "state":
+            state = self.player.get_state()
+            return getattr(state, "value_nick", str(state))
+        return None
+
+    def terminate(self) -> None:
+        if self.state_handler_id is not None:
+            try:
+                self.player.disconnect(self.state_handler_id)
+            except Exception:
+                pass
+            self.state_handler_id = None
+        self.player.pause()
+        stop = getattr(self.player, "stop", None)
+        if stop is not None:
+            stop()
+        self.player.get_queue().clear()
+        if self.video_sink is not None:
+            try:
+                self.player.set_property("video-sink", None)
+            except Exception:
+                pass
 
 
 class PlayerMixin:
@@ -75,7 +176,6 @@ class PlayerMixin:
         quality = self.selected_quality()
         self.playback_request_id += 1
         request_id = self.playback_request_id
-        self.mpv_stream_retry = None
         self.show_player_loading(video)
         self.verbose_log(
             "playback requested "
@@ -112,7 +212,7 @@ class PlayerMixin:
                     f"video={video.id} quality={quality} path={cached_path}"
                 )
                 self.run_task(
-                    "Opening pre-fetched video...",
+                    "Opening cached video...",
                     lambda: self.service.play_cached_video(
                         video,
                         cached_path,
@@ -252,7 +352,7 @@ class PlayerMixin:
     ) -> None:
         if request_id != self.playback_request_id:
             return
-        self.show_player_error(str(exc) or "Could not load video")
+        self.show_player_error(playback_error_message(str(exc)))
         self.reload_visible_video_grid()
 
     def show_player_loading(self, video: Video) -> None:
@@ -297,7 +397,7 @@ class PlayerMixin:
 
     def show_player_error(self, message: str) -> None:
         self.player_loading_spinner.stop()
-        self.player_loading_label.set_text(message)
+        self.player_loading_label.set_text(f"Could not play this video\n{message}")
         self.player_loading_overlay.set_visible(True)
         self.player_meta.set_text("Playback unavailable")
         self.miniplayer_meta.set_text("Playback unavailable")
@@ -312,6 +412,45 @@ class PlayerMixin:
             f"has_video_stream={bool(playable.stream_url)} "
             f"has_audio_stream={bool(playable.audio_url)}"
         )
+        if not self.should_use_clapper_player(playable):
+            self.verbose_log(
+                "playback redirecting split stream to prefetch "
+                f"video={playable.video.id} quality={playable.quality} "
+                f"resolved_quality={playable.resolved_quality or 'unknown'} "
+                f"has_audio_stream={bool(playable.audio_url)}"
+            )
+            request_id = self.playback_request_id
+            prefetch_parts: dict[str, float] = {}
+
+            def progress(update: dict[str, object]) -> None:
+                if getattr(self, "cleaned_up", False):
+                    return
+                GLib.idle_add(
+                    self.update_prefetch_progress,
+                    request_id,
+                    prefetch_parts,
+                    update,
+                )
+
+            self.run_task(
+                "Pre-fetching video...",
+                lambda: replace(
+                    self.play_prefetched_video(
+                        playable.video,
+                        playable.quality,
+                        progress,
+                        record_play=False,
+                    ),
+                    available_stream_qualities=playable.available_stream_qualities,
+                    available_prefetch_qualities=playable.available_prefetch_qualities,
+                ),
+                lambda prefetched: self.load_playable_if_current(
+                    prefetched,
+                    request_id,
+                ),
+                error=lambda exc: self.show_player_error_if_current(exc, request_id),
+            )
+            return
         self.flush_watch_range()
         self.stop_pipeline(restore_stack=False)
         self.current_playable = playable
@@ -340,6 +479,7 @@ class PlayerMixin:
     def start_playback(
         self, playable: PlayableVideo, resume_position: int | None = None
     ) -> None:
+        self.prepare_for_player_startup()
         self.start_playback_diag_timer()
         self.verbose_log(
             "playback starting "
@@ -356,48 +496,67 @@ class PlayerMixin:
         if resume > 0:
             self.suppress_sponsorblock_for_seek(resume)
 
-        self.mpv_file_loaded = False
-        self.mpv_stream_error_message = None
-        self.mpv_end_handled = False
+        self.playback_file_loaded = False
+        self.playback_end_handled = False
         self.show_player_buffering("Opening stream...")
-        player = self.create_player(playable)
-        if player is None:
-            self.hide_miniplayer()
-            return
-        self.player = player
-        stream_context = (
-            f"video={playable.video.id} quality={playable.quality} "
-            f"separate_audio={bool(playable.audio_url)}"
-        )
-        try:
-            self.verbose_log(f"mpv starting playback {stream_context}")
-            self.player.pause = True
-            self.player.speed = self.playback_rate
-            load_options = {}
-            if playable.audio_url:
-                load_options["audio_file"] = playable.audio_url
-            if resume > 0:
-                load_options["start"] = resume
-                self.verbose_log(
-                    "resuming playback "
-                    f"video={playable.video.id} seconds={resume}"
-                )
-            self.player.loadfile(playable.stream_url, **load_options)
-        except Exception as exc:
-            self.set_status(f"Playback error: {exc}")
-            self.log(f"mpv loadfile failed {stream_context}: {exc}")
-            self.stop_pipeline()
-            return
 
-        self.range_start_seconds = resume if resume > 0 else 0
-        self.apply_selected_caption()
-        if self.is_local_file_playable(playable):
-            self.start_local_file_playback(player, playable.video.id)
-        else:
-            self.wait_for_playback_buffer(player, playable.video.id)
+        if self.start_clapper_playback(playable, resume):
+            return
+        self.stop_pipeline(restore_stack=False, keep_player_visible=True)
         self.show_full_player()
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
+        self.show_player_error("Clapper could not open this video.")
+
+    def should_use_clapper_player(self, playable: PlayableVideo) -> bool:
+        return not bool(playable.audio_url)
+
+    def start_clapper_playback(
+        self,
+        playable: PlayableVideo,
+        resume: int,
+    ) -> bool:
+        player = self.create_clapper_player(playable)
+        if player is None:
+            return False
+
+        self.player = player
+        player.state_handler_id = player.player.connect(
+            "notify::state",
+            self.on_clapper_state_changed,
+            player,
+        )
+        self.playback_file_loaded = True
+        self.range_start_seconds = resume if resume > 0 else 0
+        self.last_playback_diagnostics_at = 0.0
+        self.last_playback_diagnostics_values = {}
+        self.last_playback_diagnostics_paused = False
+        player.speed = self.playback_rate
+        player.pause = False
+        if resume > 0:
+            self.verbose_log(
+                "resuming clapper playback "
+                f"video={playable.video.id} seconds={resume}"
+            )
+            self.queue_seek_media(resume)
+        self.update_playback_inhibition()
+        self.set_player_loading(False)
+        self.set_status("Ready")
+        self.verbose_log(
+            "clapper play command accepted "
+            f"video={playable.video.id} "
+            f"local_file={self.is_local_file_playable(playable)} "
+            f"rate={self.playback_rate:g}"
+        )
+        self.show_full_player()
+        self.select_nav_page("player")
+        self.stack.set_visible_child_name("player")
+        return True
+
+    def prepare_for_player_startup(self) -> None:
+        if self.player is not None:
+            self.verbose_log("player pre-start teardown")
+            self.stop_pipeline(restore_stack=False, keep_player_visible=True)
 
     def is_local_file_playable(self, playable: PlayableVideo) -> bool:
         resolved_quality = playable.resolved_quality or ""
@@ -406,170 +565,83 @@ class PlayerMixin:
             or resolved_quality.startswith("cached ")
         )
 
-    def start_local_file_playback(self, player: Any, video_id: str) -> None:
+    def create_clapper_player(self, playable: PlayableVideo) -> ClapperPlayer | None:
+        if playable.audio_url:
+            return None
         try:
-            player.pause = False
-            player.speed = self.playback_rate
-        except Exception as exc:
-            self.set_status(f"Playback error: {exc}")
-            self.log(f"mpv local playback start failed video={video_id}: {exc}")
-            self.stop_pipeline()
-            return
-
-        self.last_playback_diagnostics_at = 0.0
-        self.last_playback_diagnostics_values = {}
-        self.last_playback_diagnostics_paused = False
-        self.mpv_file_loaded = True
-        self.update_playback_inhibition()
-        self.set_player_loading(False)
-        self.set_status("Ready")
+            gi.require_version("Gst", "1.0")
+            gi.require_version("Clapper", "0.0")
+            from gi.repository import Gst, Clapper  # noqa: E402
+        except (ImportError, ValueError) as exc:
+            self.verbose_log(f"clapper import failed: {exc}")
+            return None
+        if not hasattr(self, "clapper_video") or self.clapper_video is None:
+            self.verbose_log("clapper video widget unavailable")
+            return None
+        clapper_sink = getattr(self, "clapper_sink", None)
+        if clapper_sink is None:
+            self.verbose_log("clapper video sink unavailable")
+            return None
+        Gst.init(None)
+        ok, _argv = Clapper.init_check(None)
+        if not ok:
+            self.verbose_log("clapper init failed")
+            return None
+        player = Clapper.Player.new()
+        try:
+            player.set_property("video-sink", clapper_sink)
+        except TypeError as exc:
+            self.verbose_log(f"clapper video sink attach failed: {exc}")
+            return None
+        audio_filter = Gst.ElementFactory.make("scaletempo")
+        if audio_filter is not None:
+            player.set_audio_filter(audio_filter)
+        else:
+            self.verbose_log("clapper scaletempo audio filter unavailable")
+        queue = player.get_queue()
+        queue.clear()
+        if self.is_local_file_playable(playable):
+            try:
+                path = Path(playable.stream_url).expanduser().resolve()
+            except OSError as exc:
+                self.verbose_log(f"clapper local path failed: {exc}")
+                return None
+            item = Clapper.MediaItem.new_from_file(Gio.File.new_for_path(str(path)))
+            source_label = f"path={str(path)!r}"
+        else:
+            item = Clapper.MediaItem.new(playable.stream_url)
+            source_label = f"uri={playable.stream_url!r}"
+        queue.add_item(item)
+        queue.select_index(0)
+        player.set_autoplay(False)
+        player.set_video_enabled(True)
+        player.set_audio_enabled(True)
+        self.clapper_video.set_visible(True)
+        self.video_stack.set_visible_child_name("clapper")
         self.verbose_log(
-            "mpv play command accepted "
-            f"video={video_id} local_file=True buffered=skipped "
-            f"rate={self.playback_rate:g}"
+            "clapper player created "
+            f"video={playable.video.id} {source_label} "
+            "sink=clappersink retain_last_sample=no "
+            f"audio_filter={'scaletempo' if audio_filter is not None else 'none'}"
         )
+        clapper_player = ClapperPlayer(Clapper, player, self.clapper_video, clapper_sink)
+        clapper_player.item = item
+        return clapper_player
 
-    def wait_for_playback_buffer(self, player: Any, video_id: str) -> None:
-        target = self.playback_buffer_target_seconds()
-        started_at = time.monotonic()
-        message = self.playback_buffer_message(0.0, target)
-        self.set_status(message)
-        self.show_player_buffering(message)
-        self.verbose_log(
-            "mpv buffering before playback "
-            f"video={video_id} target={target:g}s rate={self.playback_rate:g}"
-        )
-        GLib.timeout_add(
-            BUFFER_CHECK_INTERVAL_MS,
-            self.maybe_start_buffered_playback,
-            player,
-            video_id,
-            started_at,
-        )
-
-    def playback_buffer_target_seconds(self) -> float:
-        return max(12.0, min(30.0, 10.0 * max(1.0, self.playback_rate)))
-
-    def maybe_start_buffered_playback(
+    def on_clapper_state_changed(
         self,
-        player: Any,
-        video_id: str,
-        started_at: float,
-    ) -> bool:
+        clapper: Any,
+        _pspec: object,
+        player: ClapperPlayer,
+    ) -> None:
         if player is not self.player:
-            return False
-
-        if self.mpv_stream_error_message:
-            self.show_mpv_playback_error(self.mpv_stream_error_message)
-            return False
-
-        elapsed = time.monotonic() - started_at
-        target = self.playback_buffer_target_seconds()
-        cache_duration = self.mpv_float_property("demuxer-cache-duration") or 0.0
-        message = self.playback_buffer_message(cache_duration, target)
-        if self.player_loading_label.get_text() != message:
-            self.set_status(message)
-            self.show_player_buffering(message)
-        cache_state = self.mpv_property("demuxer-cache-state")
-        underrun = (
-            isinstance(cache_state, dict)
-            and bool(cache_state.get("underrun"))
-        )
-        has_open_stream = self.mpv_file_loaded or cache_duration > 0
-        ready = has_open_stream and cache_duration >= target
-        timed_out = elapsed >= BUFFER_START_TIMEOUT_SECONDS
-        if not ready and not timed_out:
-            return True
-
-        if not has_open_stream:
-            self.show_mpv_playback_error("Could not open video stream.")
-            return False
-
+            return
         try:
-            player.pause = False
-            player.speed = self.playback_rate
-        except Exception as exc:
-            self.set_status(f"Playback error: {exc}")
-            self.log(f"mpv buffered playback start failed video={video_id}: {exc}")
-            self.stop_pipeline()
-            return False
-
-        self.last_playback_diagnostics_at = 0.0
-        self.last_playback_diagnostics_values = {}
-        self.last_playback_diagnostics_paused = False
-        self.mpv_file_loaded = True
-        self.update_playback_inhibition()
-        self.set_player_loading(False)
-        self.set_status("Ready")
-        self.verbose_log(
-            "mpv play command accepted "
-            f"video={video_id} buffered={cache_duration:.3f}s "
-            f"target={target:g}s elapsed={elapsed:.3f}s "
-            f"underrun={underrun} reason={'target' if ready else 'timeout'}"
-        )
-        return False
-
-    def playback_buffer_message(self, cache_duration: float, target: float) -> str:
-        percent = 0
-        if target > 0:
-            ratio = min(1.0, max(0.0, cache_duration / target))
-            percent = round(ratio * 100)
-        return f"Buffering {percent}%..."
-
-    def show_mpv_playback_error(self, message: str) -> bool:
-        self.set_status(f"Playback error: {message}")
-        self.stop_pipeline(restore_stack=False, keep_player_visible=True)
-        self.show_full_player()
-        self.select_nav_page("player")
-        self.stack.set_visible_child_name("player")
-        self.show_player_error(message)
-        return False
-
-    def retry_mpv_stream_open_error(self, message: str) -> bool:
-        if self.current_playable is None:
-            return self.show_mpv_playback_error(message)
-        video = self.current_playable.video
-        request_id = self.playback_request_id
-        retry_key = (request_id, video.id)
-        if self.mpv_stream_retry == retry_key:
-            return self.show_mpv_playback_error(message)
-        self.mpv_stream_retry = retry_key
-
-        position = self.range_start_seconds
-        if position is None:
-            position = self.current_position_seconds()
-        quality = self.current_playable.quality or self.selected_quality()
-        self.verbose_log(
-            "retrying playback after stream open failure "
-            f"video={video.id} quality={quality} position={position}"
-        )
-        self.stop_pipeline(restore_stack=False, keep_player_visible=True)
-        self.show_full_player()
-        self.select_nav_page("player")
-        self.stack.set_visible_child_name("player")
-        self.show_player_buffering("Refreshing stream URL...")
-
-        def done(playable: PlayableVideo) -> None:
-            if request_id != self.playback_request_id:
-                return
-            self.load_playable(playable, resume_position=position)
-
-        def failed(exc: Exception) -> None:
-            if request_id != self.playback_request_id:
-                return
-            self.show_mpv_playback_error(str(exc) or message)
-
-        self.run_task(
-            "Refreshing stream URL...",
-            lambda: self.service.play_video(
-                video,
-                quality=quality,
-                record_play=False,
-            ),
-            done,
-            error=failed,
-        )
-        return False
+            state = clapper.get_state()
+        except Exception:
+            return
+        if state == player.Clapper.PlayerState.STOPPED and self.playback_file_loaded:
+            GLib.idle_add(self.handle_playback_end_file, "clapper-state")
 
     def maybe_show_sponsorblock_prompt(
         self, after_response: Callable[[], None] | None = None
@@ -966,23 +1038,28 @@ class PlayerMixin:
         self.miniplayer_video_container.set_vexpand(True)
         self.miniplayer_video_container.set_valign(Gtk.Align.FILL)
         self.miniplayer_video_container.set_size_request(-1, -1)
+        self.video_frame.set_size_request(-1, 360)
         self.video_overlay.set_size_request(-1, 360)
+        self.video_stack.set_size_request(-1, 360)
         self.miniplayer_controls_container.set_hexpand(True)
         self.miniplayer_controls_container.set_vexpand(False)
         self.miniplayer_controls_container.set_valign(Gtk.Align.FILL)
         self.miniplayer_info.get_parent().set_visible(False)
         self.player_metadata.set_visible(True)
-        self.video.set_hexpand(True)
-        self.video.set_vexpand(True)
-        self.video.set_valign(Gtk.Align.FILL)
-        self.video.set_size_request(-1, 360)
+        self.video_stack.set_hexpand(True)
+        self.video_stack.set_vexpand(True)
+        self.video_stack.set_valign(Gtk.Align.FILL)
+        self.clapper_video.set_hexpand(True)
+        self.clapper_video.set_vexpand(True)
+        self.clapper_video.set_valign(Gtk.Align.FILL)
+        self.clapper_video.set_size_request(-1, 360)
         self.player_controls.set_margin_top(8)
         self.player_controls.set_margin_bottom(8)
         self.player_controls.set_margin_start(12)
         self.player_controls.set_margin_end(12)
         self.miniplayer.set_visible(True)
-        self.video.queue_resize()
-        self.video.queue_render()
+        self.video_stack.queue_resize()
+        self.clapper_video.queue_draw()
 
     def show_miniplayer(self) -> None:
         if self.video_fullscreen:
@@ -997,503 +1074,66 @@ class PlayerMixin:
         self.miniplayer_video_container.set_vexpand(False)
         self.miniplayer_video_container.set_valign(Gtk.Align.CENTER)
         self.miniplayer_video_container.set_size_request(176, 99)
+        self.video_frame.set_size_request(176, 99)
         self.video_overlay.set_size_request(176, 99)
+        self.video_stack.set_size_request(176, 99)
         self.miniplayer_controls_container.set_hexpand(True)
         self.miniplayer_controls_container.set_vexpand(False)
         self.miniplayer_controls_container.set_valign(Gtk.Align.CENTER)
         self.miniplayer_info.get_parent().set_visible(True)
         self.player_metadata.set_visible(False)
-        self.video.set_hexpand(False)
-        self.video.set_vexpand(False)
-        self.video.set_valign(Gtk.Align.CENTER)
-        self.video.set_size_request(176, 99)
+        self.video_stack.set_hexpand(False)
+        self.video_stack.set_vexpand(False)
+        self.video_stack.set_valign(Gtk.Align.CENTER)
+        self.clapper_video.set_hexpand(False)
+        self.clapper_video.set_vexpand(False)
+        self.clapper_video.set_valign(Gtk.Align.CENTER)
+        self.clapper_video.set_size_request(176, 99)
         self.player_controls.set_margin_top(0)
         self.player_controls.set_margin_bottom(0)
         self.player_controls.set_margin_start(0)
         self.player_controls.set_margin_end(0)
         self.miniplayer.set_visible(True)
-        self.video.queue_resize()
-        self.video.queue_render()
+        self.video_stack.queue_resize()
+        self.clapper_video.queue_draw()
 
     def hide_miniplayer(self) -> None:
         self.miniplayer.set_visible(False)
         self.stack.set_visible(True)
 
-    def schedule_video_render_context_reset(self) -> None:
-        GLib.idle_add(self.reset_video_render_context, 0)
-
-    def reset_video_render_context(self, attempts: int = 0) -> bool:
-        if (
-            self.player is None
-            or self.mpv_module is None
-            or not self.video.get_realized()
-        ):
-            return False
-        if self.video.get_allocated_width() <= 0 or self.video.get_allocated_height() <= 0:
-            if attempts < 5:
-                GLib.timeout_add(50, self.reset_video_render_context, attempts + 1)
-            return False
-        if self.mpv_render_context is not None:
-            return False
-        self.create_mpv_render_context(self.player, self.mpv_module)
-        self.video.queue_render()
-        return False
-
-    def on_video_realize(self, _area: Gtk.GLArea) -> None:
-        if (
-            self.player is not None
-            and self.mpv_render_context is None
-            and self.mpv_module is not None
-        ):
-            self.schedule_video_render_context_reset()
-
-    def on_video_render(self, area: Gtk.GLArea, _context: Gdk.GLContext) -> bool:
-        if self.mpv_render_context is None:
-            return True
-        width = area.get_allocated_width() * area.get_scale_factor()
-        height = area.get_allocated_height() * area.get_scale_factor()
-        if width <= 0 or height <= 0:
-            return True
-
-        if self.libgl is None:
-            self.log("mpv render skipped: libGL is unavailable")
-            return True
-        framebuffer = c_int()
-        self.libgl.glGetIntegerv(0x8CA6, byref(framebuffer))
-        try:
-            # Tell mpv to update its internal state for the new frame
-            if hasattr(self.mpv_render_context, "update"):
-                self.mpv_render_context.update()
-                
-            self.mpv_render_context.render(
-                opengl_fbo={
-                    "fbo": framebuffer.value,
-                    "w": int(width),
-                    "h": int(height),
-                    "internal_format": 0,
-                },
-                flip_y=True,
-            )
-            self.mpv_render_context.report_swap()
-        except Exception as exc:
-            self.log(f"mpv render failed: {exc}")
-        finally:
-            self.mpv_render_queued = False
-        
-        return True
-
-    def on_video_unrealize(self, _area: Gtk.GLArea) -> None:
-        self.free_mpv_render_context()
-
-    def queue_video_render(self, generation: int) -> bool:
-        if generation != self.mpv_render_generation:
-            self.mpv_render_queued = False
-            return False
-        self.video.queue_render()
-        return False
-
-    def on_mpv_render_update(self, generation: int) -> None:
-        if getattr(self, "mpv_render_queued", False):
-            return
-        self.mpv_render_queued = True
-        GLib.idle_add(self.queue_video_render, generation)
-
-    def get_gl_proc_address(self, _ctx: object, name: bytes) -> int:
-        if self.libgl is not None:
-            address = self.libgl.glXGetProcAddressARB(name)
-            if address:
-                return int(address)
-        if self.libegl is not None:
-            address = self.libegl.eglGetProcAddress(name)
-            if address:
-                return int(address)
-        try:
-            return int(c_void_p.in_dll(self.gl, name.decode("ascii")).value or 0)
-        except (UnicodeDecodeError, ValueError):
-            return 0
-
-    def create_mpv_render_context(self, player: Any, mpv: Any) -> bool:
-        if not self.video.get_realized():
-            return True
-        self.video.make_current()
-        error = self.video.get_error()
-        if error is not None:
-            self.set_status(f"OpenGL error: {error.message}")
-            self.log(f"gtk glarea error: {error.message}")
-            return False
-
-        self.mpv_get_proc_address = mpv.MpvGlGetProcAddressFn(
-            self.get_gl_proc_address
-        )
-        try:
-            self.mpv_render_generation += 1
-            generation = self.mpv_render_generation
-            self.mpv_render_context = mpv.MpvRenderContext(
-                player,
-                "opengl",
-                opengl_init_params={
-                    "get_proc_address": self.mpv_get_proc_address,
-                },
-                advanced_control=True,
-            )
-            self.mpv_render_context.update_cb = lambda: self.on_mpv_render_update(
-                generation
-            )
-        except Exception as exc:
-            self.set_status(f"Could not create mpv renderer: {exc}")
-            self.log(f"mpv render context creation failed: {exc}")
-            self.mpv_render_context = None
-            return False
-        return True
-
-    def free_mpv_render_context(self) -> None:
-        if self.mpv_render_context is None:
-            return
-        self.mpv_render_generation += 1
-        try:
-            self.mpv_render_context.update_cb = None
-            if self.video.get_realized():
-                self.video.make_current()
-            self.mpv_render_context.free()
-        except Exception as exc:
-            self.log(f"mpv render context free failed: {exc}")
-        self.mpv_render_context = None
-
-    def create_player(self, playable: PlayableVideo) -> Any | None:
-        locale.setlocale(locale.LC_NUMERIC, "C")
-        try:
-            import mpv
-        except (ImportError, ModuleNotFoundError, OSError) as exc:
-            self.set_status(
-                "Missing mpv dependencies. Restart GTKTube to launch the dependency "
-                "installer, then install Python requirements."
-            )
-            self.log(f"mpv import failed: {exc}")
-            return None
-
-        ytdl_format = os.environ.get(
-            "GTKTUBE_YTDLP_FORMAT",
-            QUALITY_FORMATS.get(playable.quality, QUALITY_FORMATS["720p"]),
-        )
-        is_local_file = self.is_local_file_playable(playable)
-        mpv_options: dict[str, object] = {
-            "input_default_bindings": True,
-            "input_vo_keyboard": True,
-            "osc": True,
-            "vo": "libmpv",
-            "ytdl": False,
-            "ytdl_format": ytdl_format,
-            "log_handler": self.on_mpv_log,
-            "loglevel": "warn" if self.verbose else "error",
-        }
-        if is_local_file:
-            mpv_options.update(
-                {
-                    "cache": "no",
-                    "demuxer_seekable_cache": "no",
-                }
-            )
-        else:
-            mpv_options.update(
-                {
-                    "cache": "yes",
-                    "cache_on_disk": MPV_CACHE_ON_DISK,
-                    "cache_secs": MPV_CACHE_SECS,
-                    "demuxer_cache_dir": str(self.mpv_cache_dir),
-                    "demuxer_cache_unlink_files": MPV_DEMUXER_CACHE_UNLINK_FILES,
-                    "demuxer_readahead_secs": MPV_DEMUXER_READAHEAD_SECS,
-                    "demuxer_max_bytes": MPV_DEMUXER_MAX_BYTES,
-                    "demuxer_max_back_bytes": MPV_DEMUXER_MAX_BACK_BYTES,
-                    "demuxer_seekable_cache": "yes",
-                }
-            )
-        player = None
-        try:
-            player = mpv.MPV(**mpv_options)
-            self.mpv_module = mpv
-            cache_log = (
-                "cache=no"
-                if is_local_file
-                else (
-                    f"cache_on_disk={MPV_CACHE_ON_DISK} "
-                    f"demuxer_cache_dir={self.mpv_cache_dir} "
-                    f"demuxer_cache_unlink_files={MPV_DEMUXER_CACHE_UNLINK_FILES} "
-                    f"cache_secs={MPV_CACHE_SECS} "
-                    f"demuxer_readahead_secs={MPV_DEMUXER_READAHEAD_SECS} "
-                    f"demuxer_max_bytes={MPV_DEMUXER_MAX_BYTES} "
-                    f"demuxer_max_back_bytes={MPV_DEMUXER_MAX_BACK_BYTES}"
-                )
-            )
-            self.verbose_log(
-                "mpv player created "
-                f"version={getattr(player, 'mpv_version', 'unknown')} "
-                f"video={playable.video.id} ytdl_format={ytdl_format!r} "
-                f"local_file={is_local_file} "
-                f"{cache_log} "
-                f"rss={self.process_rss_label()}"
-            )
-            player.register_event_callback(self.on_mpv_event)
-            self.register_mpv_property_observers(player)
-            if not self.create_mpv_render_context(player, mpv):
-                self.log(f"mpv renderer unavailable video={playable.video.id}")
-                self.unregister_mpv_property_observers(player)
-                try:
-                    player.unregister_event_callback(self.on_mpv_event)
-                except (ValueError, AttributeError) as exc:
-                    self.verbose_log(
-                        f"mpv event callback unregister skipped: {exc}"
-                    )
-                player.terminate()
-                return None
-            return player
-        except Exception as exc:
-            if player is not None:
-                self.unregister_mpv_property_observers(player)
-                try:
-                    player.unregister_event_callback(self.on_mpv_event)
-                except (ValueError, AttributeError) as callback_exc:
-                    self.verbose_log(
-                        "mpv event callback unregister skipped: "
-                        f"{callback_exc}"
-                    )
-                try:
-                    player.terminate()
-                except Exception as terminate_exc:
-                    self.log(f"mpv terminate failed: {terminate_exc}")
-            self.set_status(f"Could not create mpv player: {exc}")
-            self.log(f"mpv player creation failed: {exc}")
-            return None
-
-    def on_mpv_log(self, level: str, prefix: str, text: str) -> None:
-        message = text.strip()
-        if not message:
-            return
-        GLib.idle_add(self.handle_mpv_log, level, prefix, message)
-
-    def handle_mpv_log(self, level: str, prefix: str, message: str) -> bool:
-        log_message = f"mpv[{level}][{prefix}] {message}"
-        if level in {"error", "fatal"}:
-            self.log(log_message)
-            if "HTTP error 403" in message:
-                self.mpv_stream_error_message = (
-                    "Video stream was rejected by YouTube (HTTP 403). "
-                    "Try replaying the video to resolve a fresh stream URL."
-                )
-                GLib.idle_add(
-                    self.retry_mpv_stream_open_error,
-                    self.mpv_stream_error_message,
-                )
-            elif "Failed to open " in message and self.mpv_stream_error_message is None:
-                self.mpv_stream_error_message = "Could not open video stream."
-                GLib.idle_add(
-                    self.retry_mpv_stream_open_error,
-                    self.mpv_stream_error_message,
-                )
-        else:
-            self.verbose_log(log_message)
-        return False
-
-    def on_mpv_event(self, event: Any) -> None:
-        if self.mpv_module is None:
-            return
-        event_id = event.event_id
-        reason = getattr(event, "reason", "unknown")
-        error = getattr(event, "error", None)
-        GLib.idle_add(self.handle_mpv_event, event_id, reason, error)
-
-    def handle_mpv_event(
-        self,
-        event_id: object,
-        reason: object,
-        error: object,
-    ) -> bool:
-        if self.mpv_module is None:
-            return False
-        if event_id == self.mpv_module.MpvEventID.START_FILE:
-            self.verbose_log("mpv event start-file")
-        elif event_id == self.mpv_module.MpvEventID.FILE_LOADED:
-            self.verbose_log("mpv event file-loaded")
-            self.mpv_file_loaded = True
-            if self.pending_seek_seconds is not None:
-                self.start_pending_seek_timer(delay_ms=100)
-        elif event_id == self.mpv_module.MpvEventID.END_FILE:
-            message = (
-                "mpv event end-file "
-                f"reason={reason} "
-                f"error={error}"
-            )
-            if self.mpv_end_file_failed(reason, error):
-                self.log(message)
-                GLib.idle_add(
-                    self.retry_mpv_stream_open_error,
-                    self.mpv_stream_error_message or "Playback failed.",
-                )
-                return
-            else:
-                self.verbose_log(message)
-            GLib.idle_add(self.handle_mpv_end_file, "event")
-        return False
-
-    def register_mpv_property_observers(self, player: Any) -> None:
-        self.mpv_property_observers = []
-        self.mpv_observed_time_pos = None
-        self.mpv_observed_duration = None
-        names = (
-            "eof-reached",
-            "idle-active",
-            "core-idle",
-            "time-pos",
-            "duration",
-            "pause",
-        )
-        for name in names:
-            def observer(
-                property_name: str,
-                value: object,
-                observed_player: Any = player,
-            ) -> None:
-                GLib.idle_add(
-                    self.on_mpv_property_changed,
-                    observed_player,
-                    property_name,
-                    value,
-                )
-
-            try:
-                player.observe_property(name, observer)
-            except Exception as exc:
-                self.verbose_log(f"mpv property observer failed name={name}: {exc}")
-            else:
-                self.mpv_property_observers.append((name, observer))
-
-    def unregister_mpv_property_observers(self, player: Any) -> None:
-        for name, observer in self.mpv_property_observers:
-            try:
-                player.unobserve_property(name, observer)
-            except Exception as exc:
-                self.verbose_log(
-                    "mpv property observer unregister skipped "
-                    f"name={name}: {exc}"
-                )
-        self.mpv_property_observers = []
-
-    def on_mpv_property_changed(
-        self,
-        player: Any,
-        property_name: str,
-        value: object,
-    ) -> None:
-        if player is not self.player:
-            return
-        if property_name == "time-pos":
-            try:
-                self.mpv_observed_time_pos = (
-                    None if value is None else float(value)
-                )
-            except (TypeError, ValueError):
-                self.mpv_observed_time_pos = None
-        elif property_name == "duration":
-            try:
-                self.mpv_observed_duration = (
-                    None if value is None else float(value)
-                )
-            except (TypeError, ValueError):
-                self.mpv_observed_duration = None
-
-        should_log = property_name in {
-            "eof-reached",
-            "idle-active",
-            "core-idle",
-            "pause",
-        }
-        if should_log or (property_name == "time-pos" and value in (None, 0, 0.0)):
-            self.verbose_log(
-                "mpv property change "
-                f"video={self.current_playable.video.id if self.current_playable else 'none'} "
-                f"name={property_name} "
-                f"value={value!r} "
-                f"observed_time_pos={self.mpv_observed_time_pos!r} "
-                f"observed_duration={self.mpv_observed_duration!r} "
-                f"file_loaded={self.mpv_file_loaded} "
-                f"end_handled={self.mpv_end_handled} "
-                f"queue_count={self.video_queue.get_n_items()} "
-                f"playlist_index={self.playlist_current_index}"
-            )
-
-        observed_near_end = self.mpv_observed_near_end()
-        playback_observed = self.mpv_file_loaded or observed_near_end
-        if self.mpv_end_handled or not playback_observed:
-            return
-        eof_signal = property_name == "eof-reached" and (
-            bool(value) or (value is None and observed_near_end)
-        )
-        idle_signal = (
-            property_name in {"idle-active", "core-idle"}
-            and bool(value)
-            and observed_near_end
-        )
-        if not eof_signal and not idle_signal:
-            return
-        self.verbose_log(
-            "mpv eof detected from property observer "
-            f"name={property_name} "
-            f"value={value!r} "
-            f"queue_count={self.video_queue.get_n_items()} "
-            f"playlist_index={self.playlist_current_index}"
-        )
-        GLib.idle_add(self.handle_mpv_end_file, f"property:{property_name}")
-
-    def mpv_observed_near_end(self) -> bool:
-        if self.mpv_observed_time_pos is None or self.mpv_observed_duration is None:
-            return False
-        if self.mpv_observed_duration <= 0:
-            return False
-        return self.mpv_observed_time_pos >= max(
-            0.0,
-            self.mpv_observed_duration - 10.0,
-        )
-
-    def mpv_end_file_failed(self, reason: object, error: object) -> bool:
-        reason_text = str(reason).lower()
-        if "eof" in reason_text:
-            return False
-        if error in (None, 0, "", "success"):
-            return False
-        return True
-
-    def on_mpv_end_file(self) -> None:
+    def on_playback_end_file(self) -> None:
         if self.video_queue.get_n_items() > 0:
             self.verbose_log(
-                "mpv end-file advancing to queued video "
+                "playback end-file advancing to queued video "
                 f"queue_count={self.video_queue.get_n_items()}"
             )
             self.play_next_in_queue()
             return
         next_playlist_index = self.playlist_next_index()
         if next_playlist_index is not None:
-            self.verbose_log("mpv end-file advancing playlist")
+            self.verbose_log("playback end-file advancing playlist")
             self.play_playlist_item(next_playlist_index)
             return
-        self.verbose_log("mpv end-file stopping player")
+        self.verbose_log("playback end-file stopping player")
         self.stop_pipeline(restore_stack=False, keep_player_visible=True)
 
-    def handle_mpv_end_file(self, source: str) -> bool:
-        if self.mpv_end_handled:
+    def handle_playback_end_file(self, source: str) -> bool:
+        if self.playback_end_handled:
             self.verbose_log(
-                "mpv eof handler ignored "
+                "playback eof handler ignored "
                 f"source={source} already_handled=True"
             )
             return False
-        self.mpv_end_handled = True
+        self.playback_end_handled = True
         self.verbose_log(
-            "mpv eof handler "
+            "playback eof handler "
             f"source={source} "
             f"queue_count={self.video_queue.get_n_items()} "
             f"playlist_index={self.playlist_current_index} "
             f"current_video={self.current_playable.video.id if self.current_playable else 'none'}"
         )
         self.uninhibit_playback("eof-handler")
-        self.on_mpv_end_file()
+        self.on_playback_end_file()
         return False
 
     def playlist_previous_index(self) -> int | None:
@@ -1576,35 +1216,27 @@ class PlayerMixin:
             else:
                 self.miniplayer.set_visible(False)
         if self.player is None:
-            self.free_mpv_render_context()
             return
         player = self.player
         self.player = None
-        self.free_mpv_render_context()
-        self.unregister_mpv_property_observers(player)
-        try:
-            player.unregister_event_callback(self.on_mpv_event)
-        except (ValueError, AttributeError) as exc:
-            self.verbose_log(f"mpv event callback unregister skipped: {exc}")
+        if hasattr(self, "clapper_video") and self.clapper_video is not None:
+            self.clapper_video.set_visible(False)
         try:
             player.terminate()
         except Exception as exc:
-            self.log(f"mpv terminate failed: {exc}")
-        finally:
-            self.release_unused_native_memory()
-        self.mpv_module = None
+            self.log(f"player terminate failed: {exc}")
         self.active_caption_url = None
         self.range_start_seconds = None
         self.pending_seek_seconds = None
         self.last_playback_diagnostics_at = 0.0
         self.last_playback_diagnostics_values = {}
         self.last_playback_diagnostics_paused = False
-        self.mpv_file_loaded = False
-        self.mpv_stream_error_message = None
-        self.mpv_end_handled = False
+        self.playback_file_loaded = False
+        self.playback_end_handled = False
         self.update_play_pause_button()
         self.update_transport_navigation_buttons()
-        self.verbose_log(f"mpv player stopped rss={self.process_rss_label()}")
+        self.verbose_log(f"player stopped rss={self.process_rss_label()}")
+        self.refresh_watch_progress_views()
 
     def process_rss_bytes(self) -> int | None:
         try:
@@ -1624,17 +1256,6 @@ class PlayerMixin:
             return "unknown"
         return f"{rss / (1024 * 1024):.1f}MiB"
 
-    def release_unused_native_memory(self) -> None:
-        try:
-            import ctypes
-
-            libc = ctypes.CDLL(None)
-            trim = getattr(libc, "malloc_trim", None)
-            if trim is not None:
-                trim(0)
-        except Exception:
-            pass
-
     def start_playback_diag_timer(self) -> None:
         if getattr(self, "playback_diag_timer", None):
             return
@@ -1652,10 +1273,9 @@ class PlayerMixin:
         rss = self.process_rss_bytes()
         if rss is not None:
             rss_mib = rss / (1024 * 1024)
-            self.verbose_log(f"playback diagnostics RSS={rss_mib:.1f}MiB")
+            self.verbose_log(f"playback diagnostics rss={rss_mib:.1f}MiB")
             if rss_mib > PLAYBACK_DIAG_THRESHOLD_MIB:
                 self.log(f"HIGH RSS during playback: {rss_mib:.1f}MiB")
-        self.release_unused_native_memory()
         return True
 
     def on_close_player_clicked(self, _button: Gtk.Button) -> None:
@@ -1717,7 +1337,7 @@ class PlayerMixin:
         try:
             self.player.pause = not bool(getattr(self.player, "pause", False))
         except Exception as exc:
-            self.log(f"mpv pause toggle failed: {exc}")
+            self.log(f"playback pause toggle failed: {exc}")
         self.update_play_pause_button()
         self.update_playback_inhibition()
 
@@ -1933,28 +1553,41 @@ class PlayerMixin:
         self,
         active_id: str | None = None,
         downloaded_quality: str | None = None,
+        stream_qualities: list[str] | None = None,
+        prefetch_qualities: list[str] | None = None,
     ) -> None:
         self.updating_quality = True
         self.quality_combo.remove_all()
         if downloaded_quality:
             self.quality_combo.append("downloaded", f"↓ {downloaded_quality}")
-        for quality in USER_SELECTABLE_QUALITIES:
+        if stream_qualities is None:
+            stream_qualities = USER_SELECTABLE_QUALITIES
+        if prefetch_qualities is None:
+            prefetch_qualities = USER_SELECTABLE_QUALITIES
+        if not stream_qualities and not prefetch_qualities:
+            stream_qualities = USER_SELECTABLE_QUALITIES
+            prefetch_qualities = USER_SELECTABLE_QUALITIES
+        for quality in stream_qualities:
             self.quality_combo.append(
                 self.quality_option_id("streaming", quality),
                 f"⇄ {quality}",
             )
-        for quality in USER_SELECTABLE_QUALITIES:
+        for quality in prefetch_qualities:
             self.quality_combo.append(
                 self.quality_option_id("prefetch", quality),
                 f"↓ {quality}",
             )
-        self.quality_combo.set_active_id(
-            active_id
-            or self.quality_option_id(
-                self.preferred_playback_mode,
-                self.preferred_quality,
-            )
+        requested_id = active_id or self.quality_option_id(
+            self.preferred_playback_mode,
+            self.preferred_quality,
         )
+        if not self.quality_combo.set_active_id(requested_id):
+            fallback_options = prefetch_qualities or stream_qualities
+            fallback_quality = fallback_options[-1]
+            fallback_mode = "prefetch" if prefetch_qualities else "streaming"
+            self.quality_combo.set_active_id(
+                self.quality_option_id(fallback_mode, fallback_quality)
+            )
         self.updating_quality = False
 
     def is_downloaded_playable(self, playable: PlayableVideo | None = None) -> bool:
@@ -1974,7 +1607,34 @@ class PlayerMixin:
             self.preferred_playback_mode,
             self.preferred_quality,
         )
-        self.populate_quality_combo(active_id)
+        stream_qualities = None
+        prefetch_qualities = None
+        if playable is not None and (
+            playable.available_stream_qualities is not None
+            or playable.available_prefetch_qualities is not None
+        ):
+            stream_qualities = playable.available_stream_qualities
+            prefetch_qualities = playable.available_prefetch_qualities
+            if active_id not in {
+                self.quality_option_id("streaming", quality)
+                for quality in stream_qualities or []
+            } | {
+                self.quality_option_id("prefetch", quality)
+                for quality in prefetch_qualities or []
+            }:
+                resolved_quality = playable.resolved_quality or playable.quality
+                resolved_quality = resolved_quality.removeprefix("cached ")
+                fallback_mode = (
+                    "streaming"
+                    if resolved_quality in (stream_qualities or [])
+                    else "prefetch"
+                )
+                active_id = self.quality_option_id(fallback_mode, resolved_quality)
+        self.populate_quality_combo(
+            active_id,
+            stream_qualities=stream_qualities,
+            prefetch_qualities=prefetch_qualities,
+        )
         self.update_quality_combo_tooltip()
         self.quality_combo.set_visible(True)
 
@@ -2166,9 +1826,9 @@ class PlayerMixin:
         if track is None:
             self.active_caption_url = None
             try:
-                self.player.sid = "no"
+                self.player.set_subtitle_path(None)
             except Exception as exc:
-                self.log(f"mpv caption disable failed: {exc}")
+                self.log(f"clapper caption disable failed: {exc}")
             return
         if self.active_caption_url == track.url:
             return
@@ -2190,9 +1850,10 @@ class PlayerMixin:
             if self.player is None or self.active_caption_url != track.url:
                 return False
             try:
-                self.player.command("sub-add", str(path), "select", track.label)
+                self.player.set_subtitle_path(path)
             except Exception as exc:
-                self.log(f"mpv caption load failed: {exc}")
+                backend = getattr(self.player, "backend", "player")
+                self.log(f"{backend} caption load failed: {exc}")
             return False
 
         self.schedule_background_finish(future, done)
@@ -2246,7 +1907,7 @@ class PlayerMixin:
                 self.last_playback_diagnostics_values = {}
                 self.last_playback_diagnostics_paused = False
             except Exception as exc:
-                self.log(f"mpv speed change failed: {exc}")
+                self.log(f"playback speed change failed: {exc}")
         self.set_status(f"Playback speed {self.speed_label(rate)}")
 
     def load_playable_at(self, playable: PlayableVideo, position: int) -> None:
@@ -2277,7 +1938,12 @@ class PlayerMixin:
             self.pending_seek_timer_active = False
             return False
         if self.pending_seek_attempts >= 40:
-            self.log(f"mpv deferred seek abandoned: {self.pending_seek_seconds}")
+            backend = (
+                getattr(self.player, "backend", "player")
+                if self.player
+                else "player"
+            )
+            self.log(f"{backend} deferred seek abandoned: {self.pending_seek_seconds}")
             self.pending_seek_seconds = None
             self.pending_seek_timer_active = False
             return False
@@ -2306,7 +1972,8 @@ class PlayerMixin:
         if self.player is not None:
             self.flush_watch_range()
             duration = self.current_duration_seconds()
-            if duration <= 0:
+            allow_unknown_duration_seek = isinstance(self.player, ClapperPlayer)
+            if duration <= 0 and not allow_unknown_duration_seek:
                 if defer_until_ready:
                     self.queue_seek_media(seconds)
                 return False
@@ -2318,7 +1985,7 @@ class PlayerMixin:
                 if defer_until_ready:
                     self.queue_seek_media(seconds)
                 else:
-                    self.log(f"mpv seek failed: {exc}")
+                    self.log(f"playback seek failed: {exc}")
                 return False
             if user_initiated:
                 self.suppress_sponsorblock_for_seek(seconds)
@@ -2351,9 +2018,29 @@ class PlayerMixin:
         if start is not None and current > start:
             self.service.record_watch_range(self.current_playable.video.id, start, current)
             self.range_start_seconds = current
-            self.reload_history()
-            self.reload_visible_video_grid()
+            self.watch_progress_views_dirty = True
         return True
+
+    def refresh_watch_progress_views(self) -> None:
+        if not self.watch_progress_views_dirty or self.cleaned_up:
+            return
+        self.watch_progress_views_dirty = False
+        if self.current_view is None:
+            return
+        if self.current_view.page == "history":
+            self.reload_history()
+            return
+        if self.current_view.page == "watch_later":
+            self.reload_watch_later()
+            return
+        if self.current_view.channel_id is not None:
+            self.populate_video_grid(
+                self.feed_grid,
+                self.service.repository.channel_videos(
+                    self.current_view.channel_id,
+                    self.channel_video_limits.get(self.current_view.channel_id, 30),
+                ),
+            )
 
     def reload_visible_video_grid(self) -> None:
         if self.current_view is None:
@@ -2425,10 +2112,7 @@ class PlayerMixin:
     def maybe_log_playback_diagnostics(self, current: int, duration: int) -> None:
         if not self.verbose or self.player is None:
             return
-        if not self.mpv_file_loaded or duration <= 0:
-            return
-        speed = self.mpv_property("speed")
-        if self.playback_rate == 1.0 and speed in (None, 1, 1.0):
+        if not self.playback_file_loaded or duration <= 0:
             return
         now = time.monotonic()
         if now - self.last_playback_diagnostics_at < 5:
@@ -2437,8 +2121,12 @@ class PlayerMixin:
         names = (
             "speed",
             "pause",
+            "state",
             "time-pos",
             "duration",
+            "hwdec-current",
+            "video-format",
+            "video-codec",
             "cache-buffering-state",
             "demuxer-cache-duration",
             "demuxer-cache-time",
@@ -2450,7 +2138,7 @@ class PlayerMixin:
             "frame-drop-count",
         )
         values = {
-            name: self.mpv_property(name)
+            name: self.playback_property(name)
             for name in names
         }
         paused = bool(values.get("pause"))
@@ -2478,9 +2166,10 @@ class PlayerMixin:
         self.last_playback_diagnostics_at = now
         self.last_playback_diagnostics_values = values
         self.last_playback_diagnostics_paused = paused
-        self.verbose_log("mpv playback diagnostics " + " ".join(parts))
+        backend = getattr(self.player, "backend", "player")
+        self.verbose_log(f"{backend} playback diagnostics " + " ".join(parts))
 
-    def mpv_property(self, name: str) -> object | None:
+    def playback_property(self, name: str) -> object | None:
         if self.player is None:
             return None
         try:
@@ -2491,11 +2180,4 @@ class PlayerMixin:
         try:
             return getattr(self.player, name.replace("-", "_"))
         except Exception:
-            return None
-
-    def mpv_float_property(self, name: str) -> float | None:
-        value = self.mpv_property(name)
-        try:
-            return float(value) if value is not None else None
-        except (TypeError, ValueError):
             return None

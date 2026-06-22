@@ -18,7 +18,9 @@ class InstallDepsTests(unittest.TestCase):
 
     def test_rejects_package_names_with_shell_metacharacters(self) -> None:
         with self.assertRaises(ValueError):
-            install_deps.apt_install_args(["python3-gi", "libmpv2;touch /tmp/pwned"])
+            install_deps.apt_install_args(
+                ["python3-gi", "libclapper-gtk-0.0-0;touch /tmp/pwned"]
+            )
 
     def test_run_privileged_apt_runs_update_then_install_as_argv(self) -> None:
         completed = mock.Mock(returncode=0)

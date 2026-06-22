@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import locale
 import shutil
 import signal
 import sys
@@ -35,14 +34,18 @@ site-packages so it can see python3-gi:
   .venv/bin/python -m gtktube
 """
 
-MPV_HELP = """\
-GTKTube needs libmpv and the Python mpv bindings.
+CLAPPER_HELP = """\
+GTKTube needs Clapper and GStreamer from your system packages.
 
 On Debian/Ubuntu:
   ./scripts/install-apt-deps.sh
 
-Then install Python dependencies in your environment:
-  python3 -m pip install -r requirements.txt
+If you run GTKTube from a virtualenv, recreate it with access to system
+site-packages so it can see the Clapper and GStreamer GI bindings:
+  rm -rf .venv
+  python3 -m venv --system-site-packages .venv
+  .venv/bin/python -m pip install -r requirements.txt
+  .venv/bin/python -m gtktube
 """
 
 
@@ -176,10 +179,6 @@ def install_desktop_entry(exec_path: str) -> None:
     desktop_file.chmod(0o644)
 
 
-def configure_mpv_locale() -> None:
-    locale.setlocale(locale.LC_NUMERIC, "C")
-
-
 def ensure_pygobject() -> bool:
     try:
         import gi
@@ -192,19 +191,29 @@ def ensure_pygobject() -> bool:
     return True
 
 
-def ensure_mpv() -> bool:
-    configure_mpv_locale()
+def ensure_clapper() -> bool:
     try:
-        import mpv  # noqa: F401
-    except (ImportError, ModuleNotFoundError, OSError) as exc:
-        print(MPV_HELP, file=sys.stderr)
+        import gi
+
+        gi.require_version("Gst", "1.0")
+        gi.require_version("Clapper", "0.0")
+        from gi.repository import Clapper, Gst
+
+        Gst.init(None)
+        ok, _argv = Clapper.init_check(None)
+        if not ok:
+            raise RuntimeError("Clapper initialization failed")
+        if Gst.ElementFactory.find("clappersink") is None:
+            raise RuntimeError("GStreamer clappersink element not found")
+    except (ImportError, ModuleNotFoundError, OSError, RuntimeError, ValueError) as exc:
+        print(CLAPPER_HELP, file=sys.stderr)
         print(f"Original import error: {exc}", file=sys.stderr)
         return False
     return True
 
 
 def dependency_checks_pass() -> bool:
-    return ensure_pygobject() and ensure_mpv()
+    return ensure_pygobject() and ensure_clapper()
 
 
 def launch_dependency_installer() -> None:

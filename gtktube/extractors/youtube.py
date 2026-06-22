@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import urllib.parse
 from dataclasses import replace
@@ -37,8 +38,27 @@ class QuietYtdlpLogger:
         pass
 
 
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def clean_ytdlp_error_message(message: str) -> str:
+    message = ANSI_ESCAPE_RE.sub("", message)
+    message = message.replace("\r", " ").replace("\n", " ")
+    message = re.sub(r"\s+", " ", message).strip()
+    message = re.sub(r"^ERROR:\s*", "", message, flags=re.IGNORECASE)
+    message = re.sub(r"^\[youtube\]\s+\S+:\s*", "", message)
+    return message or "Could not load video"
+
+
+def playback_error_message(message: str) -> str:
+    cleaned = clean_ytdlp_error_message(message)
+    if is_restricted_video_error(cleaned):
+        return "This video is members-only or otherwise restricted."
+    return cleaned
+
+
 def is_restricted_video_error(message: str) -> bool:
-    text = message.lower()
+    text = clean_ytdlp_error_message(message).lower()
     return (
         "available to this channel's members" in text
         or "members-only" in text
@@ -47,10 +67,12 @@ def is_restricted_video_error(message: str) -> bool:
 
 
 def is_unavailable_format_error(message: str) -> bool:
-    return "requested format is not available" in message.lower()
+    return "requested format is not available" in clean_ytdlp_error_message(message).lower()
 
 
 DEFAULT_PLAYBACK_FORMAT = (
+    "bestvideo[vcodec^=avc1][height<=720]+bestaudio[acodec^=mp4a]/"
+    "best[vcodec^=avc1][acodec^=mp4a][height<=720]/"
     "bestvideo[height<=720]+bestaudio/"
     "best[height<=720]/"
     "best[acodec!=none][vcodec!=none]"
@@ -58,22 +80,30 @@ DEFAULT_PLAYBACK_FORMAT = (
 
 QUALITY_FORMATS = {
     "360p": (
+        "bestvideo[vcodec^=avc1][height<=360]+bestaudio[acodec^=mp4a]/"
+        "best[vcodec^=avc1][acodec^=mp4a][height<=360]/"
         "bestvideo[height<=360]+bestaudio/"
         "best[height<=360]/"
         "best[acodec!=none][vcodec!=none][height<=360]"
     ),
     "480p": (
+        "bestvideo[vcodec^=avc1][height<=480]+bestaudio[acodec^=mp4a]/"
+        "best[vcodec^=avc1][acodec^=mp4a][height<=480]/"
         "bestvideo[height<=480]+bestaudio/"
         "best[height<=480]/"
         "best[acodec!=none][vcodec!=none][height<=480]"
     ),
     "720p": DEFAULT_PLAYBACK_FORMAT,
     "1080p": (
+        "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[acodec^=mp4a]/"
+        "best[vcodec^=avc1][acodec^=mp4a][height<=1080]/"
         "bestvideo[height<=1080]+bestaudio/"
         "best[height<=1080]/"
         "best[acodec!=none][vcodec!=none][height<=1080]"
     ),
     "best": (
+        "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+        "best[vcodec^=avc1][acodec^=mp4a]/"
         "bestvideo+bestaudio/"
         "best[acodec!=none][vcodec!=none]"
     ),
@@ -154,7 +184,7 @@ class YoutubeExtractor:
             with self._youtube_dl()(options) as ydl:
                 return ydl.extract_info(target, download=False)
         except Exception as exc:
-            raise ExtractorError(str(exc)) from exc
+            raise ExtractorError(playback_error_message(str(exc))) from exc
 
     def resolve_playlist(self, url: str) -> dict[str, Any]:
         info = self._extract(url, flat=True, ignore_errors=True)
@@ -197,7 +227,8 @@ class YoutubeExtractor:
                             info = ydl.extract_info(url, download=False)
                     except Exception as retry_exc:
                         raise RestrictedVideoError(
-                            f"Video is restricted and cookies failed: {retry_exc}"
+                            "Video is restricted and cookies failed: "
+                            f"{playback_error_message(str(retry_exc))}"
                         ) from retry_exc
                 elif cookies_mode == "restricted_prompt" and cookies_browser:
                     raise RestrictedVideoError("Video is members-only or otherwise restricted.") from exc
@@ -232,9 +263,11 @@ class YoutubeExtractor:
                         break
                     else:
                         retry_error = retry_error or exc
-                        raise ExtractorError(str(retry_error)) from retry_error
+                        raise ExtractorError(
+                            playback_error_message(str(retry_error))
+                        ) from retry_error
                 else:
-                    raise ExtractorError(str(exc)) from exc
+                    raise ExtractorError(playback_error_message(str(exc))) from exc
 
         video = self._video_from_info(info)
         if video.availability is None:
@@ -249,6 +282,14 @@ class YoutubeExtractor:
             quality=selected_quality,
             audio_url=audio_url,
             resolved_quality=self._resolved_quality(info),
+            available_stream_qualities=self._available_qualities(
+                info,
+                require_audio=True,
+            ),
+            available_prefetch_qualities=self._available_qualities(
+                info,
+                require_audio=False,
+            ),
             captions=self._caption_tracks(info),
             chapters=self._chapters(info),
         )
@@ -269,7 +310,7 @@ class YoutubeExtractor:
             with self._youtube_dl()(options) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception as exc:
-            raise ExtractorError(str(exc)) from exc
+            raise ExtractorError(playback_error_message(str(exc))) from exc
         video = self._video_from_info(info)
         if video.availability is None:
             video = replace(video, availability="public")
@@ -310,7 +351,11 @@ class YoutubeExtractor:
             with self._youtube_dl()(options) as ydl:
                 ydl.extract_info(url, download=True)
         except Exception as exc:
-            raise ExtractorError(str(exc)) from exc
+            if is_restricted_video_error(str(exc)):
+                raise RestrictedVideoError(
+                    "This video is members-only or otherwise restricted."
+                ) from exc
+            raise ExtractorError(playback_error_message(str(exc))) from exc
 
     def resolve_channel(self, url: str) -> Channel:
         info = self._extract(url, flat=True, limit=1)
@@ -482,7 +527,7 @@ class YoutubeExtractor:
                 entries = self._entries(info)
                 return [self._video_from_info(entry) for entry in entries if entry]
         except Exception as exc:
-            raise ExtractorError(str(exc)) from exc
+            raise ExtractorError(playback_error_message(str(exc))) from exc
 
     def subscription_channels(
         self,
@@ -504,7 +549,7 @@ class YoutubeExtractor:
                     download=False,
                 )
         except Exception as exc:
-            raise ExtractorError(str(exc)) from exc
+            raise ExtractorError(playback_error_message(str(exc))) from exc
 
         channels: list[Channel] = []
         seen: set[str] = set()
@@ -536,7 +581,7 @@ class YoutubeExtractor:
                 entries = self._entries(info)
                 return [self._video_from_info(entry) for entry in entries if entry]
         except Exception as exc:
-            raise ExtractorError(str(exc)) from exc
+            raise ExtractorError(playback_error_message(str(exc))) from exc
 
     def _channel_from_info(self, info: dict[str, Any]) -> Channel:
         channel_id = (
@@ -741,6 +786,40 @@ class YoutubeExtractor:
             return str(format_note)
         format_id = info.get("format_id")
         return str(format_id) if format_id else None
+
+    def _available_qualities(
+        self,
+        info: dict[str, Any],
+        *,
+        require_audio: bool,
+    ) -> list[str]:
+        heights: set[int] = set()
+        for item in info.get("formats") or []:
+            if not isinstance(item, dict):
+                continue
+            vcodec = item.get("vcodec")
+            if not vcodec or vcodec == "none":
+                continue
+            if require_audio:
+                acodec = item.get("acodec")
+                if not acodec or acodec == "none":
+                    continue
+            height = self._optional_int(item.get("height"))
+            if height:
+                heights.add(height)
+        qualities = [
+            quality
+            for quality in QUALITY_FORMATS
+            if quality != "best"
+            and (height := self._quality_height(quality)) is not None
+            and height in heights
+        ]
+        return qualities
+
+    def _quality_height(self, quality: str) -> int | None:
+        if not quality.endswith("p"):
+            return None
+        return self._optional_int(quality[:-1])
 
     def _caption_tracks(self, info: dict[str, Any]) -> list[CaptionTrack]:
         tracks: list[CaptionTrack] = []

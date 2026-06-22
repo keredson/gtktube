@@ -178,7 +178,7 @@ def run_privileged_apt(launcher: str, packages: list[str]) -> subprocess.Complet
 def fallback_gui_install(missing: list[str]) -> int:
     command = apt_command(missing)
     message = (
-        "GTKTube needs system packages for GTK4, PyGObject, and libmpv.\n\n"
+        "GTKTube needs system packages for GTK4, PyGObject, Clapper, and GStreamer.\n\n"
         f"{command}"
     )
     if shutil.which("zenity"):
