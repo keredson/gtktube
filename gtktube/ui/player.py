@@ -1037,22 +1037,14 @@ class PlayerMixin:
         self.miniplayer_video_container.set_hexpand(True)
         self.miniplayer_video_container.set_vexpand(True)
         self.miniplayer_video_container.set_valign(Gtk.Align.FILL)
+        self.miniplayer_video_container.set_halign(Gtk.Align.FILL)
         self.miniplayer_video_container.set_size_request(-1, -1)
-        self.video_frame.set_size_request(-1, 360)
-        self.video_overlay.set_size_request(-1, 360)
-        self.video_stack.set_size_request(-1, 360)
+        self.configure_video_surface(expanded=True)
         self.miniplayer_controls_container.set_hexpand(True)
         self.miniplayer_controls_container.set_vexpand(False)
         self.miniplayer_controls_container.set_valign(Gtk.Align.FILL)
         self.miniplayer_info.get_parent().set_visible(False)
         self.player_metadata.set_visible(True)
-        self.video_stack.set_hexpand(True)
-        self.video_stack.set_vexpand(True)
-        self.video_stack.set_valign(Gtk.Align.FILL)
-        self.clapper_video.set_hexpand(True)
-        self.clapper_video.set_vexpand(True)
-        self.clapper_video.set_valign(Gtk.Align.FILL)
-        self.clapper_video.set_size_request(-1, 360)
         self.player_controls.set_margin_top(8)
         self.player_controls.set_margin_bottom(8)
         self.player_controls.set_margin_start(12)
@@ -1073,22 +1065,14 @@ class PlayerMixin:
         self.miniplayer_video_container.set_hexpand(False)
         self.miniplayer_video_container.set_vexpand(False)
         self.miniplayer_video_container.set_valign(Gtk.Align.CENTER)
+        self.miniplayer_video_container.set_halign(Gtk.Align.START)
         self.miniplayer_video_container.set_size_request(176, 99)
-        self.video_frame.set_size_request(176, 99)
-        self.video_overlay.set_size_request(176, 99)
-        self.video_stack.set_size_request(176, 99)
+        self.configure_video_surface(expanded=False)
         self.miniplayer_controls_container.set_hexpand(True)
         self.miniplayer_controls_container.set_vexpand(False)
         self.miniplayer_controls_container.set_valign(Gtk.Align.CENTER)
         self.miniplayer_info.get_parent().set_visible(True)
         self.player_metadata.set_visible(False)
-        self.video_stack.set_hexpand(False)
-        self.video_stack.set_vexpand(False)
-        self.video_stack.set_valign(Gtk.Align.CENTER)
-        self.clapper_video.set_hexpand(False)
-        self.clapper_video.set_vexpand(False)
-        self.clapper_video.set_valign(Gtk.Align.CENTER)
-        self.clapper_video.set_size_request(176, 99)
         self.player_controls.set_margin_top(0)
         self.player_controls.set_margin_bottom(0)
         self.player_controls.set_margin_start(0)
@@ -1096,6 +1080,31 @@ class PlayerMixin:
         self.miniplayer.set_visible(True)
         self.video_stack.queue_resize()
         self.clapper_video.queue_draw()
+
+    def configure_video_surface(self, expanded: bool) -> None:
+        width, height = (-1, 360) if expanded else (176, 99)
+        hexpand = expanded
+        vexpand = expanded
+        halign = Gtk.Align.FILL if expanded else Gtk.Align.START
+        valign = Gtk.Align.FILL if expanded else Gtk.Align.CENTER
+        self.video_viewport.set_propagate_natural_width(expanded)
+        self.video_viewport.set_propagate_natural_height(expanded)
+        self.video_viewport.set_min_content_width(0 if expanded else 176)
+        self.video_viewport.set_max_content_width(-1 if expanded else 176)
+        self.video_viewport.set_min_content_height(0 if expanded else 99)
+        self.video_viewport.set_max_content_height(-1 if expanded else 99)
+        for widget in (
+            self.video_viewport,
+            self.video_frame,
+            self.video_overlay,
+            self.video_stack,
+            self.clapper_video,
+        ):
+            widget.set_hexpand(hexpand)
+            widget.set_vexpand(vexpand)
+            widget.set_halign(halign)
+            widget.set_valign(valign)
+            widget.set_size_request(width, height)
 
     def hide_miniplayer(self) -> None:
         self.miniplayer.set_visible(False)

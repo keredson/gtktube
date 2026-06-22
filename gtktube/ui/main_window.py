@@ -1970,7 +1970,17 @@ class MainWindow(
         self.video_frame.set_child(self.video_overlay)
         self.video_overlay.set_overflow(Gtk.Overflow.HIDDEN)
         self.video_stack.set_overflow(Gtk.Overflow.HIDDEN)
-        self.miniplayer_video_container.append(self.video_frame)
+        self.video_viewport = Gtk.ScrolledWindow()
+        self.video_viewport.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
+        self.video_viewport.set_child(self.video_frame)
+        self.video_viewport.set_overflow(Gtk.Overflow.HIDDEN)
+        self.video_viewport.set_propagate_natural_width(False)
+        self.video_viewport.set_propagate_natural_height(False)
+        self.video_viewport.set_min_content_width(176)
+        self.video_viewport.set_max_content_width(176)
+        self.video_viewport.set_min_content_height(99)
+        self.video_viewport.set_max_content_height(99)
+        self.miniplayer_video_container.append(self.video_viewport)
 
         self.player_loading_overlay = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
