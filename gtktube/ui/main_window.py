@@ -4,7 +4,7 @@ import json
 import sys
 import time
 import traceback
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from concurrent.futures import Future, wait
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -17,6 +17,7 @@ gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 
+from gtktube.daemon_executor import DaemonThreadPoolExecutor
 from gtktube.extractors.youtube import ExtractorError, QUALITY_FORMATS, is_playlist_url
 from gtktube.models import Channel, PlayableVideo, SearchResults, SponsorBlockSegment, Video
 from gtktube.paths import AppPaths
@@ -119,7 +120,7 @@ class MainWindow(
         self.playback_cache_dir.mkdir(parents=True, exist_ok=True)
         self.download_dir = paths.data_dir / "downloads"
         self.download_dir.mkdir(parents=True, exist_ok=True)
-        self.executor = ThreadPoolExecutor(max_workers=3)
+        self.executor = DaemonThreadPoolExecutor(max_workers=3)
         self.pending_futures: set[Future[Any]] = set()
         self.download_menu_items: dict[object, dict[str, Any]] = {}
         self.recommended_cache: list[Video] | None = None

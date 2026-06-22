@@ -158,10 +158,18 @@ class ChromeMixin:
             self.playlist_store.append(VideoObject(video))
         self.playlist_skip_set.clear()
         self.playlist_current_index = None
+        if self.playlist_store.get_n_items() == 0:
+            title = str(result.get("title") or "Playlist")
+            self.set_status(f"{title} has no playable videos")
+            self.verbose_log(f"playlist loaded with no videos title={title!r}")
+            self.update_transport_navigation_buttons()
+            return
         self.set_status("Playlist loaded")
         self.update_transport_navigation_buttons()
-        if self.playlist_store.get_n_items() > 0:
-            self.play_playlist_item(0)
+        start_index = int(result.get("start_index") or 0)
+        if start_index < 0 or start_index >= self.playlist_store.get_n_items():
+            start_index = 0
+        self.play_playlist_item(start_index)
 
     def navigate_to(self, view: ViewState, record: bool = True) -> None:
         if self.current_view == view:

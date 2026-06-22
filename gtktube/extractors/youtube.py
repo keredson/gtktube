@@ -187,7 +187,8 @@ class YoutubeExtractor:
             raise ExtractorError(playback_error_message(str(exc))) from exc
 
     def resolve_playlist(self, url: str) -> dict[str, Any]:
-        info = self._extract(url, flat=True, ignore_errors=True)
+        start_video_id = playlist_start_video_id(url)
+        info = self._extract(playlist_url(url), flat=True, ignore_errors=True)
         title = info.get("title") if isinstance(info, dict) else None
         entries = self._entries(info)
         videos = [
@@ -195,7 +196,17 @@ class YoutubeExtractor:
             for entry in entries
             if entry is not None
         ]
-        return {"title": title or "Playlist", "videos": videos}
+        start_index = 0
+        if start_video_id:
+            for index, video in enumerate(videos):
+                if video.id == start_video_id:
+                    start_index = index
+                    break
+        return {
+            "title": title or "Playlist",
+            "videos": videos,
+            "start_index": start_index,
+        }
 
     def resolve_video(
         self,
@@ -700,7 +711,9 @@ class YoutubeExtractor:
 
     def playlist_thumbnail(self, url: str) -> str | None:
         try:
-            info = self._extract(url, flat=True, limit=1, ignore_errors=True)
+            info = self._extract(
+                playlist_url(url), flat=True, limit=1, ignore_errors=True
+            )
         except ExtractorError:
             return None
         if not isinstance(info, dict):
@@ -928,3 +941,34 @@ def is_playlist_url(url: str) -> bool:
     parsed = urllib.parse.urlparse(url)
     params = urllib.parse.parse_qs(parsed.query)
     return "list" in params
+
+
+def playlist_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query)
+    playlist_ids = params.get("list")
+    if not playlist_ids or not playlist_ids[0]:
+        return url
+    return urllib.parse.urlunparse(
+        (
+            parsed.scheme or "https",
+            parsed.netloc or "www.youtube.com",
+            "/playlist",
+            "",
+            urllib.parse.urlencode({"list": playlist_ids[0]}),
+            "",
+        )
+    )
+
+
+def playlist_start_video_id(url: str) -> str | None:
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query)
+    video_ids = params.get("v")
+    if video_ids and video_ids[0]:
+        return video_ids[0]
+    if parsed.netloc.lower().endswith("youtu.be"):
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if path_parts:
+            return path_parts[0]
+    return None

@@ -9,6 +9,7 @@ from gtktube.extractors.youtube import (
     is_restricted_video_error,
     is_unavailable_format_error,
     playback_error_message,
+    playlist_url,
 )
 from gtktube.models import Channel
 
@@ -285,7 +286,90 @@ class ChannelPaginationTest(unittest.TestCase):
 
         result = extractor.resolve_playlist("https://www.youtube.com/playlist?list=PL123")
 
-        self.assertEqual(result, {"title": "Playlist", "videos": []})
+        self.assertEqual(result, {"title": "Playlist", "videos": [], "start_index": 0})
+
+    def test_playlist_url_uses_list_param_from_watch_url(self) -> None:
+        self.assertEqual(
+            playlist_url(
+                "https://www.youtube.com/watch?v=uJapcLoN4UM"
+                "&list=PLlCrV9TCfzMZzFYxcpM1jZMedw7FSinBc"
+            ),
+            "https://www.youtube.com/playlist?list=PLlCrV9TCfzMZzFYxcpM1jZMedw7FSinBc",
+        )
+
+    def test_resolve_playlist_extracts_canonical_playlist_url(self) -> None:
+        targets: list[str] = []
+
+        class FakeYoutubeDL:
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(
+                self, target: str, download: bool = False
+            ) -> dict[str, object]:
+                targets.append(target)
+                return {"title": "Playlist", "entries": []}
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        extractor.resolve_playlist(
+            "https://www.youtube.com/watch?v=uJapcLoN4UM"
+            "&list=PLlCrV9TCfzMZzFYxcpM1jZMedw7FSinBc"
+        )
+
+        self.assertEqual(
+            targets,
+            [
+                "https://www.youtube.com/playlist?list=PLlCrV9TCfzMZzFYxcpM1jZMedw7FSinBc"
+            ],
+        )
+
+    def test_resolve_playlist_starts_at_video_from_watch_url(self) -> None:
+        class FakeYoutubeDL:
+            def __init__(self, options: dict[str, object]) -> None:
+                self.options = options
+
+            def __enter__(self) -> "FakeYoutubeDL":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def extract_info(
+                self, target: str, download: bool = False
+            ) -> dict[str, object]:
+                return {
+                    "title": "Playlist",
+                    "entries": [
+                        {
+                            "id": "first",
+                            "title": "First",
+                            "url": "https://www.youtube.com/watch?v=first",
+                        },
+                        {
+                            "id": "uJapcLoN4UM",
+                            "title": "Requested",
+                            "url": "https://www.youtube.com/watch?v=uJapcLoN4UM",
+                        },
+                    ],
+                }
+
+        extractor = YoutubeExtractor()
+        extractor._ydl_cls = FakeYoutubeDL
+
+        result = extractor.resolve_playlist(
+            "https://www.youtube.com/watch?v=uJapcLoN4UM"
+            "&list=PLlCrV9TCfzMZzFYxcpM1jZMedw7FSinBc"
+        )
+
+        self.assertEqual(result["start_index"], 1)
 
     def test_channel_playlists_are_tagged_as_playlists(self) -> None:
         class FakeYoutubeDL:

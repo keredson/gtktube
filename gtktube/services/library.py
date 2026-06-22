@@ -6,11 +6,12 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from dataclasses import replace
 from pathlib import Path
 
 from gtktube.db.repositories import LibraryRepository
+from gtktube.daemon_executor import DaemonThreadPoolExecutor
 from gtktube.extractors.youtube import (
     ExtractorError,
     QUALITY_FORMATS,
@@ -241,7 +242,7 @@ class LibraryService:
                     progress(channel, "finish")
 
         errors: list[BaseException] = []
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        with DaemonThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = [executor.submit(refresh, channel) for channel in channels]
             for future in as_completed(futures):
                 try:

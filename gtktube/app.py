@@ -4,10 +4,10 @@ import os
 import shutil
 import signal
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from importlib import resources
 from pathlib import Path
 
+from .daemon_executor import DaemonThreadPoolExecutor
 from .db.connection import connect
 from .db.migrations import UnsupportedDatabaseSchema, migrate
 from .db.repositories import LibraryRepository
@@ -246,7 +246,7 @@ def run_upgrade_tool(reason: str, gtk_argv: list[str]) -> int:
                 application_id="local.gtktube.GTKTube.Upgrade",
                 flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
             )
-            self.executor = ThreadPoolExecutor(max_workers=1)
+            self.executor = DaemonThreadPoolExecutor(max_workers=1)
             self.status: Gtk.Label | None = None
 
         def do_activate(self) -> None:
