@@ -391,6 +391,7 @@ class VideoGridMixin:
         tile.set_halign(Gtk.Align.FILL)
         tile.set_hexpand(True)
         tile.set_focusable(True)
+        tile.set_tooltip_text(video.title)
 
         left_click = Gtk.GestureClick()
         left_click.set_button(1)
@@ -432,6 +433,7 @@ class VideoGridMixin:
         thumbnail.set_can_shrink(False)
         thumbnail.set_hexpand(True)
         thumbnail.set_halign(Gtk.Align.FILL)
+        thumbnail.set_tooltip_text(video.title)
         self.load_thumbnail(
             video,
             thumbnail,
@@ -439,9 +441,32 @@ class VideoGridMixin:
             height=QUEUE_THUMBNAIL_HEIGHT,
         )
 
+        thumbnail_overlay = Gtk.Overlay()
+        thumbnail_overlay.set_child(thumbnail)
+        availability_badge = self.availability_badge(video)
+        if availability_badge is not None:
+            thumbnail_overlay.add_overlay(availability_badge)
+        if is_playlist_url(video.url):
+            thumbnail_overlay.add_overlay(self.playlist_badge())
+        elif video.duration_seconds:
+            thumbnail_overlay.add_overlay(self.duration_badge(video.duration_seconds))
+
         aspect = Gtk.AspectFrame.new(0.5, 0.5, 16 / 9, False)
         aspect.set_size_request(QUEUE_THUMBNAIL_WIDTH, QUEUE_THUMBNAIL_HEIGHT)
-        aspect.set_child(thumbnail)
+        aspect.set_child(thumbnail_overlay)
+
+        if video.watch_ranges:
+            progress = Gtk.DrawingArea()
+            progress.set_size_request(QUEUE_THUMBNAIL_WIDTH, 3)
+            progress.set_halign(Gtk.Align.FILL)
+            progress.set_valign(Gtk.Align.END)
+            progress.set_draw_func(
+                lambda _area, cr, width, height, v=video: self.draw_video_progress(
+                    cr, width, height, v
+                )
+            )
+            thumbnail_overlay.add_overlay(progress)
+
         tile.append(aspect)
 
         return tile

@@ -3333,6 +3333,7 @@ class MainWindow(
         video = item.video
         row = Gtk.ListBoxRow()
         row.add_css_class("queue-row")
+        row.set_tooltip_text(video.title)
 
         tile = self.queue_video_tile(
             video,
@@ -3405,6 +3406,7 @@ class MainWindow(
         video = item.video
         row = Gtk.ListBoxRow()
         row.add_css_class("queue-row")
+        row.set_tooltip_text(video.title)
         tile = self.queue_video_tile(
             video,
             on_clicked=lambda _: self.play_playlist_item(row.get_index()),
