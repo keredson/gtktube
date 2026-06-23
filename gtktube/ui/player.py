@@ -318,6 +318,7 @@ class PlayerMixin:
         self.show_full_player()
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
+        self.schedule_next_playback_prefetch()
 
     def set_player_loading(self, loading: bool) -> None:
         self.player_loading_overlay.set_visible(loading)
@@ -1614,6 +1615,81 @@ class PlayerMixin:
 
     def on_transport_items_changed(self, *_args: object) -> None:
         self.update_transport_navigation_buttons()
+        self.schedule_next_playback_prefetch()
+
+    def next_prefetch_video(self) -> Video | None:
+        if self.selected_playback_mode() != "fetch":
+            return None
+        if self.current_playable is None:
+            return None
+        if self.video_queue.get_n_items() > 0:
+            return self.video_queue.get_item(0).video
+        next_playlist_index = self.playlist_next_index()
+        if next_playlist_index is None:
+            return None
+        return self.playlist_store.get_item(next_playlist_index).video
+
+    def schedule_next_playback_prefetch(self) -> None:
+        video = self.next_prefetch_video()
+        if video is None:
+            return
+        quality = self.selected_quality()
+        key = (video.id, quality)
+        if self.prefetch_playback_key == key:
+            return
+        cached_path = self.service.playback_cache_file_for_video(
+            self.playback_cache_dir,
+            video.id,
+            quality,
+        )
+        if cached_path is not None:
+            self.verbose_log(
+                "playback prefetch skipped cached "
+                f"video={video.id} quality={quality} path={cached_path}"
+            )
+            return
+        self.prefetch_request_id += 1
+        request_id = self.prefetch_request_id
+        self.prefetch_playback_key = key
+        self.verbose_log(
+            "playback prefetch starting "
+            f"video={video.id} quality={quality}"
+        )
+        future = self.submit_background(
+            self.service.fetch_playback_video,
+            video,
+            quality,
+            self.playback_cache_dir,
+        )
+        if future is None:
+            self.prefetch_playback_key = None
+            return
+
+        def done() -> bool:
+            if self.prefetch_request_id != request_id:
+                return False
+            self.prefetch_playback_key = None
+            try:
+                path = future.result()
+            except CancelledError:
+                self.verbose_log(
+                    "playback prefetch cancelled "
+                    f"video={video.id} quality={quality}"
+                )
+            except Exception as exc:
+                self.verbose_log(
+                    "playback prefetch failed "
+                    f"video={video.id} quality={quality}: {exc}"
+                )
+            else:
+                self.verbose_log(
+                    "playback prefetch cached "
+                    f"video={video.id} quality={quality} path={path}"
+                )
+                self.schedule_next_playback_prefetch()
+            return False
+
+        self.schedule_background_finish(future, done)
 
     def on_previous_clicked(self, _button: Gtk.Button) -> None:
         self.play_previous_in_playlist()

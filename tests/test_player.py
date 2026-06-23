@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from concurrent.futures import CancelledError
+from concurrent.futures import CancelledError, Future
 from pathlib import Path
 from typing import Callable
 
@@ -24,6 +24,28 @@ class _Stack:
 
     def set_visible_child_name(self, name: str) -> None:
         self.visible_child_name = name
+
+
+class _VideoItem:
+    def __init__(self, video: Video) -> None:
+        self.video = video
+
+
+class _ListStore:
+    def __init__(self) -> None:
+        self.items: list[_VideoItem] = []
+
+    def append(self, item: _VideoItem) -> None:
+        self.items.append(item)
+
+    def get_n_items(self) -> int:
+        return len(self.items)
+
+    def get_item(self, index: int) -> _VideoItem:
+        return self.items[index]
+
+    def remove(self, index: int) -> None:
+        del self.items[index]
 
 
 class _Combo:
@@ -61,6 +83,8 @@ class _Service:
         self.play_video_calls = 0
         self.fetch_playback_video_calls = 0
         self.play_cached_video_calls = 0
+        self.fetch_playback_video_args: list[tuple[str, str]] = []
+        self.cached_playback: set[tuple[str, str]] = set()
         self.repository = self
         self.default_quality: tuple[str, str] | None = None
 
@@ -75,10 +99,12 @@ class _Service:
 
     def playback_cache_file_for_video(
         self,
-        _target_dir: Path,
-        _video_id: str,
-        _quality: str,
+        target_dir: Path,
+        video_id: str,
+        quality: str,
     ) -> Path | None:
+        if (video_id, quality) in self.cached_playback:
+            return target_dir / f"cached-{quality}.mp4"
         return None
 
     def play_video(self, *_args: object, **_kwargs: object) -> PlayableVideo:
@@ -110,6 +136,8 @@ class _Service:
         progress: Callable[[dict[str, object]], None] | None = None,
     ) -> Path:
         self.fetch_playback_video_calls += 1
+        self.fetch_playback_video_args.append((_video.id, quality))
+        self.cached_playback.add((_video.id, quality))
         if progress is not None:
             progress({"status": "finished"})
         return target_dir / f"cached-{quality}.mp4"
@@ -173,6 +201,12 @@ class _PlayerHarness(PlayerMixin):
         self.current_playable: PlayableVideo | None = None
         self.pending_playback_video: Video | None = None
         self.pending_playback_playlist_url: str | None = None
+        self.prefetch_request_id = 0
+        self.prefetch_playback_key: tuple[str, str] | None = None
+        self.video_queue = _ListStore()
+        self.playlist_store = _ListStore()
+        self.playlist_skip_set: set[int] = set()
+        self.current_playlist_url: str | None = None
 
     def navigate_to(self, _view: object) -> None:
         pass
@@ -227,6 +261,29 @@ class _PlayerHarness(PlayerMixin):
         **_kwargs: object,
     ) -> None:
         self.tasks.append((label, work))
+
+    def submit_background(
+        self,
+        fn: Callable[..., object],
+        *args: object,
+        **kwargs: object,
+    ) -> Future[object]:
+        future: Future[object] = Future()
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as exc:
+            future.set_exception(exc)
+        return future
+
+    def schedule_background_finish(
+        self,
+        _future: Future[object],
+        callback: Callable[[], bool],
+    ) -> None:
+        callback()
+
+    def update_transport_navigation_buttons(self) -> None:
+        pass
 
     def load_playable_if_current(
         self,
@@ -318,6 +375,84 @@ class PlayerMixinTests(unittest.TestCase):
             self.assertEqual(label, "Resolving video...")
             self.assertEqual(work().resolved_quality, "1080p")
             self.assertEqual(harness.service.play_video_calls, 1)
+
+    def test_fetch_mode_prefetches_next_queue_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            harness = _PlayerHarness(Path(temp))
+            current = Video(
+                id="video1",
+                title="Video One",
+                url="https://example.test/watch?v=video1",
+            )
+            next_video = Video(
+                id="video2",
+                title="Video Two",
+                url="https://example.test/watch?v=video2",
+            )
+            harness.current_playable = PlayableVideo(
+                video=current,
+                stream_url="https://example.test/current.mp4",
+                quality="1080p",
+                resolved_quality="cached 1080p",
+            )
+            harness.video_queue.append(_VideoItem(next_video))
+
+            harness.schedule_next_playback_prefetch()
+
+            self.assertEqual(harness.service.fetch_playback_video_args, [("video2", "1080p")])
+
+    def test_fetch_mode_prefetches_next_playlist_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            harness = _PlayerHarness(Path(temp))
+            current = Video(
+                id="video1",
+                title="Video One",
+                url="https://example.test/watch?v=video1",
+            )
+            next_video = Video(
+                id="video2",
+                title="Video Two",
+                url="https://example.test/watch?v=video2",
+            )
+            harness.current_playable = PlayableVideo(
+                video=current,
+                stream_url="https://example.test/current.mp4",
+                quality="1080p",
+                resolved_quality="cached 1080p",
+            )
+            harness.playlist_current_index = 0
+            harness.playlist_store.append(_VideoItem(current))
+            harness.playlist_store.append(_VideoItem(next_video))
+
+            harness.schedule_next_playback_prefetch()
+
+            self.assertEqual(harness.service.fetch_playback_video_args, [("video2", "1080p")])
+
+    def test_streaming_mode_does_not_prefetch_next_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            harness = _PlayerHarness(Path(temp))
+            harness.preferred_playback_mode = "streaming"
+            current = Video(
+                id="video1",
+                title="Video One",
+                url="https://example.test/watch?v=video1",
+            )
+            next_video = Video(
+                id="video2",
+                title="Video Two",
+                url="https://example.test/watch?v=video2",
+            )
+            harness.current_playable = PlayableVideo(
+                video=current,
+                stream_url="https://example.test/current.mp4",
+                quality="1080p",
+                resolved_quality="1080p",
+            )
+            harness.video_queue.append(_VideoItem(next_video))
+
+            harness.schedule_next_playback_prefetch()
+
+            self.assertEqual(harness.service.fetch_playback_video_args, [])
 
     def test_quality_change_cancels_stale_fetch_progress(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -143,6 +143,8 @@ class MainWindow(
         self.pending_playback_video: Video | None = None
         self.pending_playback_playlist_url: str | None = None
         self.playback_request_id = 0
+        self.prefetch_request_id = 0
+        self.prefetch_playback_key: tuple[str, str] | None = None
         self.playback_diag_timer: int | None = None
         self.sponsorblock = SponsorBlockClient()
         self.sponsorblock_segments: list[SponsorBlockSegment] = []
