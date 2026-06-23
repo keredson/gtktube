@@ -295,7 +295,7 @@ class YoutubeExtractor:
             resolved_quality=self._resolved_quality(info),
             available_stream_qualities=self._available_qualities(
                 info,
-                require_audio=True,
+                require_audio=False,
             ),
             available_fetch_qualities=self._available_qualities(
                 info,

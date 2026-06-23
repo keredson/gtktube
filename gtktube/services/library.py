@@ -18,7 +18,7 @@ from gtktube.extractors.youtube import (
     RestrictedVideoError,
     YoutubeExtractor,
 )
-from gtktube.models import Channel, PlayableVideo, SearchResults, Video
+from gtktube.models import CaptionTrack, Channel, PlayableVideo, SearchResults, Video
 
 
 PLAYBACK_CACHE_MAX_AGE_SECONDS = 3 * 24 * 60 * 60
@@ -437,6 +437,9 @@ class LibraryService:
         quality: str,
         record_play: bool = True,
         playlist_url: str | None = None,
+        captions: list[CaptionTrack] | None = None,
+        available_stream_qualities: list[str] | None = None,
+        available_fetch_qualities: list[str] | None = None,
     ) -> PlayableVideo:
         self.touch_file(path)
         self._store_video_and_channel(video)
@@ -447,6 +450,9 @@ class LibraryService:
             stream_url=str(path),
             quality=quality,
             resolved_quality=f"cached {quality}",
+            available_stream_qualities=available_stream_qualities,
+            available_fetch_qualities=available_fetch_qualities,
+            captions=captions,
             chapters=self.repository.video_chapters(video.id),
         )
 

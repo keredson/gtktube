@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from typing import Callable
 
-from gtktube.models import PlayableVideo, Video
+from gtktube.models import CaptionTrack, PlayableVideo, Video
 from gtktube.ui.player import PlayerMixin
 
 
@@ -58,6 +58,8 @@ class _Combo:
 class _Service:
     def __init__(self) -> None:
         self.play_video_calls = 0
+        self.fetch_playback_video_calls = 0
+        self.play_cached_video_calls = 0
         self.repository = self
 
     def resume_position(self, _video_id: str) -> int:
@@ -83,6 +85,50 @@ class _Service:
             stream_url="https://example.test/combined.mp4",
             quality="1080p",
             resolved_quality="1080p",
+            available_stream_qualities=["1080p"],
+            available_fetch_qualities=["1080p"],
+            captions=[
+                CaptionTrack(
+                    id="subtitles:en",
+                    label="English",
+                    language="en",
+                    url="https://example.test/en.vtt",
+                )
+            ],
+        )
+
+    def fetch_playback_video(
+        self,
+        _video: Video,
+        quality: str,
+        target_dir: Path,
+        progress: Callable[[dict[str, object]], None] | None = None,
+    ) -> Path:
+        self.fetch_playback_video_calls += 1
+        if progress is not None:
+            progress({"status": "finished"})
+        return target_dir / f"cached-{quality}.mp4"
+
+    def play_cached_video(
+        self,
+        video: Video,
+        path: Path,
+        quality: str,
+        record_play: bool = True,
+        playlist_url: str | None = None,
+        captions: list[CaptionTrack] | None = None,
+        available_stream_qualities: list[str] | None = None,
+        available_fetch_qualities: list[str] | None = None,
+    ) -> PlayableVideo:
+        self.play_cached_video_calls += 1
+        return PlayableVideo(
+            video=video,
+            stream_url=str(path),
+            quality=quality,
+            resolved_quality=f"cached {quality}",
+            available_stream_qualities=available_stream_qualities,
+            available_fetch_qualities=available_fetch_qualities,
+            captions=captions,
         )
 
 
@@ -164,21 +210,6 @@ class _PlayerHarness(PlayerMixin):
     ) -> None:
         self.tasks.append((label, work))
 
-    def play_fetched_video(
-        self,
-        video: Video,
-        quality: str,
-        progress: Callable[[dict[str, object]], None] | None = None,
-        record_play: bool = True,
-        playlist_url: str | None = None,
-    ) -> PlayableVideo:
-        return PlayableVideo(
-            video=video,
-            stream_url=str(self.playback_cache_dir / "cached.mp4"),
-            quality=quality,
-            resolved_quality=f"cached {quality}",
-        )
-
     def load_playable_if_current(
         self,
         playable: PlayableVideo,
@@ -206,7 +237,13 @@ class PlayerMixinTests(unittest.TestCase):
             self.assertEqual(label, "Fetching video...")
             playable = work()
             self.assertEqual(playable.resolved_quality, "cached 1080p")
-            self.assertEqual(harness.service.play_video_calls, 0)
+            self.assertEqual(harness.service.play_video_calls, 1)
+            self.assertEqual(harness.service.fetch_playback_video_calls, 1)
+            self.assertEqual(harness.service.play_cached_video_calls, 1)
+            self.assertEqual(
+                [caption.label for caption in playable.captions or []],
+                ["English"],
+            )
 
     def test_split_stream_playable_passes_audio_file_to_mpv(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

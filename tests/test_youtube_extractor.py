@@ -549,7 +549,10 @@ class CaptionExtractionTest(unittest.TestCase):
             quality="1080p",
         )
 
-        self.assertEqual(playable.available_stream_qualities, ["360p", "720p"])
+        self.assertEqual(
+            playable.available_stream_qualities,
+            ["360p", "720p", "1080p"],
+        )
         self.assertEqual(
             playable.available_fetch_qualities,
             ["360p", "720p", "1080p"],

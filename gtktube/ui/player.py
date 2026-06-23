@@ -179,18 +179,26 @@ class PlayerMixin:
         record_play: bool = True,
         playlist_url: str | None = None,
     ) -> PlayableVideo:
-        path = self.service.fetch_playback_video(
+        resolved = self.service.play_video(
             video,
+            quality=quality,
+            record_play=False,
+        )
+        path = self.service.fetch_playback_video(
+            resolved.video,
             quality,
             self.playback_cache_dir,
             progress=progress,
         )
         return self.service.play_cached_video(
-            video,
+            resolved.video,
             path,
             quality,
             record_play=record_play,
             playlist_url=playlist_url,
+            captions=resolved.captions,
+            available_stream_qualities=resolved.available_stream_qualities,
+            available_fetch_qualities=resolved.available_fetch_qualities,
         )
 
     def update_fetch_progress(
@@ -1902,10 +1910,10 @@ class PlayerMixin:
             self.adjust_playback_rate(0.25)
             return True
         if keyval == Gdk.KEY_Left:
-            self.seek_relative(-5)
+            self.seek_relative(-30)
             return True
         if keyval == Gdk.KEY_Right:
-            self.seek_relative(5)
+            self.seek_relative(30)
             return True
         if keyval in (Gdk.KEY_j, Gdk.KEY_J):
             self.seek_relative(-10)

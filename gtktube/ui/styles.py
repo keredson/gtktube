@@ -78,6 +78,10 @@ APP_CSS = """
   background: transparent;
 }
 
+.video-surface {
+  background: #000;
+}
+
 .player-loading-overlay {
   background: rgba(0, 0, 0, 0.88);
   color: white;

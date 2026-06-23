@@ -8,7 +8,7 @@ from pathlib import Path
 from gtktube.db.connection import connect
 from gtktube.db.migrations import migrate
 from gtktube.db.repositories import LibraryRepository
-from gtktube.models import Channel, Video
+from gtktube.models import CaptionTrack, Channel, Video
 from gtktube.services.library import LibraryService
 
 
@@ -239,6 +239,38 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual(extractor.quality, "1080p")
         self.assertIn("[video1] [1080p]", path.name)
         self.assertEqual(cached.name, path.name)
+
+    def test_play_cached_video_preserves_captions_and_available_qualities(self) -> None:
+        service = LibraryService(self.repository, DownloadExtractor())  # type: ignore[arg-type]
+        video = Video(
+            id="video1",
+            title="Video One",
+            url="https://example.test/watch?v=video1",
+        )
+        captions = [
+            CaptionTrack(
+                id="subtitles:en",
+                label="English",
+                language="en",
+                url="https://example.test/en.vtt",
+            )
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "cached.mp4"
+            path.write_bytes(b"video")
+            playable = service.play_cached_video(
+                video,
+                path,
+                "1080p",
+                captions=captions,
+                available_stream_qualities=["1080p"],
+                available_fetch_qualities=["720p", "1080p"],
+            )
+
+        self.assertEqual(playable.captions, captions)
+        self.assertEqual(playable.available_stream_qualities, ["1080p"])
+        self.assertEqual(playable.available_fetch_qualities, ["720p", "1080p"])
 
 
 if __name__ == "__main__":
