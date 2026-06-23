@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from gtktube.models import CaptionTrack, PlayableVideo, Video
-from gtktube.ui.player import PlayerMixin
+from gtktube.ui.player import Gdk, PlayerMixin
 
 
 class _Pane:
@@ -207,6 +207,7 @@ class _PlayerHarness(PlayerMixin):
         self.playlist_store = _ListStore()
         self.playlist_skip_set: set[int] = set()
         self.current_playlist_url: str | None = None
+        self.relative_seeks: list[int] = []
 
     def navigate_to(self, _view: object) -> None:
         pass
@@ -284,6 +285,9 @@ class _PlayerHarness(PlayerMixin):
 
     def update_transport_navigation_buttons(self) -> None:
         pass
+
+    def seek_relative(self, delta_seconds: int) -> None:
+        self.relative_seeks.append(delta_seconds)
 
     def load_playable_if_current(
         self,
@@ -375,6 +379,17 @@ class PlayerMixinTests(unittest.TestCase):
             self.assertEqual(label, "Resolving video...")
             self.assertEqual(work().resolved_quality, "1080p")
             self.assertEqual(harness.service.play_video_calls, 1)
+
+    def test_player_seek_shortcuts_use_asymmetric_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            harness = _PlayerHarness(Path(temp))
+
+            self.assertTrue(harness.handle_player_shortcut(Gdk.KEY_Left))
+            self.assertTrue(harness.handle_player_shortcut(Gdk.KEY_j))
+            self.assertTrue(harness.handle_player_shortcut(Gdk.KEY_Right))
+            self.assertTrue(harness.handle_player_shortcut(Gdk.KEY_l))
+
+            self.assertEqual(harness.relative_seeks, [-10, -10, 20, 20])
 
     def test_fetch_mode_prefetches_next_queue_video(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -25,6 +25,8 @@ from gtktube.ui.types import ViewState
 
 
 PLAYBACK_RATES = [rate / 100 for rate in range(25, 401, 25)]
+SEEK_BACK_SECONDS = 10
+SEEK_FORWARD_SECONDS = 20
 USER_SELECTABLE_QUALITIES = [
     quality for quality in QUALITY_FORMATS if quality != "best"
 ]
@@ -60,7 +62,8 @@ class PlayerMixin:
         if video.duration_seconds:
             parts.append(self.format_time(video.duration_seconds))
         if video.view_count is not None:
-            parts.append(f"{video.view_count:,} views")
+            view_word = self.pluralize(video.view_count, "view")
+            parts.append(f"{video.view_count:,} {view_word}")
         if video.percent_watched:
             parts.append(f"{round(video.percent_watched * 100)}% watched")
         if video.completed:
@@ -2030,16 +2033,16 @@ class PlayerMixin:
             self.adjust_playback_rate(0.25)
             return True
         if keyval == Gdk.KEY_Left:
-            self.seek_relative(-30)
+            self.seek_relative(-SEEK_BACK_SECONDS)
             return True
         if keyval == Gdk.KEY_Right:
-            self.seek_relative(30)
+            self.seek_relative(SEEK_FORWARD_SECONDS)
             return True
         if keyval in (Gdk.KEY_j, Gdk.KEY_J):
-            self.seek_relative(-10)
+            self.seek_relative(-SEEK_BACK_SECONDS)
             return True
         if keyval in (Gdk.KEY_l, Gdk.KEY_L):
-            self.seek_relative(10)
+            self.seek_relative(SEEK_FORWARD_SECONDS)
             return True
         if keyval == Gdk.KEY_Home:
             self.seek_media(0)

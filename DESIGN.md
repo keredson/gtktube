@@ -227,6 +227,11 @@ The placeholder should be inside the same scrollable content area as the normal
 results so spacing, margins, and navigation remain consistent when content
 appears.
 
+UI copy that includes numeric counts must use correct singular and plural
+wording. Avoid hard-coded plural nouns or pronouns in count-dependent text; use
+the shared pluralization helper for simple English nouns, and adjust related
+pronouns such as "it" or "them" when the sentence depends on the count.
+
 ## Data Model
 
 Schema versioning is stored in SQLite `PRAGMA user_version`.

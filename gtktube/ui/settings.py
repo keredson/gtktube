@@ -864,8 +864,9 @@ class SettingsMixin:
                 for channel in new_channels:
                     append_channel_row(channel)
                 if new_channels:
+                    count = len(new_channels)
                     status_label.set_label(
-                        f"Found {len(new_channels)} new YouTube subscriptions."
+                        f"Found {count} new YouTube {self.pluralize(count, 'subscription')}."
                     )
                 else:
                     status_label.set_label("Found 0 new YouTube subscriptions.")

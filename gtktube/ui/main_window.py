@@ -138,6 +138,8 @@ class MainWindow(
         self.playlist_skip_set: set[int] = set()
         self.queue_quit_confirmed = False
         self.queue_quit_dialog: Gtk.Dialog | None = None
+        self.watch_later_queue_dialog: Gtk.Dialog | None = None
+        self.watch_later_queue_prompt_shown = False
         self.dragging_index = -1
         self.current_playable: PlayableVideo | None = None
         self.pending_playback_video: Video | None = None
@@ -418,6 +420,8 @@ class MainWindow(
             GLib.timeout_add_seconds(2, self.start_update_check)
         if self.debug_modal:
             GLib.idle_add(self.show_debug_modal, self.debug_modal)
+        else:
+            GLib.idle_add(self.maybe_show_watch_later_queue_prompt)
 
     def show_debug_modal(self, name: str) -> bool:
         if name == "open-url":
@@ -569,6 +573,96 @@ class MainWindow(
         self.queue_quit_dialog = dialog
         dialog.present()
 
+    def maybe_show_watch_later_queue_prompt(self) -> bool:
+        if self.cleaned_up or self.watch_later_queue_prompt_shown:
+            return False
+        self.watch_later_queue_prompt_shown = True
+        if self.video_queue.get_n_items() > 0:
+            return False
+        videos = self.service.watch_later_videos()
+        if not videos:
+            return False
+        self.watch_later_videos = videos
+        self.watch_later_add_all_button.set_sensitive(True)
+        self.show_watch_later_queue_prompt(videos)
+        return False
+
+    def show_watch_later_queue_prompt(self, videos: list[Video]) -> None:
+        if self.watch_later_queue_dialog is not None:
+            self.watch_later_queue_dialog.present()
+            return
+
+        count = len(videos)
+        dialog = Gtk.Dialog(
+            title="Load Up Next?",
+            transient_for=self,
+            modal=True,
+        )
+
+        content = dialog.get_content_area()
+        content.set_margin_top(16)
+        content.set_margin_bottom(16)
+        content.set_margin_start(16)
+        content.set_margin_end(16)
+        content.set_spacing(18)
+
+        title = Gtk.Label(label="Load Watch Later into Up Next?", xalign=0)
+        title.add_css_class("title-4")
+        content.append(title)
+
+        item_word = self.pluralize(count, "video")
+        add_pronoun = "it" if count == 1 else "them"
+        message = Gtk.Label(
+            label=(
+                f"Watch Later has {count} {item_word}. "
+                f"Add {add_pronoun} to Up Next for this session?"
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        content.append(message)
+
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        content.append(footer)
+        footer.append(Gtk.Box(hexpand=True))
+        cancel_button = Gtk.Button(label="Not Now")
+        add_button = Gtk.Button(label="Add to Up Next")
+        add_button.add_css_class("suggested-action")
+        footer.append(cancel_button)
+        footer.append(add_button)
+
+        def close_prompt() -> None:
+            self.watch_later_queue_dialog = None
+            dialog.destroy()
+
+        def add_to_up_next() -> None:
+            close_prompt()
+            self.populate_up_next_from_watch_later(videos)
+
+        cancel_button.connect("clicked", lambda _button: close_prompt())
+        add_button.connect("clicked", lambda _button: add_to_up_next())
+        dialog.connect("close-request", lambda _dialog: (close_prompt(), True)[1])
+        self.watch_later_queue_dialog = dialog
+        dialog.present()
+
+    def populate_up_next_from_watch_later(self, videos: list[Video]) -> None:
+        if not videos:
+            return
+        while self.video_queue.get_n_items() > 0:
+            self.video_queue.remove(0)
+        for video in videos:
+            self.video_queue.append(VideoObject(video))
+        self.queue_pane.set_visible(True)
+        self.playlist_pane.set_visible(False)
+        self.playlist_current_index = None
+        self.current_playlist_url = None
+        self.update_playlist_rows()
+        self.update_transport_navigation_buttons()
+        self.verbose_log(
+            "watch later loaded into up next "
+            f"count={self.video_queue.get_n_items()}"
+        )
+
     def queued_videos_not_watch_later(self) -> list[Video]:
         videos: list[Video] = []
         seen_ids: set[str] = set()
@@ -591,6 +685,9 @@ class MainWindow(
         if self.cleaned_up:
             return
         self.cleaned_up = True
+        if self.watch_later_queue_dialog is not None:
+            self.watch_later_queue_dialog.destroy()
+            self.watch_later_queue_dialog = None
         self.save_window_size()
         self.flush_watch_range()
         self.stop_pipeline()
@@ -655,6 +752,11 @@ class MainWindow(
     def verbose_log(self, message: str) -> None:
         if self.verbose:
             self.log(message)
+
+    def pluralize(self, count: int, singular: str, plural: str | None = None) -> str:
+        if count == 1:
+            return singular
+        return plural or f"{singular}s"
 
     def run_task(
         self,
@@ -3096,7 +3198,9 @@ class MainWindow(
         badge = Gtk.Label(label=str(new_video_count))
         badge.add_css_class("caption")
         badge.add_css_class("accent")
-        badge.set_tooltip_text(f"{new_video_count} new videos")
+        badge.set_tooltip_text(
+            f"{new_video_count} new {self.pluralize(new_video_count, 'video')}"
+        )
         status_box.append(badge)
 
     def clear_box(self, box: Gtk.Box) -> None:
