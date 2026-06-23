@@ -117,41 +117,38 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(videos[0].watch_ranges, [(0, 33), (66, 100)])
         self.assertAlmostEqual(videos[0].percent_watched or 0, 0.67)
 
-    def test_watch_range_trigger_maintains_history_summary(self) -> None:
-        self.repository.add_watch_range("vid1", 10, 20)
-        self.repository.add_watch_range("vid1", 30, 40)
+    def test_record_play_started_adds_history_events(self) -> None:
+        self.repository.record_play_started("vid1")
+        self.repository.record_play_started("vid1", playlist_url="https://example.test/playlist")
 
-        row = self.connection.execute(
+        rows = self.connection.execute(
             """
-            SELECT first_watched_at, last_watched_at, play_count
+            SELECT video_id, playlist_url, started_at
             FROM watch_history
             WHERE video_id = 'vid1'
+            ORDER BY id
             """
-        ).fetchone()
+        ).fetchall()
 
-        self.assertIsNotNone(row["first_watched_at"])
-        self.assertIsNotNone(row["last_watched_at"])
-        self.assertEqual(row["play_count"], 0)
+        self.assertEqual(len(rows), 2)
+        self.assertIsNone(rows[0]["playlist_url"])
+        self.assertEqual(rows[1]["playlist_url"], "https://example.test/playlist")
+        self.assertIsNotNone(rows[0]["started_at"])
 
     def test_completion_uses_merged_coverage(self) -> None:
         self.repository.add_watch_range("vid1", 0, 50)
         self.repository.add_watch_range("vid1", 50, 90)
 
-        row = self.connection.execute(
-            "SELECT completed FROM watch_history WHERE video_id = 'vid1'"
-        ).fetchone()
+        video = self.repository.video("vid1")
 
-        self.assertEqual(row["completed"], 1)
+        self.assertIsNotNone(video)
+        self.assertTrue(video.completed)
 
     def test_mark_played_records_full_watch_range(self) -> None:
         self.repository.mark_played("vid1", 100)
 
         history = self.connection.execute(
-            """
-            SELECT completed, completed_at
-            FROM watch_history
-            WHERE video_id = 'vid1'
-            """
+            "SELECT video_id, started_at FROM watch_history WHERE video_id = 'vid1'"
         ).fetchone()
         progress = self.connection.execute(
             """
@@ -161,14 +158,13 @@ class DatabaseTests(unittest.TestCase):
             """
         ).fetchone()
 
-        self.assertEqual(history["completed"], 1)
-        self.assertIsNotNone(history["completed_at"])
+        self.assertIsNotNone(history["started_at"])
         self.assertEqual(progress["covered_seconds"], 100)
         self.assertEqual(progress["percent_watched"], 1.0)
         self.assertEqual(progress["watch_range_string"], "0-100")
 
     def test_watch_history_searches_video_and_channel_title(self) -> None:
-        self.repository.add_watch_range("vid1", 0, 10)
+        self.repository.record_play_started("vid1")
 
         by_video = self.repository.watch_history("Long")
         by_channel = self.repository.watch_history("Channel")
@@ -193,6 +189,24 @@ class DatabaseTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM watch_ranges WHERE video_id = 'vid1'"
             ).fetchone()[0],
             0,
+        )
+
+    def test_remove_watch_history_event_keeps_other_events_and_ranges(self) -> None:
+        self.repository.record_play_started("vid1")
+        self.repository.record_play_started("vid1", playlist_url="https://example.test/playlist")
+        self.repository.add_watch_range("vid1", 0, 10)
+        first_event = self.connection.execute(
+            "SELECT id FROM watch_history WHERE video_id = 'vid1' ORDER BY id LIMIT 1"
+        ).fetchone()
+
+        self.repository.remove_watch_history("vid1", first_event["id"])
+
+        self.assertEqual(len(self.repository.watch_history()), 1)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM watch_ranges WHERE video_id = 'vid1'"
+            ).fetchone()[0],
+            1,
         )
 
     def test_video_metadata_round_trips_through_feed(self) -> None:
@@ -247,15 +261,19 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(self.repository.default_playback_mode(), "streaming")
         self.assertFalse(self.repository.has_default_video_quality_override())
 
-        self.repository.set_default_video_quality("1080p", mode="prefetch")
+        self.repository.set_default_video_quality("1080p", mode="fetch")
 
         self.assertEqual(self.repository.default_video_quality(), "1080p")
-        self.assertEqual(self.repository.default_playback_mode(), "prefetch")
+        self.assertEqual(self.repository.default_playback_mode(), "fetch")
         self.assertTrue(self.repository.has_default_video_quality_override())
         row = self.connection.execute(
             "SELECT value FROM settings WHERE key = 'default_video_quality'"
         ).fetchone()
-        self.assertEqual(row["value"], "prefetch:1080p")
+        self.assertEqual(row["value"], "1080p")
+        row = self.connection.execute(
+            "SELECT value FROM settings WHERE key = 'default_playback_mode'"
+        ).fetchone()
+        self.assertEqual(row["value"], "fetch")
 
         self.repository.clear_default_video_quality()
 
@@ -269,11 +287,18 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(self.repository.default_video_quality(), "1080p")
         self.assertEqual(self.repository.default_playback_mode(), "streaming")
 
+    def test_default_playback_mode_uses_separate_value_before_legacy_value(self) -> None:
+        self.repository.set_setting("default_video_quality", "streaming:1080p")
+        self.repository.set_setting("default_playback_mode", "fetch")
+
+        self.assertEqual(self.repository.default_video_quality(), "1080p")
+        self.assertEqual(self.repository.default_playback_mode(), "fetch")
+
     def test_default_video_quality_treats_best_as_unselectable(self) -> None:
-        self.repository.set_setting("default_video_quality", "prefetch:best")
+        self.repository.set_setting("default_video_quality", "fetch:best")
 
         self.assertEqual(self.repository.default_video_quality(), "720p")
-        self.assertEqual(self.repository.default_playback_mode(), "prefetch")
+        self.assertEqual(self.repository.default_playback_mode(), "fetch")
 
     def test_default_video_quality_ignores_unknown_quality(self) -> None:
         self.repository.set_default_video_quality("potato")
@@ -604,6 +629,39 @@ class ConnectionTests(unittest.TestCase):
 
             self.assertEqual(raised.exception.current, SCHEMA_VERSION + 1)
             self.assertEqual(raised.exception.supported, SCHEMA_VERSION)
+        finally:
+            connection.close()
+
+    def test_migrate_splits_legacy_default_playback_setting(self) -> None:
+        connection = connect(":memory:")
+        try:
+            connection.execute(
+                """
+                CREATE TABLE settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO settings (key, value, updated_at)
+                VALUES ('default_video_quality', 'fetch:1080p', '2026-01-01T00:00:00+00:00')
+                """
+            )
+            connection.execute("PRAGMA user_version = 12")
+
+            migrate(connection)
+
+            rows = {
+                row["key"]: row["value"]
+                for row in connection.execute(
+                    "SELECT key, value FROM settings"
+                ).fetchall()
+            }
+            self.assertEqual(rows["default_video_quality"], "1080p")
+            self.assertEqual(rows["default_playback_mode"], "fetch")
         finally:
             connection.close()
 

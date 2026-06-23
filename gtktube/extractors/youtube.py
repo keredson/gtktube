@@ -297,7 +297,7 @@ class YoutubeExtractor:
                 info,
                 require_audio=True,
             ),
-            available_prefetch_qualities=self._available_qualities(
+            available_fetch_qualities=self._available_qualities(
                 info,
                 require_audio=False,
             ),

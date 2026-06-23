@@ -20,6 +20,8 @@ class Video:
     percent_watched: float | None = None
     watch_ranges: list[tuple[int, int]] | None = None
     completed: bool = False
+    history_id: int | None = None
+    playlist_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -64,7 +66,7 @@ class PlayableVideo:
     audio_url: str | None = None
     resolved_quality: str | None = None
     available_stream_qualities: list[str] | None = None
-    available_prefetch_qualities: list[str] | None = None
+    available_fetch_qualities: list[str] | None = None
     captions: list[CaptionTrack] | None = None
     chapters: list[VideoChapter] | None = None
 

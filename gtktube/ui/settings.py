@@ -141,10 +141,10 @@ class SettingsMixin:
             orientation=Gtk.Orientation.VERTICAL, spacing=3, hexpand=True
         )
         quality_row.append(quality_labels)
-        quality_label = Gtk.Label(label="Default video quality", xalign=0)
+        quality_label = Gtk.Label(label="Default playback", xalign=0)
         quality_labels.append(quality_label)
         quality_help = Gtk.Label(
-            label="Used when opening videos before choosing a quality in the player.",
+            label="Used when opening videos before choosing playback options in the player.",
             xalign=0,
             wrap=True,
         )
@@ -163,17 +163,20 @@ class SettingsMixin:
         )
         quality_row.append(self.default_quality_reset_button)
 
+        self.default_method_combo = Gtk.ComboBoxText()
+        self.default_method_combo.append("streaming", "⇄ Stream")
+        self.default_method_combo.append("fetch", "↓ Fetch")
+        self.default_method_combo.connect(
+            "changed",
+            self.on_default_method_changed,
+        )
+        quality_row.append(self.default_method_combo)
+
+        quality_row.append(Gtk.Label(label="@"))
+
         self.default_quality_combo = Gtk.ComboBoxText()
         for quality in USER_SELECTABLE_QUALITIES:
-            self.default_quality_combo.append(
-                self.quality_option_id("streaming", quality),
-                f"⇄ {quality}",
-            )
-        for quality in USER_SELECTABLE_QUALITIES:
-            self.default_quality_combo.append(
-                self.quality_option_id("prefetch", quality),
-                f"↓ {quality}",
-            )
+            self.default_quality_combo.append(quality, quality)
         self.default_quality_combo.connect(
             "changed",
             self.on_default_quality_changed,
@@ -404,12 +407,8 @@ class SettingsMixin:
         )
         self.preferred_playback_mode = self.service.repository.default_playback_mode()
         self.preferred_quality = self.service.repository.default_video_quality()
-        self.default_quality_combo.set_active_id(
-            self.quality_option_id(
-                self.preferred_playback_mode,
-                self.preferred_quality,
-            )
-        )
+        self.default_method_combo.set_active_id(self.preferred_playback_mode)
+        self.default_quality_combo.set_active_id(self.preferred_quality)
         self.default_quality_reset_button.set_visible(
             self.service.repository.has_default_video_quality_override()
         )
@@ -460,20 +459,34 @@ class SettingsMixin:
         self.service.repository.clear_refresh_worker_count()
         self.reload_settings()
 
-    def on_default_quality_changed(self, combo: Gtk.ComboBoxText) -> None:
+    def on_default_method_changed(self, combo: Gtk.ComboBoxText) -> None:
         if self.updating_settings:
             return
-        option = self.parse_quality_option_id(combo.get_active_id())
-        if option is None:
+        mode = combo.get_active_id()
+        if mode not in {"streaming", "fetch"}:
             return
-        mode, quality = option
         self.preferred_playback_mode = mode
-        self.preferred_quality = quality
-        self.service.repository.set_default_video_quality(quality, mode=mode)
+        self.service.repository.set_default_playback_mode(mode)
         self.default_quality_reset_button.set_visible(True)
         self.updating_quality = True
         self.quality_combo.set_active_id(
-            self.quality_option_id(mode, quality)
+            self.quality_option_id(mode, self.preferred_quality)
+        )
+        self.updating_quality = False
+        self.update_quality_combo_tooltip()
+
+    def on_default_quality_changed(self, combo: Gtk.ComboBoxText) -> None:
+        if self.updating_settings:
+            return
+        quality = combo.get_active_id()
+        if quality not in USER_SELECTABLE_QUALITIES:
+            return
+        self.preferred_quality = quality
+        self.service.repository.set_default_video_quality(quality)
+        self.default_quality_reset_button.set_visible(True)
+        self.updating_quality = True
+        self.quality_combo.set_active_id(
+            self.quality_option_id(self.preferred_playback_mode, quality)
         )
         self.updating_quality = False
         self.update_quality_combo_tooltip()

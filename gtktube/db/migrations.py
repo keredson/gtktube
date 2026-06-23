@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 
 class UnsupportedDatabaseSchema(RuntimeError):
@@ -51,6 +51,12 @@ def migrate(connection: sqlite3.Connection) -> None:
         current = 10
     if current < 11:
         _migrate_11(connection)
+        current = 11
+    if current < 12:
+        _migrate_12(connection)
+        current = 12
+    if current < 13:
+        _migrate_13(connection)
 
 
 def _migrate_1(connection: sqlite3.Connection) -> None:
@@ -493,5 +499,92 @@ def _migrate_11(connection: sqlite3.Connection) -> None:
             ADD COLUMN availability TEXT;
 
             PRAGMA user_version = 11;
+            """
+        )
+
+
+def _migrate_12(connection: sqlite3.Connection) -> None:
+    with connection:
+        connection.executescript(
+            """
+            DROP TRIGGER IF EXISTS watch_ranges_after_insert_summary;
+
+            ALTER TABLE watch_history
+            RENAME TO watch_history_old;
+
+            CREATE TABLE watch_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_id TEXT NOT NULL,
+                playlist_url TEXT,
+                started_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (video_id) REFERENCES videos(id)
+            );
+
+            INSERT INTO watch_history (
+                video_id,
+                playlist_url,
+                started_at,
+                created_at,
+                updated_at
+            )
+            SELECT
+                video_id,
+                NULL,
+                COALESCE(last_watched_at, first_watched_at, updated_at),
+                COALESCE(first_watched_at, last_watched_at, updated_at),
+                updated_at
+            FROM watch_history_old
+            WHERE COALESCE(last_watched_at, first_watched_at, updated_at) IS NOT NULL;
+
+            DROP TABLE watch_history_old;
+
+            CREATE INDEX idx_watch_history_video_started
+            ON watch_history(video_id, started_at DESC);
+
+            CREATE INDEX idx_watch_history_started
+            ON watch_history(started_at DESC);
+
+            CREATE VIEW watch_history_summary AS
+            SELECT
+                wh.video_id,
+                MIN(wh.started_at) AS first_watched_at,
+                MAX(wh.started_at) AS last_watched_at,
+                COUNT(*) AS play_count,
+                CASE
+                    WHEN COALESCE(wp.percent_watched, 0) >= 0.9 THEN 1
+                    ELSE 0
+                END AS completed
+            FROM watch_history wh
+            LEFT JOIN watch_progress wp ON wp.video_id = wh.video_id
+            GROUP BY wh.video_id;
+
+            PRAGMA user_version = 12;
+            """
+        )
+
+
+def _migrate_13(connection: sqlite3.Connection) -> None:
+    with connection:
+        connection.executescript(
+            """
+            INSERT INTO settings (key, value, updated_at)
+            SELECT
+                'default_playback_mode',
+                substr(value, 1, instr(value, ':') - 1),
+                updated_at
+            FROM settings
+            WHERE key = 'default_video_quality'
+              AND value LIKE '%:%'
+              AND substr(value, 1, instr(value, ':') - 1) IN ('streaming', 'fetch')
+            ON CONFLICT(key) DO NOTHING;
+
+            UPDATE settings
+            SET value = substr(value, instr(value, ':') + 1)
+            WHERE key = 'default_video_quality'
+              AND value LIKE '%:%';
+
+            PRAGMA user_version = 13;
             """
         )

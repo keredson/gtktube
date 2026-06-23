@@ -19,7 +19,7 @@ The feed has no algorithm. It just shows recent videos from the channels you sub
 - Optionally import your YouTube subscriptions one time from browser cookies.
 - Play videos inside the GTK app with Clapper/GStreamer.
 - Choose playback quality and speed, including speeds up to 4x.
-- Choose streaming or prefetch playback per quality/speed option; prefetch downloads
+- Choose streaming or fetch playback per quality/speed option; fetch downloads
   the selected stream to a temporary app cache before playback to avoid throttling.
 - Use normal playback shortcuts for play/pause, seeking, fullscreen, and speed changes.
 - Keep watching while browsing with a mini-player.
@@ -141,7 +141,7 @@ installs use `python3 -m pip install --upgrade gtktube`.
 GTKTube keeps its state on your machine:
 
 - subscriptions and watch history in SQLite
-- thumbnails and temporary prefetch playback cache under the user cache directory
+- thumbnails and temporary fetch playback cache under the user cache directory
 - downloaded videos under the user data directory
 - optional one-time browser-cookie reads for importing YouTube subscriptions
   and watch history

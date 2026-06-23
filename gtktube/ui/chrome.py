@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import urllib.parse
 from pathlib import Path
+from typing import Any
 
 import gi
 
@@ -93,6 +94,7 @@ class ChromeMixin:
                 self.playlist_store.remove(0)
             self.playlist_skip_set.clear()
             self.playlist_current_index = None
+            self.current_playlist_url = url
             
             # Mutual exclusivity: Playlist active, hide/clear queue
             while self.video_queue.get_n_items() > 0:
@@ -105,13 +107,17 @@ class ChromeMixin:
             self.run_task(
                 "Loading playlist...",
                 lambda: self.service.extractor.resolve_playlist(url),
-                self.load_playlist_result,
+                lambda result, source_url=url: self.load_playlist_result(
+                    result,
+                    source_url,
+                ),
             )
             return
         if self.is_video_url(url):
             # Mutual exclusivity: Playing a video hides the playlist
             self.playlist_pane.set_visible(False)
             self.playlist_current_index = None
+            self.current_playlist_url = None
             self.update_playlist_rows()
             
             self.navigate_to(ViewState("player"))
@@ -153,7 +159,10 @@ class ChromeMixin:
             return True
         return bool(path_parts and path_parts[0] in {"shorts", "live", "embed"})
 
-    def load_playlist_result(self, result: dict[str, Any]) -> None:
+    def load_playlist_result(
+        self, result: dict[str, Any], playlist_url: str | None = None
+    ) -> None:
+        self.current_playlist_url = playlist_url
         for video in result["videos"]:
             self.playlist_store.append(VideoObject(video))
         self.playlist_skip_set.clear()

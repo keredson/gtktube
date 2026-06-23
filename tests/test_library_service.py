@@ -221,7 +221,7 @@ class LibraryServiceTests(unittest.TestCase):
             ],
         )
 
-    def test_prefetch_playback_video_uses_quality_cache_key(self) -> None:
+    def test_fetch_playback_video_uses_quality_cache_key(self) -> None:
         extractor = DownloadExtractor()
         service = LibraryService(self.repository, extractor)  # type: ignore[arg-type]
         video = Video(
@@ -232,8 +232,8 @@ class LibraryServiceTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             cache_dir = Path(temp_dir)
-            path = service.prefetch_playback_video(video, "1080p", cache_dir)
-            cached = service.prefetch_playback_video(video, "1080p", cache_dir)
+            path = service.fetch_playback_video(video, "1080p", cache_dir)
+            cached = service.fetch_playback_video(video, "1080p", cache_dir)
 
         self.assertEqual(extractor.calls, 1)
         self.assertEqual(extractor.quality, "1080p")

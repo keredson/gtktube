@@ -83,7 +83,7 @@ class _PlayerHarness(PlayerMixin):
         self.playlist_pane = _Pane()
         self.playlist_current_index: int | None = 7
         self.preferred_quality = "1080p"
-        self.preferred_playback_mode = "prefetch"
+        self.preferred_playback_mode = "fetch"
         self.updating_quality = False
         self.quality_combo = _Combo()
         self.tasks: list[tuple[str, Callable[[], PlayableVideo]]] = []
@@ -110,12 +110,13 @@ class _PlayerHarness(PlayerMixin):
     ) -> None:
         self.tasks.append((label, work))
 
-    def play_prefetched_video(
+    def play_fetched_video(
         self,
         video: Video,
         quality: str,
         progress: Callable[[dict[str, object]], None] | None = None,
         record_play: bool = True,
+        playlist_url: str | None = None,
     ) -> PlayableVideo:
         return PlayableVideo(
             video=video,
@@ -133,7 +134,7 @@ class _PlayerHarness(PlayerMixin):
 
 
 class PlayerMixinTests(unittest.TestCase):
-    def test_uncached_playback_prefetches_instead_of_streaming(self) -> None:
+    def test_uncached_playback_fetches_instead_of_streaming(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             harness = _PlayerHarness(Path(temp))
             video = Video(
@@ -148,12 +149,12 @@ class PlayerMixinTests(unittest.TestCase):
             self.assertIsNone(harness.playlist_current_index)
             self.assertEqual(len(harness.tasks), 1)
             label, work = harness.tasks[0]
-            self.assertEqual(label, "Pre-fetching video...")
+            self.assertEqual(label, "Fetching video...")
             playable = work()
             self.assertEqual(playable.resolved_quality, "cached 1080p")
             self.assertEqual(harness.service.play_video_calls, 0)
 
-    def test_direct_stream_playable_redirects_to_prefetch(self) -> None:
+    def test_direct_stream_playable_redirects_to_fetch(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             harness = _PlayerHarness(Path(temp))
             harness.preferred_playback_mode = "streaming"
@@ -174,11 +175,11 @@ class PlayerMixinTests(unittest.TestCase):
 
             self.assertEqual(len(harness.tasks), 1)
             label, work = harness.tasks[0]
-            self.assertEqual(label, "Pre-fetching video...")
+            self.assertEqual(label, "Fetching video...")
             self.assertEqual(work().resolved_quality, "cached 1080p")
             self.assertEqual(harness.service.play_video_calls, 0)
 
-    def test_streaming_mode_resolves_without_prefetch(self) -> None:
+    def test_streaming_mode_resolves_without_fetch(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             harness = _PlayerHarness(Path(temp))
             harness.preferred_playback_mode = "streaming"
@@ -205,8 +206,8 @@ class PlayerMixinTests(unittest.TestCase):
                 ("streaming", "1080p"),
             )
             self.assertEqual(
-                harness.parse_quality_option_id("prefetch:1080p"),
-                ("prefetch", "1080p"),
+                harness.parse_quality_option_id("fetch:1080p"),
+                ("fetch", "1080p"),
             )
 
     def test_quality_control_uses_available_playable_qualities(self) -> None:
@@ -223,7 +224,7 @@ class PlayerMixinTests(unittest.TestCase):
                 quality="1080p",
                 resolved_quality="1080p",
                 available_stream_qualities=["360p", "720p"],
-                available_prefetch_qualities=["360p", "720p", "1080p"],
+                available_fetch_qualities=["360p", "720p", "1080p"],
             )
 
             harness.update_quality_control(playable)
@@ -233,12 +234,35 @@ class PlayerMixinTests(unittest.TestCase):
                 [
                     "streaming:360p",
                     "streaming:720p",
-                    "prefetch:360p",
-                    "prefetch:720p",
-                    "prefetch:1080p",
+                    "fetch:360p",
+                    "fetch:720p",
+                    "fetch:1080p",
                 ],
             )
-            self.assertEqual(harness.quality_combo.active_id, "prefetch:1080p")
+            self.assertEqual(harness.quality_combo.active_id, "fetch:1080p")
+
+    def test_quality_control_prioritizes_preferred_method_before_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            harness = _PlayerHarness(Path(temp))
+            harness.preferred_playback_mode = "fetch"
+            harness.preferred_quality = "1080p"
+            video = Video(
+                id="video1",
+                title="Video One",
+                url="https://example.test/watch?v=video1",
+            )
+            playable = PlayableVideo(
+                video=video,
+                stream_url="https://example.test/combined.mp4",
+                quality="1080p",
+                resolved_quality="1080p",
+                available_stream_qualities=["1080p"],
+                available_fetch_qualities=["360p", "720p"],
+            )
+
+            harness.update_quality_control(playable)
+
+            self.assertEqual(harness.quality_combo.active_id, "fetch:720p")
 
 
 if __name__ == "__main__":

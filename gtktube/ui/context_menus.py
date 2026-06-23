@@ -381,7 +381,7 @@ class ContextMenuMixin:
         popover.popdown()
         popover.unparent()
         if action == "remove":
-            self.service.repository.remove_watch_history(video.id)
+            self.service.repository.remove_watch_history(video.id, video.history_id)
             self.reload_history()
 
     def show_queue_context_menu(

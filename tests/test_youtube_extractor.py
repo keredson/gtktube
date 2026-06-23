@@ -497,7 +497,7 @@ class ChannelPaginationTest(unittest.TestCase):
 
 
 class CaptionExtractionTest(unittest.TestCase):
-    def test_resolve_video_reports_available_stream_and_prefetch_qualities(self) -> None:
+    def test_resolve_video_reports_available_stream_and_fetch_qualities(self) -> None:
         class FakeYoutubeDL:
             def __init__(self, options: dict[str, object]) -> None:
                 self.options = options
@@ -551,7 +551,7 @@ class CaptionExtractionTest(unittest.TestCase):
 
         self.assertEqual(playable.available_stream_qualities, ["360p", "720p"])
         self.assertEqual(
-            playable.available_prefetch_qualities,
+            playable.available_fetch_qualities,
             ["360p", "720p", "1080p"],
         )
 

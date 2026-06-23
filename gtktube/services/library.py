@@ -49,7 +49,11 @@ class LibraryService:
         return playable
 
     def play_video(
-        self, video: Video, quality: str = "720p", record_play: bool = True
+        self,
+        video: Video,
+        quality: str = "720p",
+        record_play: bool = True,
+        playlist_url: str | None = None,
     ) -> PlayableVideo:
         try:
             playable = self.extractor.resolve_video(
@@ -66,7 +70,7 @@ class LibraryService:
             playable.video.id, playable.chapters or []
         )
         if record_play:
-            self.repository.record_play_started(playable.video.id)
+            self.repository.record_play_started(playable.video.id, playlist_url)
         return playable
 
     def record_watch_range(self, video_id: str, start_seconds: int, end_seconds: int) -> None:
@@ -388,7 +392,7 @@ class LibraryService:
                 return path
         return None
 
-    def prefetch_playback_video(
+    def fetch_playback_video(
         self,
         video: Video,
         quality: str,
@@ -424,7 +428,7 @@ class LibraryService:
                 self.touch_file(path)
                 self.prune_playback_cache(target_dir)
                 return path
-        raise ExtractorError("Pre-fetch finished but no output file was found")
+        raise ExtractorError("Fetch finished but no output file was found")
 
     def play_cached_video(
         self,
@@ -432,11 +436,12 @@ class LibraryService:
         path: Path,
         quality: str,
         record_play: bool = True,
+        playlist_url: str | None = None,
     ) -> PlayableVideo:
         self.touch_file(path)
         self._store_video_and_channel(video)
         if record_play:
-            self.repository.record_play_started(video.id)
+            self.repository.record_play_started(video.id, playlist_url)
         return PlayableVideo(
             video=video,
             stream_url=str(path),
@@ -496,10 +501,11 @@ class LibraryService:
         video: Video,
         path: Path,
         record_play: bool = True,
+        playlist_url: str | None = None,
     ) -> PlayableVideo:
         self._store_video_and_channel(video)
         if record_play:
-            self.repository.record_play_started(video.id)
+            self.repository.record_play_started(video.id, playlist_url)
         quality = self.downloaded_video_quality(path)
         return PlayableVideo(
             video=video,

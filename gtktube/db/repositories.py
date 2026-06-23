@@ -275,16 +275,19 @@ class LibraryRepository:
         videos = self._videos_query(
             """
             SELECT
-                v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
+                v.id, v.title, v.url, v.kind, v.channel_id, c.title AS channel_title,
                 v.thumbnail_url, v.description, v.duration_seconds,
                 v.published_at, v.view_count, v.availability,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 wp.watch_range_string,
-                COALESCE(wh.completed, 0) AS completed
+                CASE
+                    WHEN COALESCE(wp.percent_watched, 0) >= 0.9 THEN 1
+                    ELSE 0
+                END AS completed
             FROM videos v
             LEFT JOIN channels c ON c.id = v.channel_id
             LEFT JOIN watch_progress wp ON wp.video_id = v.id
-            LEFT JOIN watch_history wh ON wh.video_id = v.id
+            LEFT JOIN watch_history_summary wh ON wh.video_id = v.id
             WHERE v.id = ?
             """,
             (video_id,),
@@ -352,14 +355,17 @@ class LibraryRepository:
         with self._conn() as conn:
             rows = conn.execute(
                 f"""
-                SELECT
-                    v.id,
-                    COALESCE(wp.percent_watched, 0) AS percent_watched,
-                    wp.watch_range_string,
-                    COALESCE(wh.completed, 0) AS completed
+            SELECT
+                v.id,
+                COALESCE(wp.percent_watched, 0) AS percent_watched,
+                wp.watch_range_string,
+                CASE
+                    WHEN COALESCE(wp.percent_watched, 0) >= 0.9 THEN 1
+                    ELSE 0
+                END AS completed
                 FROM videos v
                 LEFT JOIN watch_progress wp ON wp.video_id = v.id
-                LEFT JOIN watch_history wh ON wh.video_id = v.id
+                LEFT JOIN watch_history_summary wh ON wh.video_id = v.id
                 WHERE v.id IN ({placeholders})
                 """,
                 tuple(video.id for video in videos),
@@ -441,12 +447,20 @@ class LibraryRepository:
         self.clear_setting("feed_daily_channel_limit")
 
     def default_video_quality(self) -> str:
-        _mode, quality = self.default_playback_option()
-        return quality if quality in USER_SELECTABLE_QUALITIES else "720p"
+        value = self.setting("default_video_quality", "")
+        if ":" in value:
+            _mode, value = value.split(":", 1)
+        if value in USER_SELECTABLE_QUALITIES:
+            return value
+        _mode, legacy_quality = self.default_playback_option()
+        return legacy_quality if legacy_quality in USER_SELECTABLE_QUALITIES else "720p"
 
     def default_playback_mode(self) -> str:
-        mode, _quality = self.default_playback_option()
-        return mode
+        mode = self.setting("default_playback_mode", "")
+        if mode in {"streaming", "fetch"}:
+            return mode
+        legacy_mode, _quality = self.default_playback_option()
+        return legacy_mode
 
     def default_playback_option(self) -> tuple[str, str]:
         value = self.setting("default_video_quality", "streaming:720p")
@@ -454,23 +468,32 @@ class LibraryRepository:
             quality = value if value in USER_SELECTABLE_QUALITIES else "720p"
             return ("streaming", quality)
         mode, quality = value.split(":", 1)
-        if mode not in {"streaming", "prefetch"}:
+        if mode not in {"streaming", "fetch"}:
             mode = "streaming"
         if quality not in USER_SELECTABLE_QUALITIES:
             quality = "720p"
         return mode, quality
 
     def has_default_video_quality_override(self) -> bool:
-        return self.has_setting("default_video_quality")
+        return self.has_setting("default_video_quality") or self.has_setting(
+            "default_playback_mode"
+        )
 
-    def set_default_video_quality(self, quality: str, mode: str = "streaming") -> None:
+    def set_default_video_quality(
+        self, quality: str, mode: str | None = None
+    ) -> None:
         if quality in USER_SELECTABLE_QUALITIES:
-            if mode not in {"streaming", "prefetch"}:
-                mode = "streaming"
-            self.set_setting("default_video_quality", f"{mode}:{quality}")
+            self.set_setting("default_video_quality", quality)
+            if mode is not None:
+                self.set_default_playback_mode(mode)
+
+    def set_default_playback_mode(self, mode: str) -> None:
+        if mode in {"streaming", "fetch"}:
+            self.set_setting("default_playback_mode", mode)
 
     def clear_default_video_quality(self) -> None:
         self.clear_setting("default_video_quality")
+        self.clear_setting("default_playback_mode")
 
     def refresh_worker_count(self) -> int:
         return min(
@@ -685,7 +708,7 @@ class LibraryRepository:
                     COUNT(v.id) AS count
                 FROM channels c
                 JOIN videos v ON v.channel_id = c.id
-                LEFT JOIN watch_history wh ON wh.video_id = v.id
+                LEFT JOIN watch_history_summary wh ON wh.video_id = v.id
                 WHERE c.is_subscribed = 1
                   AND c.new_videos_cleared_at IS NOT NULL
                   AND v.discovered_at > c.new_videos_cleared_at
@@ -724,8 +747,13 @@ class LibraryRepository:
                             v.channel_id,
                             date(COALESCE(v.published_at, v.discovered_at))
                         ORDER BY
-                            CASE WHEN wh.video_id IS NULL THEN 0 ELSE 1 END,
-                            COALESCE(wh.completed, 0) ASC,
+                            CASE
+                                WHEN wh.video_id IS NULL
+                                  AND wp.watch_range_string IS NULL
+                                THEN 0
+                                ELSE 1
+                            END,
+                            CASE WHEN COALESCE(wp.percent_watched, 0) >= 0.9 THEN 1 ELSE 0 END ASC,
                             COALESCE(wp.percent_watched, 0) ASC,
                             COALESCE(v.view_count, 0) DESC,
                             CASE WHEN v.published_at IS NULL THEN 1 ELSE 0 END,
@@ -734,22 +762,25 @@ class LibraryRepository:
                     ) AS channel_day_rank
                 FROM videos v
                 LEFT JOIN watch_progress wp ON wp.video_id = v.id
-                LEFT JOIN watch_history wh ON wh.video_id = v.id
+                LEFT JOIN watch_history_summary wh ON wh.video_id = v.id
                 LEFT JOIN hidden_videos hv ON hv.video_id = v.id
                 WHERE hv.video_id IS NULL
                   AND v.kind = 'video'
             )
             SELECT
-                v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
+                v.id, v.title, v.url, v.kind, v.channel_id, c.title AS channel_title,
                 v.thumbnail_url, v.description, v.duration_seconds,
                 v.published_at, v.view_count, v.availability,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 wp.watch_range_string,
-                COALESCE(wh.completed, 0) AS completed
+                CASE
+                    WHEN COALESCE(wp.percent_watched, 0) >= 0.9 THEN 1
+                    ELSE 0
+                END AS completed
             FROM ranked_videos v
             JOIN channels c ON c.id = v.channel_id
             LEFT JOIN watch_progress wp ON wp.video_id = v.id
-            LEFT JOIN watch_history wh ON wh.video_id = v.id
+            LEFT JOIN watch_history_summary wh ON wh.video_id = v.id
             WHERE c.is_subscribed = 1
               AND v.channel_day_rank <= ?
             ORDER BY
@@ -763,16 +794,19 @@ class LibraryRepository:
         return self._videos_query(
             """
             SELECT
-                v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
+                v.id, v.title, v.url, v.kind, v.channel_id, c.title AS channel_title,
                 v.thumbnail_url, v.description, v.duration_seconds,
                 v.published_at, v.view_count, v.availability,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 wp.watch_range_string,
-                COALESCE(wh.completed, 0) AS completed
+                CASE
+                    WHEN COALESCE(wp.percent_watched, 0) >= 0.9 THEN 1
+                    ELSE 0
+                END AS completed
             FROM videos v
             LEFT JOIN channels c ON c.id = v.channel_id
             LEFT JOIN watch_progress wp ON wp.video_id = v.id
-            LEFT JOIN watch_history wh ON wh.video_id = v.id
+            LEFT JOIN watch_history_summary wh ON wh.video_id = v.id
             WHERE v.channel_id = ?
               AND v.kind = 'video'
             ORDER BY
@@ -794,16 +828,19 @@ class LibraryRepository:
         return self._videos_query(
             """
             SELECT
-                v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
+                v.id, v.title, v.url, v.kind, v.channel_id, c.title AS channel_title,
                 v.thumbnail_url, v.description, v.duration_seconds,
                 v.published_at, v.view_count, v.availability,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 wp.watch_range_string,
-                COALESCE(wh.completed, 0) AS completed
+                CASE
+                    WHEN COALESCE(wp.percent_watched, 0) >= 0.9 THEN 1
+                    ELSE 0
+                END AS completed
             FROM videos v
             LEFT JOIN channels c ON c.id = v.channel_id
             LEFT JOIN watch_progress wp ON wp.video_id = v.id
-            LEFT JOIN watch_history wh ON wh.video_id = v.id
+            LEFT JOIN watch_history_summary wh ON wh.video_id = v.id
             WHERE v.channel_id = ?
               AND v.kind = ?
             ORDER BY
@@ -831,7 +868,7 @@ class LibraryRepository:
         params: tuple[object, ...]
         where = ""
         if query.strip():
-            where = "AND (v.title LIKE ? OR c.title LIKE ? OR wh.last_watched_at LIKE ?)"
+            where = "AND (v.title LIKE ? OR c.title LIKE ? OR wh.started_at LIKE ?)"
             params = (pattern, pattern, pattern, limit)
         else:
             params = (limit,)
@@ -839,19 +876,24 @@ class LibraryRepository:
         return self._videos_query(
             f"""
             SELECT
-                v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
+                v.id, v.title, v.url, v.kind, v.channel_id, c.title AS channel_title,
                 v.thumbnail_url, v.description, v.duration_seconds,
                 v.published_at, v.view_count, v.availability,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 wp.watch_range_string,
-                COALESCE(wh.completed, 0) AS completed
+                CASE
+                    WHEN COALESCE(wp.percent_watched, 0) >= 0.9 THEN 1
+                    ELSE 0
+                END AS completed,
+                wh.id AS history_id,
+                wh.playlist_url
             FROM watch_history wh
             JOIN videos v ON v.id = wh.video_id
             LEFT JOIN channels c ON c.id = v.channel_id
             LEFT JOIN watch_progress wp ON wp.video_id = v.id
-            WHERE wh.last_watched_at IS NOT NULL
+            WHERE wh.started_at IS NOT NULL
             {where}
-            ORDER BY wh.last_watched_at DESC
+            ORDER BY wh.started_at DESC, wh.id DESC
             LIMIT ?
             """,
             params,
@@ -910,36 +952,39 @@ class LibraryRepository:
         return self._videos_query(
             """
             SELECT
-                v.id, v.title, v.url, v.channel_id, c.title AS channel_title,
+                v.id, v.title, v.url, v.kind, v.channel_id, c.title AS channel_title,
                 v.thumbnail_url, v.description, v.duration_seconds,
                 v.published_at, v.view_count, v.availability,
                 COALESCE(wp.percent_watched, 0) AS percent_watched,
                 wp.watch_range_string,
-                COALESCE(wh.completed, 0) AS completed
+                CASE
+                    WHEN COALESCE(wp.percent_watched, 0) >= 0.9 THEN 1
+                    ELSE 0
+                END AS completed
             FROM watch_later wl
             JOIN videos v ON v.id = wl.video_id
             LEFT JOIN channels c ON c.id = v.channel_id
             LEFT JOIN watch_progress wp ON wp.video_id = v.id
-            LEFT JOIN watch_history wh ON wh.video_id = v.id
+            LEFT JOIN watch_history_summary wh ON wh.video_id = v.id
             ORDER BY wl.added_at DESC
             LIMIT ?
             """,
             (limit,),
         )
 
-    def record_play_started(self, video_id: str) -> None:
+    def record_play_started(
+        self, video_id: str, playlist_url: str | None = None
+    ) -> None:
         now = utcnow()
         with self._conn() as conn:
             conn.execute(
                 """
-                INSERT INTO watch_history (video_id, first_watched_at, last_watched_at, play_count, updated_at)
-                VALUES (?, ?, ?, 1, ?)
-                ON CONFLICT(video_id) DO UPDATE SET
-                    last_watched_at = excluded.last_watched_at,
-                    play_count = watch_history.play_count + 1,
-                    updated_at = excluded.updated_at
+                INSERT INTO watch_history (
+                    video_id, playlist_url, started_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (video_id, now, now, now),
+                (video_id, playlist_url, now, now, now),
             )
             conn.execute(
                 "DELETE FROM watch_later WHERE video_id = ?", (video_id,)
@@ -962,28 +1007,35 @@ class LibraryRepository:
             conn.execute(
                 """
                 INSERT INTO watch_history (
-                    video_id, first_watched_at, last_watched_at, completed,
-                    completed_at, play_count, updated_at
+                    video_id, playlist_url, started_at, created_at, updated_at
                 )
-                VALUES (?, ?, ?, 1, ?, 0, ?)
-                ON CONFLICT(video_id) DO UPDATE SET
-                    first_watched_at = COALESCE(watch_history.first_watched_at, excluded.first_watched_at),
-                    completed = 1,
-                    completed_at = COALESCE(watch_history.completed_at, excluded.completed_at),
-                    last_watched_at = excluded.last_watched_at,
-                    updated_at = excluded.updated_at
+                SELECT ?, NULL, ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM watch_history
+                    WHERE video_id = ?
+                      AND playlist_url IS NULL
+                )
                 """,
-                (video_id, now, now, now, now),
+                (video_id, now, now, now, video_id),
             )
 
-    def remove_watch_history(self, video_id: str) -> None:
+    def remove_watch_history(
+        self, video_id: str, history_id: int | None = None
+    ) -> None:
         with self._conn() as conn:
-            conn.execute(
-                "DELETE FROM watch_ranges WHERE video_id = ?", (video_id,)
-            )
-            conn.execute(
-                "DELETE FROM watch_history WHERE video_id = ?", (video_id,)
-            )
+            if history_id is None:
+                conn.execute(
+                    "DELETE FROM watch_ranges WHERE video_id = ?", (video_id,)
+                )
+                conn.execute(
+                    "DELETE FROM watch_history WHERE video_id = ?", (video_id,)
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM watch_history WHERE id = ? AND video_id = ?",
+                    (history_id, video_id),
+                )
 
     def hide_video(self, video_id: str, reason: str = "not_interested") -> None:
         now = utcnow()
@@ -1020,21 +1072,6 @@ class LibraryRepository:
                 """,
                 (video_id, start_seconds, end_seconds, now, now, now),
             )
-            conn.execute(
-                """
-                UPDATE watch_history
-                SET completed = 1,
-                    completed_at = COALESCE(completed_at, ?),
-                    updated_at = ?
-                WHERE video_id = ?
-                  AND (
-                    SELECT percent_watched
-                    FROM watch_progress
-                    WHERE video_id = ?
-                  ) >= ?
-                """,
-                (now, now, video_id, video_id, completion_threshold),
-            )
 
     def resume_position(self, video_id: str) -> int:
         with self._conn() as conn:
@@ -1068,6 +1105,7 @@ class LibraryRepository:
             id=row["id"],
             title=row["title"],
             url=row["url"],
+            kind=row["kind"] if "kind" in row.keys() else "video",
             channel_id=row["channel_id"],
             channel_title=row["channel_title"],
             thumbnail_url=row["thumbnail_url"],
@@ -1081,6 +1119,8 @@ class LibraryRepository:
             percent_watched=row["percent_watched"],
             watch_ranges=ranges or None,
             completed=bool(row["completed"]),
+            history_id=row["history_id"] if "history_id" in row.keys() else None,
+            playlist_url=row["playlist_url"] if "playlist_url" in row.keys() else None,
         )
 
     def _watch_ranges_from_string(

@@ -96,7 +96,7 @@ The app should resolve fresh stream URLs through `yt-dlp` immediately before
 playback. Resolved media URLs should not be persisted because they can expire.
 
 Clapper handles local files and combined audio/video stream URLs directly.
-When `yt-dlp` resolves separate audio and video streams, the app should prefetch
+When `yt-dlp` resolves separate audio and video streams, the app should fetch
 and remux the selected quality into the playback cache before handing the local
 file to Clapper.
 
@@ -799,7 +799,7 @@ may require tuning of Clapper/GStreamer and `yt-dlp` format selection.
 Mitigation:
 
 - Use direct Clapper playback for combined audio/video streams.
-- Prefetch and remux split audio/video streams before playback.
+- Fetch and remux split audio/video streams before playback.
 - Keep format selection conservative enough for reliable Clapper playback while
   still allowing higher-quality cached streams.
 

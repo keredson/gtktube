@@ -130,6 +130,7 @@ class MainWindow(
         self.video_queue = Gio.ListStore(item_type=VideoObject)
         self.playlist_store = Gio.ListStore(item_type=VideoObject)
         self.playlist_current_index: int | None = None
+        self.current_playlist_url: str | None = None
         self.playlist_skip_set: set[int] = set()
         self.queue_quit_confirmed = False
         self.queue_quit_dialog: Gtk.Dialog | None = None
@@ -875,6 +876,7 @@ class MainWindow(
         self.queue_pane.set_visible(self.video_queue.get_n_items() > 0)
         self.playlist_pane.set_visible(False)
         self.playlist_current_index = None
+        self.current_playlist_url = None
         self.update_playlist_rows()
         self.update_transport_navigation_buttons()
         self.verbose_log(
@@ -3256,6 +3258,7 @@ class MainWindow(
                     self.append_video_tile(
                         self.history_grid,
                         video,
+                        on_clicked=lambda _widget, v=video: self.open_history_video(v),
                         on_context_menu=self.show_history_context_menu,
                     )
                 except Exception:
@@ -3280,6 +3283,46 @@ class MainWindow(
             return False
 
         GLib.idle_add(append_batch)
+
+    def open_history_video(self, video: Video) -> None:
+        if not video.playlist_url:
+            self.play_video(video)
+            return
+
+        playlist_url = video.playlist_url
+        while self.playlist_store.get_n_items() > 0:
+            self.playlist_store.remove(0)
+        self.playlist_skip_set.clear()
+        self.playlist_current_index = None
+        self.current_playlist_url = playlist_url
+        self.playlist_pane.set_visible(True)
+        self.set_status("Loading playlist...")
+
+        def done(result: dict[str, Any]) -> None:
+            for playlist_video in result["videos"]:
+                self.playlist_store.append(VideoObject(playlist_video))
+            self.playlist_skip_set.clear()
+            self.playlist_current_index = None
+            self.update_transport_navigation_buttons()
+
+            for index in range(self.playlist_store.get_n_items()):
+                item = self.playlist_store.get_item(index)
+                if item.video.id == video.id:
+                    self.play_playlist_item(index)
+                    return
+
+            self.play_video(video, hide_sidebar=False, playlist_url=playlist_url)
+
+        self.run_task(
+            "Loading playlist...",
+            lambda: self.service.extractor.resolve_playlist(playlist_url),
+            done,
+            error=lambda _exc: self.play_video(
+                video,
+                hide_sidebar=False,
+                playlist_url=playlist_url,
+            ),
+        )
 
     def set_feed_loading(self, loading: bool, label: str = "Loading more...") -> None:
         self.feed_loading_label.set_text(label)
@@ -3423,7 +3466,11 @@ class MainWindow(
             return
         self.playlist_current_index = index
         item = self.playlist_store.get_item(index)
-        self.play_video(item.video, hide_sidebar=False)
+        self.play_video(
+            item.video,
+            hide_sidebar=False,
+            playlist_url=self.current_playlist_url,
+        )
         self.update_playlist_rows()
 
     def toggle_playlist_skip(self, popover: Gtk.Popover, index: int) -> None:

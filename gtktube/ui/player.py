@@ -166,12 +166,18 @@ class PlayerMixin:
             parts.append("completed")
         return parts
 
-    def play_video(self, video: Video, hide_sidebar: bool = True) -> None:
+    def play_video(
+        self,
+        video: Video,
+        hide_sidebar: bool = True,
+        playlist_url: str | None = None,
+    ) -> None:
         self.navigate_to(ViewState("player"))
         # Mutual exclusivity: Playing a random video hides the playlist
         if hide_sidebar:
             self.playlist_pane.set_visible(False)
             self.playlist_current_index = None
+            self.current_playlist_url = None
             self.update_playlist_rows()
         quality = self.selected_quality()
         self.playback_request_id += 1
@@ -195,12 +201,13 @@ class PlayerMixin:
                 lambda: self.service.play_downloaded_video(
                     video,
                     downloaded_path,
+                    playlist_url=playlist_url,
                 ),
                 lambda playable: self.load_playable_if_current(playable, request_id),
                 error=lambda exc: self.show_player_error_if_current(exc, request_id),
             )
             return
-        if self.selected_playback_mode() == "prefetch":
+        if self.selected_playback_mode() == "fetch":
             cached_path = self.service.playback_cache_file_for_video(
                 self.playback_cache_dir,
                 video.id,
@@ -208,7 +215,7 @@ class PlayerMixin:
             )
             if cached_path is not None:
                 self.verbose_log(
-                    "playback using prefetch cache "
+                    "playback using fetch cache "
                     f"video={video.id} quality={quality} path={cached_path}"
                 )
                 self.run_task(
@@ -217,6 +224,7 @@ class PlayerMixin:
                         video,
                         cached_path,
                         quality,
+                        playlist_url=playlist_url,
                     ),
                     lambda playable: self.load_playable_if_current(
                         playable,
@@ -226,43 +234,53 @@ class PlayerMixin:
                 )
                 return
             self.verbose_log(
-                "playback prefetch starting "
+                "playback fetch starting "
                 f"video={video.id} quality={quality}"
             )
-            prefetch_parts: dict[str, float] = {}
+            fetch_parts: dict[str, float] = {}
 
             def progress(update: dict[str, object]) -> None:
                 if getattr(self, "cleaned_up", False):
                     return
                 GLib.idle_add(
-                    self.update_prefetch_progress,
+                    self.update_fetch_progress,
                     request_id,
-                    prefetch_parts,
+                    fetch_parts,
                     update,
                 )
 
             self.run_task(
-                "Pre-fetching video...",
-                lambda: self.play_prefetched_video(video, quality, progress),
+                "Fetching video...",
+                lambda: self.play_fetched_video(
+                    video,
+                    quality,
+                    progress,
+                    playlist_url=playlist_url,
+                ),
                 lambda playable: self.load_playable_if_current(playable, request_id),
                 error=lambda exc: self.show_player_error_if_current(exc, request_id),
             )
             return
         self.run_task(
             "Resolving video...",
-            lambda: self.service.play_video(video, quality=quality),
+            lambda: self.service.play_video(
+                video,
+                quality=quality,
+                playlist_url=playlist_url,
+            ),
             lambda playable: self.load_playable_if_current(playable, request_id),
             error=lambda exc: self.show_player_error_if_current(exc, request_id),
         )
 
-    def play_prefetched_video(
+    def play_fetched_video(
         self,
         video: Video,
         quality: str,
         progress: Callable[[dict[str, object]], None] | None = None,
         record_play: bool = True,
+        playlist_url: str | None = None,
     ) -> PlayableVideo:
-        path = self.service.prefetch_playback_video(
+        path = self.service.fetch_playback_video(
             video,
             quality,
             self.playback_cache_dir,
@@ -273,9 +291,10 @@ class PlayerMixin:
             path,
             quality,
             record_play=record_play,
+            playlist_url=playlist_url,
         )
 
-    def update_prefetch_progress(
+    def update_fetch_progress(
         self,
         request_id: int,
         parts: dict[str, float],
@@ -286,16 +305,16 @@ class PlayerMixin:
         status = str(update.get("status") or "")
         if status not in {"downloading", "finished"}:
             return False
-        part = self.prefetch_progress_part(update)
+        part = self.fetch_progress_part(update)
         if status == "finished":
             parts[part] = 1.0
         else:
-            downloaded = self.prefetch_progress_number(update.get("downloaded_bytes"))
-            total = self.prefetch_progress_number(update.get("total_bytes"))
+            downloaded = self.fetch_progress_number(update.get("downloaded_bytes"))
+            total = self.fetch_progress_number(update.get("total_bytes"))
             if total <= 0:
-                total = self.prefetch_progress_number(update.get("total_bytes_estimate"))
+                total = self.fetch_progress_number(update.get("total_bytes_estimate"))
             if total <= 0:
-                self.set_prefetch_progress_text("Pre-fetching video...")
+                self.set_fetch_progress_text("Fetching video...")
                 return False
             parts[part] = max(0.0, min(1.0, downloaded / total))
         if "single" in parts:
@@ -303,11 +322,11 @@ class PlayerMixin:
         else:
             progress = 0.9 * parts.get("video", 0.0) + 0.1 * parts.get("audio", 0.0)
         percent = round(progress * 100)
-        self.verbose_log(f"playback prefetch progress percent={percent}")
-        self.set_prefetch_progress_text(f"Pre-fetching video {percent}%...")
+        self.verbose_log(f"playback fetch progress percent={percent}")
+        self.set_fetch_progress_text(f"Fetching video {percent}%...")
         return False
 
-    def prefetch_progress_part(self, update: dict[str, object]) -> str:
+    def fetch_progress_part(self, update: dict[str, object]) -> str:
         info = update.get("info_dict")
         if not isinstance(info, dict):
             return "single"
@@ -321,12 +340,12 @@ class PlayerMixin:
             return "audio"
         return "single"
 
-    def prefetch_progress_number(self, value: object) -> float:
+    def fetch_progress_number(self, value: object) -> float:
         if isinstance(value, (int, float)):
             return float(value)
         return 0.0
 
-    def set_prefetch_progress_text(self, text: str) -> None:
+    def set_fetch_progress_text(self, text: str) -> None:
         self.player_meta.set_text(text)
         self.miniplayer_meta.set_text(text)
         self.player_loading_label.set_text(text)
@@ -414,38 +433,38 @@ class PlayerMixin:
         )
         if not self.should_use_clapper_player(playable):
             self.verbose_log(
-                "playback redirecting split stream to prefetch "
+                "playback redirecting split stream to fetch "
                 f"video={playable.video.id} quality={playable.quality} "
                 f"resolved_quality={playable.resolved_quality or 'unknown'} "
                 f"has_audio_stream={bool(playable.audio_url)}"
             )
             request_id = self.playback_request_id
-            prefetch_parts: dict[str, float] = {}
+            fetch_parts: dict[str, float] = {}
 
             def progress(update: dict[str, object]) -> None:
                 if getattr(self, "cleaned_up", False):
                     return
                 GLib.idle_add(
-                    self.update_prefetch_progress,
+                    self.update_fetch_progress,
                     request_id,
-                    prefetch_parts,
+                    fetch_parts,
                     update,
                 )
 
             self.run_task(
-                "Pre-fetching video...",
+                "Fetching video...",
                 lambda: replace(
-                    self.play_prefetched_video(
+                    self.play_fetched_video(
                         playable.video,
                         playable.quality,
                         progress,
                         record_play=False,
                     ),
                     available_stream_qualities=playable.available_stream_qualities,
-                    available_prefetch_qualities=playable.available_prefetch_qualities,
+                    available_fetch_qualities=playable.available_fetch_qualities,
                 ),
-                lambda prefetched: self.load_playable_if_current(
-                    prefetched,
+                lambda fetched: self.load_playable_if_current(
+                    fetched,
                     request_id,
                 ),
                 error=lambda exc: self.show_player_error_if_current(exc, request_id),
@@ -1554,7 +1573,7 @@ class PlayerMixin:
         if ":" not in active_id:
             return ("streaming", active_id) if active_id in QUALITY_FORMATS else None
         mode, quality = active_id.split(":", 1)
-        if mode not in {"streaming", "prefetch"} or quality not in QUALITY_FORMATS:
+        if mode not in {"streaming", "fetch"} or quality not in QUALITY_FORMATS:
             return None
         return mode, quality
 
@@ -1563,7 +1582,7 @@ class PlayerMixin:
         active_id: str | None = None,
         downloaded_quality: str | None = None,
         stream_qualities: list[str] | None = None,
-        prefetch_qualities: list[str] | None = None,
+        fetch_qualities: list[str] | None = None,
     ) -> None:
         self.updating_quality = True
         self.quality_combo.remove_all()
@@ -1571,19 +1590,19 @@ class PlayerMixin:
             self.quality_combo.append("downloaded", f"↓ {downloaded_quality}")
         if stream_qualities is None:
             stream_qualities = USER_SELECTABLE_QUALITIES
-        if prefetch_qualities is None:
-            prefetch_qualities = USER_SELECTABLE_QUALITIES
-        if not stream_qualities and not prefetch_qualities:
+        if fetch_qualities is None:
+            fetch_qualities = USER_SELECTABLE_QUALITIES
+        if not stream_qualities and not fetch_qualities:
             stream_qualities = USER_SELECTABLE_QUALITIES
-            prefetch_qualities = USER_SELECTABLE_QUALITIES
+            fetch_qualities = USER_SELECTABLE_QUALITIES
         for quality in stream_qualities:
             self.quality_combo.append(
                 self.quality_option_id("streaming", quality),
                 f"⇄ {quality}",
             )
-        for quality in prefetch_qualities:
+        for quality in fetch_qualities:
             self.quality_combo.append(
-                self.quality_option_id("prefetch", quality),
+                self.quality_option_id("fetch", quality),
                 f"↓ {quality}",
             )
         requested_id = active_id or self.quality_option_id(
@@ -1591,9 +1610,18 @@ class PlayerMixin:
             self.preferred_quality,
         )
         if not self.quality_combo.set_active_id(requested_id):
-            fallback_options = prefetch_qualities or stream_qualities
+            preferred_mode_options = (
+                fetch_qualities
+                if self.preferred_playback_mode == "fetch"
+                else stream_qualities
+            )
+            if preferred_mode_options:
+                fallback_options = preferred_mode_options
+                fallback_mode = self.preferred_playback_mode
+            else:
+                fallback_options = fetch_qualities or stream_qualities
+                fallback_mode = "fetch" if fetch_qualities else "streaming"
             fallback_quality = fallback_options[-1]
-            fallback_mode = "prefetch" if prefetch_qualities else "streaming"
             self.quality_combo.set_active_id(
                 self.quality_option_id(fallback_mode, fallback_quality)
             )
@@ -1617,32 +1645,46 @@ class PlayerMixin:
             self.preferred_quality,
         )
         stream_qualities = None
-        prefetch_qualities = None
+        fetch_qualities = None
         if playable is not None and (
             playable.available_stream_qualities is not None
-            or playable.available_prefetch_qualities is not None
+            or playable.available_fetch_qualities is not None
         ):
             stream_qualities = playable.available_stream_qualities
-            prefetch_qualities = playable.available_prefetch_qualities
+            fetch_qualities = playable.available_fetch_qualities
             if active_id not in {
                 self.quality_option_id("streaming", quality)
                 for quality in stream_qualities or []
             } | {
-                self.quality_option_id("prefetch", quality)
-                for quality in prefetch_qualities or []
+                self.quality_option_id("fetch", quality)
+                for quality in fetch_qualities or []
             }:
-                resolved_quality = playable.resolved_quality or playable.quality
-                resolved_quality = resolved_quality.removeprefix("cached ")
-                fallback_mode = (
-                    "streaming"
-                    if resolved_quality in (stream_qualities or [])
-                    else "prefetch"
+                preferred_options = (
+                    fetch_qualities
+                    if self.preferred_playback_mode == "fetch"
+                    else stream_qualities
                 )
-                active_id = self.quality_option_id(fallback_mode, resolved_quality)
+                if preferred_options:
+                    fallback_mode = self.preferred_playback_mode
+                    fallback_quality = (
+                        self.preferred_quality
+                        if self.preferred_quality in preferred_options
+                        else preferred_options[-1]
+                    )
+                else:
+                    resolved_quality = playable.resolved_quality or playable.quality
+                    resolved_quality = resolved_quality.removeprefix("cached ")
+                    fallback_mode = (
+                        "streaming"
+                        if resolved_quality in (stream_qualities or [])
+                        else "fetch"
+                    )
+                    fallback_quality = resolved_quality
+                active_id = self.quality_option_id(fallback_mode, fallback_quality)
         self.populate_quality_combo(
             active_id,
             stream_qualities=stream_qualities,
-            prefetch_qualities=prefetch_qualities,
+            fetch_qualities=fetch_qualities,
         )
         self.update_quality_combo_tooltip()
         self.quality_combo.set_visible(True)
@@ -1671,23 +1713,23 @@ class PlayerMixin:
         video = self.current_playable.video
         quality = self.selected_quality()
         self.flush_watch_range()
-        if self.selected_playback_mode() == "prefetch":
+        if self.selected_playback_mode() == "fetch":
             request_id = self.playback_request_id
-            prefetch_parts: dict[str, float] = {}
+            fetch_parts: dict[str, float] = {}
 
             def progress(update: dict[str, object]) -> None:
                 if getattr(self, "cleaned_up", False):
                     return
                 GLib.idle_add(
-                    self.update_prefetch_progress,
+                    self.update_fetch_progress,
                     request_id,
-                    prefetch_parts,
+                    fetch_parts,
                     update,
                 )
 
             self.run_task(
-                f"Pre-fetching {quality}...",
-                lambda: self.play_prefetched_video(
+                f"Fetching {quality}...",
+                lambda: self.play_fetched_video(
                     video,
                     quality,
                     progress,
@@ -1704,9 +1746,9 @@ class PlayerMixin:
 
     def update_quality_combo_tooltip(self) -> None:
         quality = self.selected_quality()
-        if self.selected_playback_mode() == "prefetch":
+        if self.selected_playback_mode() == "fetch":
             self.quality_combo.set_tooltip_text(
-                f"Pre-fetch {quality}: download to temporary playback cache before playing"
+                f"Fetch {quality}: download to temporary playback cache before playing"
             )
             return
         self.quality_combo.set_tooltip_text(f"Stream {quality}")
