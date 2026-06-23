@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from concurrent.futures import CancelledError
 from pathlib import Path
 from typing import Callable
 
@@ -61,9 +62,13 @@ class _Service:
         self.fetch_playback_video_calls = 0
         self.play_cached_video_calls = 0
         self.repository = self
+        self.default_quality: tuple[str, str] | None = None
 
     def resume_position(self, _video_id: str) -> int:
         return 0
+
+    def set_default_video_quality(self, _quality: str, mode: str = "streaming") -> None:
+        self.default_quality = (_quality, mode)
 
     def downloaded_file_for_video(self, _target_dir: Path, _video_id: str) -> Path | None:
         return None
@@ -158,9 +163,16 @@ class _PlayerHarness(PlayerMixin):
         self.loaded: list[PlayableVideo] = []
         self.fake_player = _FakePlayer()
         self.player = None
+        self.mpv_observed_time_pos = None
+        self.mpv_observed_duration = None
+        self.mpv_observed_properties: dict[str, object] = {}
         self.stack = _Stack()
         self.playback_rate = 1.0
         self.waited_for_buffer = False
+        self.cleaned_up = False
+        self.current_playable: PlayableVideo | None = None
+        self.pending_playback_video: Video | None = None
+        self.pending_playback_playlist_url: str | None = None
 
     def navigate_to(self, _view: object) -> None:
         pass
@@ -170,6 +182,12 @@ class _PlayerHarness(PlayerMixin):
 
     def show_player_loading(self, _video: Video) -> None:
         pass
+
+    def flush_watch_range(self) -> bool:
+        return True
+
+    def current_position_seconds(self) -> int:
+        return 17
 
     def verbose_log(self, _message: str) -> None:
         pass
@@ -216,6 +234,16 @@ class _PlayerHarness(PlayerMixin):
         request_id: int,
     ) -> None:
         self.loaded.append(playable)
+
+    def load_playable_at(self, playable: PlayableVideo, position: int) -> None:
+        self.loaded.append(
+            PlayableVideo(
+                video=playable.video,
+                stream_url=playable.stream_url,
+                quality=playable.quality,
+                resolved_quality=f"{playable.resolved_quality}@{position}",
+            )
+        )
 
 
 class PlayerMixinTests(unittest.TestCase):
@@ -290,6 +318,63 @@ class PlayerMixinTests(unittest.TestCase):
             self.assertEqual(label, "Resolving video...")
             self.assertEqual(work().resolved_quality, "1080p")
             self.assertEqual(harness.service.play_video_calls, 1)
+
+    def test_quality_change_cancels_stale_fetch_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            harness = _PlayerHarness(Path(temp))
+            video = Video(
+                id="video1",
+                title="Video One",
+                url="https://example.test/watch?v=video1",
+            )
+            harness.current_playable = PlayableVideo(
+                video=video,
+                stream_url="https://example.test/combined.mp4",
+                quality="1080p",
+                resolved_quality="1080p",
+            )
+            harness.quality_combo.append("fetch:720p", "Fetch 720p")
+            harness.quality_combo.set_active_id("fetch:720p")
+
+            harness.on_quality_changed(harness.quality_combo)
+
+            self.assertEqual(harness.playback_request_id, 1)
+            self.assertEqual(len(harness.tasks), 1)
+            label, work = harness.tasks[0]
+            self.assertEqual(label, "Fetching 720p...")
+
+            harness.playback_request_id += 1
+            with self.assertRaises(CancelledError):
+                work()
+
+    def test_mode_change_while_fetching_starts_streaming_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            harness = _PlayerHarness(Path(temp))
+            video = Video(
+                id="video1",
+                title="Video One",
+                url="https://example.test/watch?v=video1",
+            )
+
+            harness.play_video(video)
+            self.assertEqual(harness.playback_request_id, 1)
+            self.assertEqual(len(harness.tasks), 1)
+            fetch_label, fetch_work = harness.tasks[0]
+            self.assertEqual(fetch_label, "Fetching video...")
+
+            harness.quality_combo.append("streaming:1080p", "Stream 1080p")
+            harness.quality_combo.set_active_id("streaming:1080p")
+            harness.on_quality_changed(harness.quality_combo)
+
+            self.assertEqual(harness.preferred_playback_mode, "streaming")
+            self.assertEqual(harness.playback_request_id, 2)
+            self.assertEqual(len(harness.tasks), 2)
+            stream_label, stream_work = harness.tasks[1]
+            self.assertEqual(stream_label, "Resolving video...")
+            self.assertEqual(stream_work().resolved_quality, "1080p")
+
+            with self.assertRaises(CancelledError):
+                fetch_work()
 
     def test_quality_option_preserves_streaming_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

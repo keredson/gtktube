@@ -7,6 +7,7 @@ import hashlib
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import CancelledError
 from ctypes import byref, c_int, c_void_p
 from dataclasses import replace
 from pathlib import Path
@@ -36,6 +37,7 @@ MPV_DEMUXER_READAHEAD_SECS = 60
 MPV_DEMUXER_MAX_BYTES = "512MiB"
 MPV_DEMUXER_MAX_BACK_BYTES = "64MiB"
 MPV_DEMUXER_CACHE_UNLINK_FILES = "immediate"
+MPV_DECODER_THREADS = 2
 PLAYBACK_DIAG_INTERVAL_SECONDS = 30
 PLAYBACK_DIAG_THRESHOLD_MIB = 1024
 
@@ -81,6 +83,8 @@ class PlayerMixin:
         quality = self.selected_quality()
         self.playback_request_id += 1
         request_id = self.playback_request_id
+        self.pending_playback_video = video
+        self.pending_playback_playlist_url = playlist_url
         self.show_player_loading(video)
         self.verbose_log(
             "playback requested "
@@ -139,8 +143,7 @@ class PlayerMixin:
             fetch_parts: dict[str, float] = {}
 
             def progress(update: dict[str, object]) -> None:
-                if getattr(self, "cleaned_up", False):
-                    return
+                self.abort_stale_playback_request(request_id)
                 GLib.idle_add(
                     self.update_fetch_progress,
                     request_id,
@@ -200,6 +203,12 @@ class PlayerMixin:
             available_stream_qualities=resolved.available_stream_qualities,
             available_fetch_qualities=resolved.available_fetch_qualities,
         )
+
+    def abort_stale_playback_request(self, request_id: int) -> None:
+        if getattr(self, "cleaned_up", False):
+            raise CancelledError("GTKTube is shutting down")
+        if request_id != self.playback_request_id:
+            raise CancelledError("Playback request was superseded")
 
     def update_fetch_progress(
         self,
@@ -278,6 +287,8 @@ class PlayerMixin:
     ) -> None:
         if request_id != self.playback_request_id:
             return
+        self.pending_playback_video = None
+        self.pending_playback_playlist_url = None
         self.show_player_error(playback_error_message(str(exc)))
         self.reload_visible_video_grid()
 
@@ -340,6 +351,8 @@ class PlayerMixin:
         )
         self.flush_watch_range()
         self.stop_pipeline(restore_stack=False)
+        self.pending_playback_video = None
+        self.pending_playback_playlist_url = None
         self.current_playable = playable
         self.update_header_subtitle(ViewState("player"))
         self.update_quality_control(playable)
@@ -1220,9 +1233,19 @@ class PlayerMixin:
         )
         is_local_file = self.is_local_file_playable(playable)
         mpv_options: dict[str, object] = {
-            "input_default_bindings": True,
-            "input_vo_keyboard": True,
-            "osc": True,
+            "config": False,
+            "input_default_bindings": False,
+            "input_builtin_bindings": False,
+            "input_vo_keyboard": False,
+            "load_commands": False,
+            "load_console": False,
+            "load_context_menu": False,
+            "load_select": False,
+            "load_scripts": False,
+            "load_stats_overlay": False,
+            "osc": False,
+            "terminal": False,
+            "vd_lavc_threads": MPV_DECODER_THREADS,
             "vo": "libmpv",
             "ytdl": False,
             "ytdl_format": ytdl_format,
@@ -1272,6 +1295,7 @@ class PlayerMixin:
                 f"version={getattr(player, 'mpv_version', 'unknown')} "
                 f"video={playable.video.id} ytdl_format={ytdl_format!r} "
                 f"local_file={is_local_file} "
+                f"decoder_threads={MPV_DECODER_THREADS} "
                 f"{cache_log} "
                 f"rss={self.process_rss_label()}"
             )
@@ -1380,6 +1404,7 @@ class PlayerMixin:
         self.mpv_property_observers = []
         self.mpv_observed_time_pos = None
         self.mpv_observed_duration = None
+        self.mpv_observed_properties = {}
         names = (
             "eof-reached",
             "idle-active",
@@ -1387,6 +1412,20 @@ class PlayerMixin:
             "time-pos",
             "duration",
             "pause",
+            "speed",
+            "state",
+            "hwdec-current",
+            "video-format",
+            "video-codec",
+            "cache-buffering-state",
+            "demuxer-cache-duration",
+            "demuxer-cache-time",
+            "demuxer-cache-state",
+            "avsync",
+            "mistimed-frame-count",
+            "vo-delayed-frame-count",
+            "decoder-frame-drop-count",
+            "frame-drop-count",
         )
         for name in names:
             def observer(
@@ -1427,6 +1466,7 @@ class PlayerMixin:
     ) -> None:
         if player is not self.player:
             return
+        self.mpv_observed_properties[property_name] = value
         if property_name == "time-pos":
             try:
                 self.mpv_observed_time_pos = (
@@ -1702,6 +1742,8 @@ class PlayerMixin:
         self.flush_watch_range()
         self.stop_pipeline()
         self.current_playable = None
+        self.pending_playback_video = None
+        self.pending_playback_playlist_url = None
         self.active_caption_url = None
         self.set_player_loading(False)
         self.player_title.set_text("No video loaded")
@@ -1748,7 +1790,9 @@ class PlayerMixin:
                 self.start_playback(self.current_playable, resume_position=0)
             return
         try:
-            self.player.pause = not bool(getattr(self.player, "pause", False))
+            paused = bool(self.mpv_observed_properties.get("pause", False))
+            self.player.pause = not paused
+            self.mpv_observed_properties["pause"] = not paused
         except Exception as exc:
             self.log(f"playback pause toggle failed: {exc}")
         self.update_play_pause_button()
@@ -1759,7 +1803,7 @@ class PlayerMixin:
             self.play_pause_icon.set_from_icon_name("media-playback-start-symbolic")
             self.play_pause_button.set_tooltip_text("Play")
             return
-        if bool(getattr(self.player, "pause", False)):
+        if bool(self.mpv_observed_properties.get("pause", False)):
             self.play_pause_icon.set_from_icon_name("media-playback-start-symbolic")
             self.play_pause_button.set_tooltip_text("Play")
         else:
@@ -1767,7 +1811,7 @@ class PlayerMixin:
             self.play_pause_button.set_tooltip_text("Pause")
 
     def update_playback_inhibition(self) -> None:
-        if self.player is None or bool(getattr(self.player, "pause", False)):
+        if self.player is None or bool(self.mpv_observed_properties.get("pause", False)):
             self.uninhibit_playback("player-paused-or-missing")
             return
         self.inhibit_playback()
@@ -2090,6 +2134,13 @@ class PlayerMixin:
         self.service.repository.set_default_video_quality(quality, mode=mode)
 
         if self.current_playable is None:
+            pending_video = self.pending_playback_video
+            if pending_video is not None:
+                self.play_video(
+                    pending_video,
+                    hide_sidebar=False,
+                    playlist_url=self.pending_playback_playlist_url,
+                )
             return
         if self.is_downloaded_playable():
             self.update_quality_control()
@@ -2098,13 +2149,13 @@ class PlayerMixin:
         video = self.current_playable.video
         quality = self.selected_quality()
         self.flush_watch_range()
+        self.playback_request_id += 1
+        request_id = self.playback_request_id
         if self.selected_playback_mode() == "fetch":
-            request_id = self.playback_request_id
             fetch_parts: dict[str, float] = {}
 
             def progress(update: dict[str, object]) -> None:
-                if getattr(self, "cleaned_up", False):
-                    return
+                self.abort_stale_playback_request(request_id)
                 GLib.idle_add(
                     self.update_fetch_progress,
                     request_id,
@@ -2120,13 +2171,23 @@ class PlayerMixin:
                     progress,
                     record_play=False,
                 ),
-                lambda playable: self.load_playable_at(playable, position),
+                lambda playable: self.load_playable_at_if_current(
+                    playable,
+                    request_id,
+                    position,
+                ),
+                error=lambda exc: self.show_player_error_if_current(exc, request_id),
             )
             return
         self.run_task(
             f"Switching to {quality}...",
             lambda: self.service.play_video(video, quality=quality, record_play=False),
-            lambda playable: self.load_playable_at(playable, position),
+            lambda playable: self.load_playable_at_if_current(
+                playable,
+                request_id,
+                position,
+            ),
+            error=lambda exc: self.show_player_error_if_current(exc, request_id),
         )
 
     def update_quality_combo_tooltip(self) -> None:
@@ -2348,6 +2409,21 @@ class PlayerMixin:
     def load_playable_at(self, playable: PlayableVideo, position: int) -> None:
         self.load_playable(playable, resume_position=position)
 
+    def load_playable_at_if_current(
+        self,
+        playable: PlayableVideo,
+        request_id: int,
+        position: int,
+    ) -> None:
+        if request_id != self.playback_request_id:
+            self.verbose_log(
+                "ignoring stale playback switch "
+                f"video={playable.video.id} request={request_id} "
+                f"current={self.playback_request_id}"
+            )
+            return
+        self.load_playable_at(playable, position)
+
     def queue_seek_media(self, seconds: int) -> None:
         self.pending_seek_seconds = seconds
         self.pending_seek_attempts = 0
@@ -2494,23 +2570,13 @@ class PlayerMixin:
             return
 
     def current_position_seconds(self) -> int:
-        if self.player is None:
-            return 0
-        try:
-            position = getattr(self.player, "time_pos", None)
-        except Exception:
-            return 0
+        position = self.mpv_observed_time_pos
         if position is None:
             return 0
         return max(0, int(position))
 
     def current_duration_seconds(self) -> int:
-        if self.player is None:
-            return 0
-        try:
-            duration = getattr(self.player, "duration", None)
-        except Exception:
-            return 0
+        duration = self.mpv_observed_duration
         if duration is None:
             return 0
         return max(0, int(duration))
@@ -2598,17 +2664,7 @@ class PlayerMixin:
         self.verbose_log("mpv playback diagnostics " + " ".join(parts))
 
     def playback_property(self, name: str) -> object | None:
-        if self.player is None:
-            return None
-        try:
-            if hasattr(self.player, "get_property"):
-                return self.player.get_property(name)
-        except Exception:
-            pass
-        try:
-            return getattr(self.player, name.replace("-", "_"))
-        except Exception:
-            return None
+        return self.mpv_observed_properties.get(name)
 
     def playback_float_property(self, name: str) -> float | None:
         value = self.playback_property(name)

@@ -4,7 +4,7 @@ import json
 import sys
 import time
 import traceback
-from concurrent.futures import Future, wait
+from concurrent.futures import CancelledError, Future, wait
 from ctypes import CDLL, POINTER, c_char_p, c_int, c_void_p
 from ctypes.util import find_library
 from datetime import datetime
@@ -140,6 +140,8 @@ class MainWindow(
         self.queue_quit_dialog: Gtk.Dialog | None = None
         self.dragging_index = -1
         self.current_playable: PlayableVideo | None = None
+        self.pending_playback_video: Video | None = None
+        self.pending_playback_playlist_url: str | None = None
         self.playback_request_id = 0
         self.playback_diag_timer: int | None = None
         self.sponsorblock = SponsorBlockClient()
@@ -155,6 +157,7 @@ class MainWindow(
         self.mpv_property_observers: list[tuple[str, Any]] = []
         self.mpv_observed_time_pos: float | None = None
         self.mpv_observed_duration: float | None = None
+        self.mpv_observed_properties: dict[str, object] = {}
         self.mpv_stream_error_message: str | None = None
         self.mpv_stream_retry: tuple[int, str] | None = None
         self.range_start_seconds: int | None = None
@@ -671,7 +674,7 @@ class MainWindow(
             try:
                 result = future.result()
             except BaseException as exc:
-                if future.cancelled():
+                if future.cancelled() or isinstance(exc, CancelledError):
                     self.set_status("Ready")
                 elif isinstance(exc, Exception):
                     self.set_status(f"Error: {exc}")

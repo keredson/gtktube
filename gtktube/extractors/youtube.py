@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import urllib.parse
+from concurrent.futures import CancelledError
 from dataclasses import replace
 from typing import Any, Callable
 
@@ -361,6 +362,8 @@ class YoutubeExtractor:
         try:
             with self._youtube_dl()(options) as ydl:
                 ydl.extract_info(url, download=True)
+        except CancelledError:
+            raise
         except Exception as exc:
             if is_restricted_video_error(str(exc)):
                 raise RestrictedVideoError(
