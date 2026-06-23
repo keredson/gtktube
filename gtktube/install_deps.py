@@ -15,6 +15,7 @@ PACKAGE_NAME_RE = re.compile(
     r"^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9+.-]*)?$"
 )
 APT_UPDATE_ARGS = ["apt-get", "update"]
+TEST_EMPTY_INSTALL_ARGS = ["sleep", "10"]
 
 try:
     import gi
@@ -110,9 +111,10 @@ def unavailable_message(unavailable: list[str]) -> str:
 if Gtk is not None:
 
     class InstallDepsWindow(Gtk.ApplicationWindow):
-        def __init__(self, app: Gtk.Application):
+        def __init__(self, app: Gtk.Application, *, test_empty_install: bool = False):
             super().__init__(application=app, title="GTKTube Dependencies")
             self.set_default_size(520, 320)
+            self.test_empty_install = test_empty_install
 
             self.missing = missing_packages()
             self.plan = package_plan(self.missing)
@@ -142,22 +144,46 @@ if Gtk is not None:
             buttons.set_halign(Gtk.Align.END)
             root.append(buttons)
 
+            self.cancel_button = Gtk.Button(label="Cancel")
+            self.cancel_button.connect("clicked", lambda *_: self.cancel_install())
+            buttons.append(self.cancel_button)
+
             self.install_button = Gtk.Button(label="Install")
+            self.install_button.add_css_class("suggested-action")
             self.install_button.connect("clicked", self.on_install_clicked)
             buttons.append(self.install_button)
-
-            close_button = Gtk.Button(label="Close")
-            close_button.connect("clicked", lambda *_: self.close())
-            buttons.append(close_button)
+            self.installing = False
+            self.connect("close-request", self.on_close_request)
 
             self.refresh()
+
+        def on_close_request(self, _window: Gtk.Window) -> bool:
+            if self.installing:
+                return True
+            self.cancel_install()
+            return True
+
+        def cancel_install(self) -> None:
+            app = self.get_application()
+            if app is not None:
+                app.install_cancelled = True
+                app.quit()
+            else:
+                self.close()
 
         def refresh(self) -> None:
             self.plan = package_plan(self.missing)
             if not self.missing:
                 self.message.set_text("All required Debian packages are installed.")
-                self.details.get_buffer().set_text("")
-                self.install_button.set_sensitive(False)
+                if self.test_empty_install:
+                    self.details.get_buffer().set_text(
+                        shlex.join(TEST_EMPTY_INSTALL_ARGS)
+                    )
+                    self.install_button.set_sensitive(True)
+                else:
+                    self.details.get_buffer().set_text("")
+                    self.install_button.set_sensitive(False)
+                self.cancel_button.set_sensitive(True)
                 return
 
             if not self.plan.installable:
@@ -169,10 +195,11 @@ if Gtk is not None:
                     unavailable_message(self.plan.unavailable)
                 )
                 self.install_button.set_sensitive(False)
+                self.cancel_button.set_sensitive(True)
                 return
 
             launcher = privileged_launcher()
-            command = apt_command(self.plan.installable, launcher=launcher)
+            command = apt_command_display(self.plan.installable, launcher=launcher)
             details = command
             if self.plan.unavailable:
                 details += "\n\n" + unavailable_message(self.plan.unavailable)
@@ -191,9 +218,16 @@ if Gtk is not None:
                 self.message.set_text(
                     "Could not find pkexec or gksu. Run the command below in a terminal."
                 )
+            self.cancel_button.set_sensitive(True)
 
         def on_install_clicked(self, _button: Gtk.Button) -> None:
-            if not self.missing or not self.plan.installable:
+            if self.installing:
+                return
+            if not self.missing:
+                if self.test_empty_install:
+                    self.run_test_empty_install()
+                return
+            if not self.plan.installable:
                 return
 
             launcher = privileged_launcher()
@@ -203,11 +237,13 @@ if Gtk is not None:
                 )
                 return
 
+            self.installing = True
             self.install_button.set_sensitive(False)
+            self.cancel_button.set_sensitive(False)
             self.message.set_text("Installing packages...")
             self.details.get_buffer().set_text(
                 "$ "
-                f"{shlex.join(privileged_install_args(launcher, self.plan.installable))}"
+                f"{apt_command_display(self.plan.installable, launcher=launcher)}"
                 "\n"
             )
             installable = list(self.plan.installable)
@@ -222,6 +258,24 @@ if Gtk is not None:
 
             threading.Thread(target=work, daemon=True).start()
 
+        def run_test_empty_install(self) -> None:
+            self.installing = True
+            self.install_button.set_sensitive(False)
+            self.cancel_button.set_sensitive(False)
+            self.message.set_text("Installing packages...")
+            self.details.get_buffer().set_text(
+                f"$ {shlex.join(TEST_EMPTY_INSTALL_ARGS)}\n"
+            )
+
+            def work() -> None:
+                returncode = subprocess.run(
+                    TEST_EMPTY_INSTALL_ARGS,
+                    check=False,
+                ).returncode
+                GLib.idle_add(self.install_finished, returncode)
+
+            threading.Thread(target=work, daemon=True).start()
+
         def append_output(self, text: str) -> bool:
             buffer = self.details.get_buffer()
             buffer.insert(buffer.get_end_iter(), text)
@@ -230,6 +284,7 @@ if Gtk is not None:
             return False
 
         def install_finished(self, returncode: int) -> bool:
+            self.installing = False
             if returncode == 0:
                 self.missing = missing_packages()
                 self.plan = package_plan(self.missing)
@@ -247,6 +302,7 @@ if Gtk is not None:
                 "Installation did not complete. The command output is shown below."
             )
             self.install_button.set_sensitive(True)
+            self.cancel_button.set_sensitive(True)
             return False
 
 
@@ -255,6 +311,16 @@ def apt_command(packages: list[str], launcher: str | None = None) -> str:
         return shlex.join(privileged_install_args(launcher, packages))
     install_args = apt_install_args(packages)
     return f"{shlex.join(APT_UPDATE_ARGS)} && {shlex.join(install_args)}"
+
+
+def apt_command_display(packages: list[str], launcher: str | None = None) -> str:
+    command = (
+        f"{shlex.join(APT_UPDATE_ARGS)} && \\\n"
+        f"{shlex.join(apt_install_args(packages))}"
+    )
+    if launcher is None:
+        return command
+    return f"{launcher} sh -c {shlex.quote(command)}"
 
 
 def apt_install_args(packages: list[str]) -> list[str]:
@@ -313,7 +379,7 @@ def run_privileged_apt(
 
 def fallback_gui_install(missing: list[str]) -> int:
     plan = package_plan(missing)
-    command = apt_command(plan.installable) if plan.installable else ""
+    command = apt_command_display(plan.installable) if plan.installable else ""
     message = (
         "GTKTube needs system packages for GTK4, PyGObject, and libmpv.\n\n"
         f"{command}"
@@ -364,17 +430,24 @@ def fallback_gui_install(missing: list[str]) -> int:
 if Gtk is not None:
 
     class InstallDepsApp(Gtk.Application):
-        def __init__(self):
+        def __init__(self, *, test_empty_install: bool = False):
             super().__init__(application_id="local.gtktube.InstallDeps")
             self.install_succeeded = False
+            self.install_cancelled = False
+            self.test_empty_install = test_empty_install
 
         def do_activate(self) -> None:
-            window = InstallDepsWindow(self)
+            window = InstallDepsWindow(
+                self,
+                test_empty_install=self.test_empty_install,
+            )
             window.present()
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv or ["gtktube-deps-installer"]
+    test_empty_install = "--test-empty-install" in argv
+    gtk_argv = [arg for arg in argv if arg != "--test-empty-install"]
     if not shutil.which("dpkg-query"):
         print("This helper is intended for Debian/Ubuntu systems.", file=sys.stderr)
         return 2
@@ -384,9 +457,13 @@ def main(argv: list[str] | None = None) -> int:
             print("All required Debian packages are installed.")
             return 0
         return fallback_gui_install(missing)
-    app = InstallDepsApp()
-    app.run(argv)
-    if app.install_succeeded or not missing_packages():
+    app = InstallDepsApp(test_empty_install=test_empty_install)
+    app.run(gtk_argv)
+    if app.install_succeeded:
+        return 0
+    if app.install_cancelled:
+        return 1
+    if not missing_packages():
         return 0
     return 1
 

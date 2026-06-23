@@ -58,6 +58,14 @@ class InstallDepsTests(unittest.TestCase):
             args, ["pkexec", "sh", "-c", "apt-get update && apt-get install -y python3-gi"]
         )
 
+    def test_apt_command_display_splits_update_and_install_lines(self) -> None:
+        command = install_deps.apt_command_display(["python3-gi"], launcher="pkexec")
+
+        self.assertEqual(
+            command,
+            "pkexec sh -c 'apt-get update && \\\napt-get install -y python3-gi'",
+        )
+
     def test_package_plan_splits_installable_and_unavailable_packages(self) -> None:
         plan = install_deps.package_plan(
             ["python3-gi", "libmpv2", "nodejs"],

@@ -208,10 +208,13 @@ def dependency_checks_pass(*, quiet: bool = False) -> bool:
     return ensure_pygobject(quiet=quiet) and ensure_mpv(quiet=quiet)
 
 
-def launch_dependency_installer() -> int:
+def launch_dependency_installer(*, test_empty_install: bool = False) -> int:
     from .install_deps import main as install_deps_main
 
-    return install_deps_main(["gtktube-deps-installer"])
+    argv = ["gtktube-deps-installer"]
+    if test_empty_install:
+        argv.append("--test-empty-install")
+    return install_deps_main(argv)
 
 
 def restart_after_dependency_install(argv: list[str]) -> None:
@@ -326,8 +329,14 @@ def main(argv: list[str] | None = None) -> int:
     if options.install_desktop:
         return 0
     if options.show_deps_installer:
-        if launch_dependency_installer() == 0:
-            restart_after_dependency_install(argv)
+        dependency_installer_result = launch_dependency_installer(
+            test_empty_install=True
+        )
+        if dependency_installer_result == 0:
+            restart_after_dependency_install(
+                [arg for arg in argv if arg != "--show-deps-installer"]
+            )
+        return dependency_installer_result
     if not dependency_checks_pass():
         if not options.show_deps_installer:
             if launch_dependency_installer() == 0:

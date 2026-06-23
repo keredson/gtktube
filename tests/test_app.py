@@ -145,6 +145,37 @@ class StartupOptionTests(unittest.TestCase):
         self.assertEqual(result, 0)
         installer.assert_called_once_with(["gtktube-deps-installer"])
 
+    def test_launch_dependency_installer_can_enable_empty_test_install(self) -> None:
+        with mock.patch("gtktube.install_deps.main", return_value=0) as installer:
+            from gtktube.app import launch_dependency_installer
+
+            result = launch_dependency_installer(test_empty_install=True)
+
+        self.assertEqual(result, 0)
+        installer.assert_called_once_with(
+            ["gtktube-deps-installer", "--test-empty-install"]
+        )
+
+    def test_show_deps_installer_cancel_exits_without_startup_checks(self) -> None:
+        with (
+            mock.patch("gtktube.app.launch_dependency_installer", return_value=1) as installer,
+            mock.patch("gtktube.app.dependency_checks_pass") as checks,
+        ):
+            result = main(["gtktube", "--show-deps-installer"])
+
+        self.assertEqual(result, 1)
+        installer.assert_called_once_with(test_empty_install=True)
+        checks.assert_not_called()
+
+    def test_show_deps_installer_success_restarts_without_installer_flag(self) -> None:
+        with (
+            mock.patch("gtktube.app.launch_dependency_installer", return_value=0),
+            mock.patch("gtktube.app.restart_after_dependency_install") as restart,
+        ):
+            main(["gtktube", "--show-deps-installer", "-v"])
+
+        restart.assert_called_once_with(["gtktube", "-v"])
+
     def test_successful_dependency_install_restarts_python_module_launch(self) -> None:
         with (
             mock.patch(
