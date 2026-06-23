@@ -21,13 +21,13 @@ class InstallDepsTests(unittest.TestCase):
     def test_rejects_package_names_with_shell_metacharacters(self) -> None:
         with self.assertRaises(ValueError):
             install_deps.apt_install_args(
-                ["python3-gi", "libclapper-gtk-0.0-0;touch /tmp/pwned"]
+                ["python3-gi", "libmpv2;touch /tmp/pwned"]
             )
 
     def test_privileged_install_uses_single_visible_apt_command(self) -> None:
         args = install_deps.privileged_install_args(
             "pkexec",
-            ["python3-gi", "libclapper-gtk-0.0-0"],
+            ["python3-gi", "libmpv2"],
         )
 
         self.assertEqual(
@@ -38,7 +38,7 @@ class InstallDepsTests(unittest.TestCase):
                 "-c",
                 (
                     "apt-get update && apt-get install -y python3-gi "
-                    "libclapper-gtk-0.0-0"
+                    "libmpv2"
                 ),
             ],
         )
@@ -60,12 +60,12 @@ class InstallDepsTests(unittest.TestCase):
 
     def test_package_plan_splits_installable_and_unavailable_packages(self) -> None:
         plan = install_deps.package_plan(
-            ["python3-gi", "gir1.2-clapper-0.0", "nodejs"],
-            available=lambda package: package != "gir1.2-clapper-0.0",
+            ["python3-gi", "libmpv2", "nodejs"],
+            available=lambda package: package != "libmpv2",
         )
 
         self.assertEqual(plan.installable, ["python3-gi", "nodejs"])
-        self.assertEqual(plan.unavailable, ["gir1.2-clapper-0.0"])
+        self.assertEqual(plan.unavailable, ["libmpv2"])
 
     def test_fallback_does_not_run_apt_when_required_packages_are_unavailable(
         self,
@@ -75,13 +75,13 @@ class InstallDepsTests(unittest.TestCase):
                 "gtktube.install_deps.package_plan",
                 return_value=install_deps.PackagePlan(
                     installable=[],
-                    unavailable=["gir1.2-clapper-0.0"],
+                    unavailable=["libmpv2"],
                 ),
             ),
             mock.patch("gtktube.install_deps.run_privileged_apt") as run_apt,
             redirect_stderr(io.StringIO()),
         ):
-            result = install_deps.fallback_gui_install(["gir1.2-clapper-0.0"])
+            result = install_deps.fallback_gui_install(["libmpv2"])
 
         self.assertEqual(result, 1)
         run_apt.assert_not_called()
@@ -94,7 +94,7 @@ class InstallDepsTests(unittest.TestCase):
                 "gtktube.install_deps.package_plan",
                 return_value=install_deps.PackagePlan(
                     installable=["python3-gi"],
-                    unavailable=["gir1.2-clapper-0.0"],
+                    unavailable=["libmpv2"],
                 ),
             ),
             mock.patch(
@@ -108,8 +108,8 @@ class InstallDepsTests(unittest.TestCase):
             redirect_stderr(io.StringIO()),
         ):
             result = install_deps.fallback_gui_install(
-                ["python3-gi", "gir1.2-clapper-0.0"]
-        )
+                ["python3-gi", "libmpv2"]
+            )
 
         self.assertEqual(result, 1)
         run_apt.assert_called_once()

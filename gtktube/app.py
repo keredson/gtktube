@@ -34,19 +34,15 @@ site-packages so it can see python3-gi:
   .venv/bin/python -m gtktube
 """
 
-CLAPPER_HELP = """\
-GTKTube needs Clapper and GStreamer from your system packages.
+MPV_HELP = """\
+GTKTube needs libmpv from your system packages and python-mpv from Python.
 
 On Debian/Ubuntu:
   ./scripts/install-apt-deps.sh
 
-Ubuntu releases do not always package the Clapper library and GTK bindings.
-If apt cannot locate gir1.2-clapper-0.0, gir1.2-clappergtk-0.0, or
-libclapper-gtk-0.0-0, use a repository or distribution release that provides
-those packages.
-
 If you run GTKTube from a virtualenv, recreate it with access to system
-site-packages so it can see the Clapper and GStreamer GI bindings:
+site-packages so it can see system GTK bindings, then install Python
+requirements:
   rm -rf .venv
   python3 -m venv --system-site-packages .venv
   .venv/bin/python -m pip install -r requirements.txt
@@ -197,30 +193,19 @@ def ensure_pygobject(*, quiet: bool = False) -> bool:
     return True
 
 
-def ensure_clapper(*, quiet: bool = False) -> bool:
+def ensure_mpv(*, quiet: bool = False) -> bool:
     try:
-        import gi
-
-        gi.require_version("Gst", "1.0")
-        gi.require_version("Clapper", "0.0")
-        from gi.repository import Clapper, Gst
-
-        Gst.init(None)
-        ok, _argv = Clapper.init_check(None)
-        if not ok:
-            raise RuntimeError("Clapper initialization failed")
-        if Gst.ElementFactory.find("clappersink") is None:
-            raise RuntimeError("GStreamer clappersink element not found")
+        import mpv  # noqa: F401
     except (ImportError, ModuleNotFoundError, OSError, RuntimeError, ValueError) as exc:
         if not quiet:
-            print(CLAPPER_HELP, file=sys.stderr)
+            print(MPV_HELP, file=sys.stderr)
             print(f"Original import error: {exc}", file=sys.stderr)
         return False
     return True
 
 
 def dependency_checks_pass(*, quiet: bool = False) -> bool:
-    return ensure_pygobject(quiet=quiet) and ensure_clapper(quiet=quiet)
+    return ensure_pygobject(quiet=quiet) and ensure_mpv(quiet=quiet)
 
 
 def launch_dependency_installer() -> int:

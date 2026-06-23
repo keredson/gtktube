@@ -5,6 +5,8 @@ import sys
 import time
 import traceback
 from concurrent.futures import Future, wait
+from ctypes import CDLL, POINTER, c_char_p, c_int, c_void_p
+from ctypes.util import find_library
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -116,6 +118,8 @@ class MainWindow(
         self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
         self.caption_dir = paths.cache_dir / "captions"
         self.caption_dir.mkdir(parents=True, exist_ok=True)
+        self.mpv_cache_dir = paths.cache_dir / "mpv"
+        self.mpv_cache_dir.mkdir(parents=True, exist_ok=True)
         self.playback_cache_dir = paths.cache_dir / "playback-cache"
         self.playback_cache_dir.mkdir(parents=True, exist_ok=True)
         self.download_dir = paths.data_dir / "downloads"
@@ -144,6 +148,15 @@ class MainWindow(
         self.last_auto_skipped_segment: str | None = None
         self.pending_sponsorblock_skip: dict[str, object] | None = None
         self.player: Any | None = None
+        self.mpv_module: Any | None = None
+        self.mpv_render_context: Any | None = None
+        self.mpv_render_generation = 0
+        self.mpv_get_proc_address: Any | None = None
+        self.mpv_property_observers: list[tuple[str, Any]] = []
+        self.mpv_observed_time_pos: float | None = None
+        self.mpv_observed_duration: float | None = None
+        self.mpv_stream_error_message: str | None = None
+        self.mpv_stream_retry: tuple[int, str] | None = None
         self.range_start_seconds: int | None = None
         self.pending_seek_seconds: int | None = None
         self.pending_seek_attempts = 0
@@ -192,6 +205,22 @@ class MainWindow(
         self.nav_generation = 0
         self.loaded_local_sections: set[str] = set()
         self.cleaned_up = False
+        self.gl = CDLL("libepoxy.so.0")
+        self.libgl = self.load_library("GL")
+        self.libegl = self.load_library("EGL")
+        if self.libgl is not None:
+            try:
+                self.libgl.glGetIntegerv.argtypes = [c_int, POINTER(c_int)]
+                self.libgl.glXGetProcAddressARB.restype = c_void_p
+                self.libgl.glXGetProcAddressARB.argtypes = [c_char_p]
+            except AttributeError:
+                self.libgl = None
+        if self.libegl is not None:
+            try:
+                self.libegl.eglGetProcAddress.restype = c_void_p
+                self.libegl.eglGetProcAddress.argtypes = [c_char_p]
+            except AttributeError:
+                self.libegl = None
 
         self.restore_window_size()
         self.install_css()
@@ -1776,6 +1805,16 @@ class MainWindow(
         except Exception as exc:
             self.set_status(f"Could not open {path}: {exc}")
 
+    def load_library(self, name: str) -> Any | None:
+        path = find_library(name)
+        if path is None:
+            return None
+        try:
+            return CDLL(path)
+        except OSError as exc:
+            self.log(f"could not load lib{name}: {exc}")
+            return None
+
     def build_history_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
 
@@ -1948,21 +1987,24 @@ class MainWindow(
     def build_player_page(self) -> None:
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
 
-        self.video_stack = Gtk.Stack(hexpand=False, vexpand=False)
-        self.clapper_video = self.create_clapper_video_widget()
-        self.clapper_video.set_size_request(176, 99)
-        self.video_stack.add_named(self.clapper_video, "clapper")
-        self.video_stack.set_visible_child_name("clapper")
+        self.video = Gtk.GLArea(hexpand=False, vexpand=False)
+        self.video.set_auto_render(False)
+        self.video.set_has_depth_buffer(False)
+        self.video.set_has_stencil_buffer(False)
+        self.video.set_size_request(176, 99)
+        self.video.connect("realize", self.on_video_realize)
+        self.video.connect("render", self.on_video_render)
+        self.video.connect("unrealize", self.on_video_unrealize)
         video_click = Gtk.GestureClick()
         video_click.connect("released", self.on_video_clicked)
-        self.video_stack.add_controller(video_click)
+        self.video.add_controller(video_click)
         video_right_click = Gtk.GestureClick()
         video_right_click.set_button(3)
         video_right_click.connect("pressed", self.on_current_video_context_menu)
-        self.video_stack.add_controller(video_right_click)
+        self.video.add_controller(video_right_click)
 
         self.video_overlay = Gtk.Overlay()
-        self.video_overlay.set_child(self.video_stack)
+        self.video_overlay.set_child(self.video)
         self.video_frame = Gtk.AspectFrame()
         self.video_frame.set_ratio(16 / 9)
         self.video_frame.set_obey_child(False)
@@ -1972,7 +2014,7 @@ class MainWindow(
         self.video_frame.set_overflow(Gtk.Overflow.HIDDEN)
         self.video_frame.set_child(self.video_overlay)
         self.video_overlay.set_overflow(Gtk.Overflow.HIDDEN)
-        self.video_stack.set_overflow(Gtk.Overflow.HIDDEN)
+        self.video.set_overflow(Gtk.Overflow.HIDDEN)
         self.video_viewport = Gtk.ScrolledWindow()
         self.video_viewport.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
         self.video_viewport.set_child(self.video_frame)
@@ -2187,34 +2229,6 @@ class MainWindow(
         self.description_window: Gtk.Window | None = None
 
         self.stack.add_named(page, "player")
-
-    def create_clapper_video_widget(self) -> Gtk.Widget:
-        self.clapper_sink = None
-        try:
-            gi.require_version("Gst", "1.0")
-            from gi.repository import Gst  # noqa: E402
-        except (ImportError, ValueError) as exc:
-            self.verbose_log(f"clapper gtk import failed: {exc}")
-            return Gtk.Box(hexpand=False, vexpand=False)
-        Gst.init(None)
-        sink = Gst.ElementFactory.make("clappersink", None)
-        if sink is None:
-            self.verbose_log("clappersink unavailable")
-            return Gtk.Box(hexpand=False, vexpand=False)
-        for name, value in {
-            "enable-last-sample": False,
-            "show-preroll-frame": False,
-            "keep-last-frame": False,
-        }.items():
-            if sink.find_property(name) is not None:
-                sink.set_property(name, value)
-        widget = sink.get_property("widget")
-        if not isinstance(widget, Gtk.Widget):
-            self.verbose_log("clappersink returned no GTK widget")
-            sink.set_state(Gst.State.NULL)
-            return Gtk.Box(hexpand=False, vexpand=False)
-        self.clapper_sink = sink
-        return widget
 
     def create_channel_grid(self) -> Gtk.FlowBox:
         grid = self.create_video_grid()

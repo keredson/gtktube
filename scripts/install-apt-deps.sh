@@ -25,7 +25,6 @@ Some required GTKTube packages are not available from your configured apt reposi
 
 $(printf '  %s\n' "${UNAVAILABLE[@]}")
 
-Ubuntu releases do not always package the Clapper library and GTK bindings.
 Add a repository that provides these packages or use a distribution release that
 includes them, then run this installer again.
 EOF

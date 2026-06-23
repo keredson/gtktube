@@ -102,9 +102,8 @@ def unavailable_message(unavailable: list[str]) -> str:
         "These required packages are not available from your configured apt "
         "repositories:\n\n"
         f"{packages}\n\n"
-        "Ubuntu releases do not always package Clapper. Add a repository that "
-        "provides these packages or use a distribution release that includes "
-        "the Clapper GTK bindings, then start GTKTube again."
+        "Add a repository that provides these packages or use a distribution "
+        "release that includes them, then start GTKTube again."
     )
 
 
@@ -316,7 +315,7 @@ def fallback_gui_install(missing: list[str]) -> int:
     plan = package_plan(missing)
     command = apt_command(plan.installable) if plan.installable else ""
     message = (
-        "GTKTube needs system packages for GTK4, PyGObject, Clapper, and GStreamer.\n\n"
+        "GTKTube needs system packages for GTK4, PyGObject, and libmpv.\n\n"
         f"{command}"
     )
     if plan.unavailable:

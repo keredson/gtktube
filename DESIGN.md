@@ -14,7 +14,7 @@ personalized recommendations, comments, likes, and server-side sync.
 ## Goals
 
 - Play YouTube videos inside a native Python/GTK4 desktop app using embedded
-  Clapper/GStreamer playback.
+  MPV playback.
 - Use `yt-dlp` as a Python library to resolve video metadata and stream URLs.
 - Store all application state locally in SQLite.
 - Let users subscribe to YouTube channels by URL, handle, channel ID, or video
@@ -88,17 +88,15 @@ patterns where plain GTK4 is sufficient.
 
 ### Video Playback
 
-The playback stack is Clapper/GStreamer embedded in the GTK player surface.
+The playback stack is MPV embedded in the GTK player surface.
 Playback must remain visually integrated with the app; it must not launch or
 manage a separate playback window.
 
 The app should resolve fresh stream URLs through `yt-dlp` immediately before
 playback. Resolved media URLs should not be persisted because they can expire.
 
-Clapper handles local files and combined audio/video stream URLs directly.
-When `yt-dlp` resolves separate audio and video streams, the app should fetch
-and remux the selected quality into the playback cache before handing the local
-file to Clapper.
+MPV handles local files, combined audio/video stream URLs, and separate
+audio/video stream URLs directly.
 
 Fullscreen is video-only. Activating fullscreen should move or render only the
 video surface into a fullscreen presentation and should not fullscreen the
@@ -683,7 +681,7 @@ The rest of the app should talk to typed application-level methods such as
 - Create GTK4 application shell.
 - Add URL entry.
 - Resolve a video URL through `yt-dlp`.
-- Play it through embedded Clapper/GStreamer rendered into GTK.
+- Play it through embedded MPV rendered into GTK.
 - Show title and basic metadata.
 
 ### Phase 2: SQLite and Watch History
@@ -773,7 +771,7 @@ Possible packaging targets:
 Flatpak will need careful handling for:
 
 - Network access.
-- Clapper/GStreamer availability and GTK video rendering.
+- libmpv availability and GTK video rendering.
 - Python dependencies.
 - `yt-dlp` updates.
 - XDG data/cache/config directories.
@@ -794,13 +792,13 @@ Mitigation:
 ### Playback Reliability
 
 Some resolved formats may not play cleanly through the chosen media layer, or
-may require tuning of Clapper/GStreamer and `yt-dlp` format selection.
+may require tuning of MPV and `yt-dlp` format selection.
 
 Mitigation:
 
-- Use direct Clapper playback for combined audio/video streams.
-- Fetch and remux split audio/video streams before playback.
-- Keep format selection conservative enough for reliable Clapper playback while
+- Use direct MPV playback for combined and split audio/video streams.
+- Fetch and remux streams before playback when the user chooses fetch mode.
+- Keep format selection conservative enough for reliable MPV playback while
   still allowing higher-quality cached streams.
 
 ### API-Like Usage Without an API

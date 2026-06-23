@@ -17,6 +17,14 @@ class _Pane:
         self.visible = visible
 
 
+class _Stack:
+    def __init__(self) -> None:
+        self.visible_child_name: str | None = None
+
+    def set_visible_child_name(self, name: str) -> None:
+        self.visible_child_name = name
+
+
 class _Combo:
     def __init__(self) -> None:
         self.items: list[tuple[str, str]] = []
@@ -50,6 +58,10 @@ class _Combo:
 class _Service:
     def __init__(self) -> None:
         self.play_video_calls = 0
+        self.repository = self
+
+    def resume_position(self, _video_id: str) -> int:
+        return 0
 
     def downloaded_file_for_video(self, _target_dir: Path, _video_id: str) -> Path | None:
         return None
@@ -74,6 +86,16 @@ class _Service:
         )
 
 
+class _FakePlayer:
+    def __init__(self) -> None:
+        self.pause = False
+        self.speed = 1.0
+        self.loaded: tuple[str, dict[str, object]] | None = None
+
+    def loadfile(self, stream_url: str, **options: object) -> None:
+        self.loaded = (stream_url, options)
+
+
 class _PlayerHarness(PlayerMixin):
     def __init__(self, temp_dir: Path) -> None:
         self.service = _Service()
@@ -88,6 +110,11 @@ class _PlayerHarness(PlayerMixin):
         self.quality_combo = _Combo()
         self.tasks: list[tuple[str, Callable[[], PlayableVideo]]] = []
         self.loaded: list[PlayableVideo] = []
+        self.fake_player = _FakePlayer()
+        self.player = None
+        self.stack = _Stack()
+        self.playback_rate = 1.0
+        self.waited_for_buffer = False
 
     def navigate_to(self, _view: object) -> None:
         pass
@@ -99,6 +126,33 @@ class _PlayerHarness(PlayerMixin):
         pass
 
     def verbose_log(self, _message: str) -> None:
+        pass
+
+    def prepare_for_player_startup(self) -> None:
+        pass
+
+    def start_playback_diag_timer(self) -> None:
+        pass
+
+    def load_sponsorblock_segments(self) -> None:
+        pass
+
+    def show_player_buffering(self, _message: str) -> None:
+        pass
+
+    def create_player(self, _playable: PlayableVideo) -> _FakePlayer:
+        return self.fake_player
+
+    def apply_selected_caption(self) -> None:
+        pass
+
+    def wait_for_playback_buffer(self, _player: object, _video_id: str) -> None:
+        self.waited_for_buffer = True
+
+    def show_full_player(self) -> None:
+        pass
+
+    def select_nav_page(self, _page: str) -> None:
         pass
 
     def run_task(
@@ -154,10 +208,9 @@ class PlayerMixinTests(unittest.TestCase):
             self.assertEqual(playable.resolved_quality, "cached 1080p")
             self.assertEqual(harness.service.play_video_calls, 0)
 
-    def test_direct_stream_playable_redirects_to_fetch(self) -> None:
+    def test_split_stream_playable_passes_audio_file_to_mpv(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             harness = _PlayerHarness(Path(temp))
-            harness.preferred_playback_mode = "streaming"
             video = Video(
                 id="video1",
                 title="Video One",
@@ -171,12 +224,16 @@ class PlayerMixinTests(unittest.TestCase):
                 resolved_quality="1080p",
             )
 
-            harness.load_playable(direct)
+            harness.start_playback(direct, resume_position=0)
 
-            self.assertEqual(len(harness.tasks), 1)
-            label, work = harness.tasks[0]
-            self.assertEqual(label, "Fetching video...")
-            self.assertEqual(work().resolved_quality, "cached 1080p")
+            self.assertEqual(
+                harness.fake_player.loaded,
+                (
+                    "https://example.test/video-only.mp4",
+                    {"audio_file": "https://example.test/audio-only.m4a"},
+                ),
+            )
+            self.assertTrue(harness.waited_for_buffer)
             self.assertEqual(harness.service.play_video_calls, 0)
 
     def test_streaming_mode_resolves_without_fetch(self) -> None:
