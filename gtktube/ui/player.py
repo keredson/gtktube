@@ -297,7 +297,8 @@ class PlayerMixin:
 
     def show_player_loading(self, video: Video) -> None:
         self.flush_watch_range()
-        self.stop_pipeline(restore_stack=False)
+        preserve_fullscreen = self.video_fullscreen
+        self.stop_pipeline(restore_stack=False, preserve_fullscreen=preserve_fullscreen)
         self.current_playable = None
         self.active_caption_url = None
         self.player_title.set_text(video.title)
@@ -319,6 +320,8 @@ class PlayerMixin:
         self.updating_scrubber = False
         self.set_player_loading(True)
         self.show_full_player()
+        if preserve_fullscreen:
+            self.apply_video_fullscreen_chrome()
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
         self.schedule_next_playback_prefetch()
@@ -354,7 +357,8 @@ class PlayerMixin:
             f"has_audio_stream={bool(playable.audio_url)}"
         )
         self.flush_watch_range()
-        self.stop_pipeline(restore_stack=False)
+        preserve_fullscreen = self.video_fullscreen
+        self.stop_pipeline(restore_stack=False, preserve_fullscreen=preserve_fullscreen)
         self.pending_playback_video = None
         self.pending_playback_playlist_url = None
         self.current_playable = playable
@@ -371,6 +375,8 @@ class PlayerMixin:
         self.update_player_share_button()
         self.reload_channels()
         self.show_full_player()
+        if preserve_fullscreen:
+            self.apply_video_fullscreen_chrome()
         self.select_nav_page("player")
         self.stack.set_visible_child_name("player")
 
@@ -1730,10 +1736,11 @@ class PlayerMixin:
         self,
         restore_stack: bool = True,
         keep_player_visible: bool = False,
+        preserve_fullscreen: bool = False,
     ) -> None:
         self.stop_playback_diag_timer()
         self.uninhibit_playback("stop-pipeline")
-        if self.video_fullscreen:
+        if self.video_fullscreen and not preserve_fullscreen:
             self.close_video_fullscreen()
         if not keep_player_visible:
             if restore_stack:
@@ -1949,6 +1956,14 @@ class PlayerMixin:
         self.fullscreen_icon.set_from_icon_name("view-restore-symbolic")
         self.fullscreen_button.set_tooltip_text("Exit fullscreen video")
         self.fullscreen()
+
+    def apply_video_fullscreen_chrome(self) -> None:
+        self.header.set_visible(False)
+        self.sidebar.set_visible(False)
+        self.queue_pane.set_visible(False)
+        self.player_metadata.set_visible(False)
+        self.fullscreen_icon.set_from_icon_name("view-restore-symbolic")
+        self.fullscreen_button.set_tooltip_text("Exit fullscreen video")
 
     def close_video_fullscreen(self) -> None:
         if not self.video_fullscreen:
