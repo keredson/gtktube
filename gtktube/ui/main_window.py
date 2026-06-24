@@ -39,6 +39,7 @@ from gtktube.update_check import UpdateInfo
 
 T = TypeVar("T")
 RECOMMENDED_CACHE_TTL_SECONDS = 15 * 60
+RECENT_SEARCH_LIMIT = 20
 
 
 class GTKTubeApplication(Gtk.Application):
@@ -3338,7 +3339,7 @@ class MainWindow(
         current_text = self.search_entry.get_text()
         current_position = self.search_entry.get_position()
         self.search_combo.remove_all()
-        for query in self.service.repository.recent_searches():
+        for query in self.service.repository.recent_searches(limit=RECENT_SEARCH_LIMIT):
             self.search_combo.append_text(query)
         self.search_combo.set_active(-1)
         self.search_entry.set_text(current_text)

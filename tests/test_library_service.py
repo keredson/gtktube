@@ -8,7 +8,7 @@ from pathlib import Path
 from gtktube.db.connection import connect
 from gtktube.db.migrations import migrate
 from gtktube.db.repositories import LibraryRepository
-from gtktube.models import CaptionTrack, Channel, Video
+from gtktube.models import CaptionTrack, Channel, SearchResults, Video
 from gtktube.services.library import LibraryService
 
 
@@ -105,6 +105,37 @@ class DownloadExtractor:
         filename = filename.replace("%(id)s", "video1")
         filename = filename.replace("%(ext)s", "mp4")
         Path(target_dir, filename).write_bytes(b"video")
+
+
+class SearchExtractor:
+    def __init__(self) -> None:
+        self.video = Video(
+            id="video1",
+            title="Video One",
+            url="https://example.test/watch?v=video1",
+            channel_id="chan1",
+            channel_title="Channel One",
+            duration_seconds=100,
+        )
+        self.channel = Channel(
+            id="chan1",
+            title="Channel One",
+            url="https://example.test/channel",
+        )
+
+    def search(self, query: str, limit: int = 20) -> SearchResults:
+        return SearchResults(videos=[self.video], channels=[self.channel])
+
+    def resolve_channel(self, url: str) -> Channel:
+        return self.channel
+
+    def search_channel_videos(
+        self,
+        channel: Channel,
+        query: str,
+        limit: int = 30,
+    ) -> list[Video]:
+        return [self.video]
 
 
 class LibraryServiceTests(unittest.TestCase):
@@ -220,6 +251,30 @@ class LibraryServiceTests(unittest.TestCase):
                 ("chan1", "finish"),
             ],
         )
+
+    def test_search_results_include_local_watch_progress(self) -> None:
+        extractor = SearchExtractor()
+        service = LibraryService(self.repository, extractor)  # type: ignore[arg-type]
+        self.repository.upsert_channel(extractor.channel, subscribed=False)
+        self.repository.upsert_video(extractor.video)
+        self.repository.add_watch_range("video1", 0, 25)
+
+        results = service.search("video")
+
+        self.assertAlmostEqual(results.videos[0].percent_watched or 0, 0.25)
+        self.assertEqual(results.videos[0].watch_ranges, [(0, 25)])
+
+    def test_channel_search_results_include_local_watch_progress(self) -> None:
+        extractor = SearchExtractor()
+        service = LibraryService(self.repository, extractor)  # type: ignore[arg-type]
+        self.repository.upsert_channel(extractor.channel, subscribed=False)
+        self.repository.upsert_video(extractor.video)
+        self.repository.add_watch_range("video1", 0, 40)
+
+        videos = service.search_channel(extractor.channel, "video")
+
+        self.assertAlmostEqual(videos[0].percent_watched or 0, 0.4)
+        self.assertEqual(videos[0].watch_ranges, [(0, 40)])
 
     def test_fetch_playback_video_uses_quality_cache_key(self) -> None:
         extractor = DownloadExtractor()

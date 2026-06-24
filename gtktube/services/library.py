@@ -197,7 +197,7 @@ class LibraryService:
     ) -> list[Video]:
         videos = self.extractor.search_channel_videos(channel, query, limit=limit)
         self.repository.upsert_videos(videos)
-        return videos
+        return self.repository.videos_with_watch_progress(videos)
 
     def playlist_thumbnail(self, url: str) -> str | None:
         return self.extractor.playlist_thumbnail(url)
@@ -268,7 +268,8 @@ class LibraryService:
                     pass
             self.repository.upsert_channel(channel, subscribed=False)
             channels.append(self.repository.channel(channel.id) or channel)
-        return SearchResults(videos=results.videos, channels=channels)
+        videos = self.repository.videos_with_watch_progress(results.videos)
+        return SearchResults(videos=videos, channels=channels)
 
     def _store_video_and_channel(self, video: Video) -> None:
         if video.channel_id and video.channel_title:
