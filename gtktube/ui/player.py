@@ -40,6 +40,7 @@ MPV_DEMUXER_MAX_BYTES = "512MiB"
 MPV_DEMUXER_MAX_BACK_BYTES = "64MiB"
 MPV_DEMUXER_CACHE_UNLINK_FILES = "immediate"
 MPV_DECODER_THREADS = 2
+MPV_UNEXPECTED_IDLE_MESSAGE = "Playback stopped before the video ended."
 PLAYBACK_DIAG_INTERVAL_SECONDS = 30
 PLAYBACK_DIAG_THRESHOLD_MIB = 1024
 
@@ -364,6 +365,7 @@ class PlayerMixin:
         self.current_playable = playable
         self.update_header_subtitle(ViewState("player"))
         self.update_quality_control(playable)
+        self.schedule_next_playback_prefetch()
         self.update_player_metadata(playable.video)
         recommended_updater = getattr(self, "update_recommended_cached_video", None)
         if callable(recommended_updater):
@@ -1302,7 +1304,6 @@ class PlayerMixin:
             )
             self.verbose_log(
                 "mpv player created "
-                f"version={getattr(player, 'mpv_version', 'unknown')} "
                 f"video={playable.video.id} ytdl_format={ytdl_format!r} "
                 f"local_file={is_local_file} "
                 f"decoder_threads={MPV_DECODER_THREADS} "
@@ -1516,11 +1517,25 @@ class PlayerMixin:
         playback_observed = self.playback_file_loaded or observed_near_end
         if self.playback_end_handled or not playback_observed:
             return
+        idle_property = property_name in {"idle-active", "core-idle"}
+        if idle_property and bool(value) and self.mpv_observed_unexpected_idle():
+            self.playback_end_handled = True
+            self.log(
+                "mpv unexpected idle before eof "
+                f"name={property_name} "
+                f"value={value!r} "
+                f"time_pos={self.mpv_observed_time_pos!r} "
+                f"duration={self.mpv_observed_duration!r} "
+                f"queue_count={self.video_queue.get_n_items()} "
+                f"playlist_index={self.playlist_current_index}"
+            )
+            GLib.idle_add(self.handle_mpv_unexpected_idle)
+            return
         eof_signal = property_name == "eof-reached" and (
             bool(value) or (value is None and observed_near_end)
         )
         idle_signal = (
-            property_name in {"idle-active", "core-idle"}
+            idle_property
             and bool(value)
             and observed_near_end
         )
@@ -1544,6 +1559,23 @@ class PlayerMixin:
             0.0,
             self.mpv_observed_duration - 10.0,
         )
+
+    def mpv_observed_unexpected_idle(self) -> bool:
+        if self.mpv_observed_time_pos is None or self.mpv_observed_duration is None:
+            return False
+        if self.mpv_observed_duration <= 0:
+            return False
+        return self.mpv_observed_time_pos < max(
+            0.0,
+            self.mpv_observed_duration - 10.0,
+        )
+
+    def handle_mpv_unexpected_idle(self) -> bool:
+        if self.current_playable is None:
+            return False
+        if self.is_local_file_playable(self.current_playable):
+            return self.show_mpv_playback_error(MPV_UNEXPECTED_IDLE_MESSAGE)
+        return self.retry_mpv_stream_open_error(MPV_UNEXPECTED_IDLE_MESSAGE)
 
     def mpv_end_file_failed(self, reason: object, error: object) -> bool:
         reason_text = str(reason).lower()

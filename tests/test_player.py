@@ -6,8 +6,10 @@ from concurrent.futures import CancelledError, Future
 from pathlib import Path
 from typing import Callable
 
-from gtktube.models import CaptionTrack, PlayableVideo, Video
+from gtktube.models import CaptionTrack, PlayableVideo, SponsorBlockSegment, Video
+from gtktube.ui import player as player_module
 from gtktube.ui.player import Gdk, PlayerMixin
+from gtktube.ui.sponsorblock import SponsorBlockMixin
 
 
 class _Pane:
@@ -94,6 +96,9 @@ class _Service:
     def set_default_video_quality(self, _quality: str, mode: str = "streaming") -> None:
         self.default_quality = (_quality, mode)
 
+    def sponsorblock_enabled(self) -> bool:
+        return True
+
     def downloaded_file_for_video(self, _target_dir: Path, _video_id: str) -> Path | None:
         return None
 
@@ -175,7 +180,17 @@ class _FakePlayer:
         self.loaded = (stream_url, options)
 
 
-class _PlayerHarness(PlayerMixin):
+class _UnreadablePausePlayer:
+    @property
+    def pause(self) -> bool:
+        raise AssertionError("player.pause must not be read")
+
+    @pause.setter
+    def pause(self, _value: bool) -> None:
+        pass
+
+
+class _PlayerHarness(PlayerMixin, SponsorBlockMixin):
     def __init__(self, temp_dir: Path) -> None:
         self.service = _Service()
         self.download_dir = temp_dir / "downloads"
@@ -198,6 +213,7 @@ class _PlayerHarness(PlayerMixin):
         self.playback_rate = 1.0
         self.waited_for_buffer = False
         self.cleaned_up = False
+        self.playback_end_handled = False
         self.current_playable: PlayableVideo | None = None
         self.pending_playback_video: Video | None = None
         self.pending_playback_playlist_url: str | None = None
@@ -208,6 +224,16 @@ class _PlayerHarness(PlayerMixin):
         self.playlist_skip_set: set[int] = set()
         self.current_playlist_url: str | None = None
         self.relative_seeks: list[int] = []
+        self.media_seeks: list[tuple[int, bool]] = []
+        self.status_messages: list[str] = []
+        self.log_messages: list[str] = []
+        self.sponsorblock_segments: list[SponsorBlockSegment] = []
+        self.suppressed_sponsorblock_segments: set[str] = set()
+        self.last_auto_skipped_segment: str | None = None
+        self.pending_sponsorblock_skip: dict[str, object] | None = None
+        self.video_fullscreen = False
+        self.retried_mpv_errors: list[str] = []
+        self.shown_mpv_errors: list[str] = []
 
     def navigate_to(self, _view: object) -> None:
         pass
@@ -226,6 +252,12 @@ class _PlayerHarness(PlayerMixin):
 
     def verbose_log(self, _message: str) -> None:
         pass
+
+    def log(self, message: str) -> None:
+        self.log_messages.append(message)
+
+    def set_status(self, message: str) -> None:
+        self.status_messages.append(message)
 
     def prepare_for_player_startup(self) -> None:
         pass
@@ -286,8 +318,60 @@ class _PlayerHarness(PlayerMixin):
     def update_transport_navigation_buttons(self) -> None:
         pass
 
+    def update_header_subtitle(self, _view: object) -> None:
+        pass
+
+    def update_player_metadata(self, _video: Video) -> None:
+        pass
+
+    def refresh_current_video_metadata_if_needed(
+        self,
+        _playable: PlayableVideo,
+    ) -> None:
+        pass
+
+    def update_subscribe_check(self, _video: Video) -> None:
+        pass
+
+    def update_caption_tracks(self, _playable: PlayableVideo | None) -> None:
+        pass
+
+    def update_chapters(self, _playable: PlayableVideo | None) -> None:
+        pass
+
+    def update_player_share_button(self) -> None:
+        pass
+
+    def reload_channels(self) -> None:
+        pass
+
+    def maybe_show_sponsorblock_prompt(
+        self,
+        _continue_playback: Callable[[], None] | None = None,
+    ) -> bool:
+        return False
+
+    def retry_mpv_stream_open_error(self, message: str) -> bool:
+        self.retried_mpv_errors.append(message)
+        return False
+
+    def show_mpv_playback_error(self, message: str) -> bool:
+        self.shown_mpv_errors.append(message)
+        return False
+
+    def stop_pipeline(
+        self,
+        restore_stack: bool = True,
+        keep_player_visible: bool = False,
+        preserve_fullscreen: bool = False,
+    ) -> None:
+        pass
+
     def seek_relative(self, delta_seconds: int) -> None:
         self.relative_seeks.append(delta_seconds)
+
+    def seek_media(self, seconds: int, user_initiated: bool = True) -> None:
+        self.media_seeks.append((seconds, user_initiated))
 
     def load_playable_if_current(
         self,
@@ -391,6 +475,24 @@ class PlayerMixinTests(unittest.TestCase):
 
             self.assertEqual(harness.relative_seeks, [-10, -10, 20, 20])
 
+    def test_sponsorblock_skip_uses_observed_pause_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            harness = _PlayerHarness(Path(temp))
+            harness.player = _UnreadablePausePlayer()
+            harness.mpv_observed_properties["pause"] = False
+            harness.sponsorblock_segments = [
+                SponsorBlockSegment(
+                    video_id="video1",
+                    category="sponsor",
+                    start_seconds=10.0,
+                    end_seconds=20.0,
+                )
+            ]
+
+            harness.maybe_skip_sponsorblock_segment(12)
+
+            self.assertEqual(harness.media_seeks, [(20, False)])
+
     def test_fetch_mode_prefetches_next_queue_video(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             harness = _PlayerHarness(Path(temp))
@@ -415,6 +517,64 @@ class PlayerMixinTests(unittest.TestCase):
             harness.schedule_next_playback_prefetch()
 
             self.assertEqual(harness.service.fetch_playback_video_args, [("video2", "1080p")])
+
+    def test_load_playable_prefetches_existing_queue_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            harness = _PlayerHarness(Path(temp))
+            current = Video(
+                id="video1",
+                title="Video One",
+                url="https://example.test/watch?v=video1",
+            )
+            next_video = Video(
+                id="video2",
+                title="Video Two",
+                url="https://example.test/watch?v=video2",
+            )
+            harness.video_queue.append(_VideoItem(next_video))
+
+            harness.load_playable(
+                PlayableVideo(
+                    video=current,
+                    stream_url="https://example.test/current.mp4",
+                    quality="1080p",
+                    resolved_quality="1080p",
+                )
+            )
+
+            self.assertEqual(harness.service.fetch_playback_video_args, [("video2", "1080p")])
+
+    def test_unexpected_mpv_idle_retries_stream_before_end(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            harness = _PlayerHarness(Path(temp))
+            player = object()
+            harness.player = player
+            harness.playback_file_loaded = True
+            harness.current_playable = PlayableVideo(
+                video=Video(
+                    id="video1",
+                    title="Video One",
+                    url="https://example.test/watch?v=video1",
+                ),
+                stream_url="https://example.test/current.mp4",
+                quality="1080p",
+                resolved_quality="1080p",
+            )
+            harness.mpv_observed_time_pos = 937.0
+            harness.mpv_observed_duration = 1465.0
+            original_idle_add = player_module.GLib.idle_add
+            player_module.GLib.idle_add = lambda callback, *args: callback(*args)
+            try:
+                harness.on_mpv_property_changed(player, "core-idle", True)
+            finally:
+                player_module.GLib.idle_add = original_idle_add
+
+            self.assertTrue(harness.playback_end_handled)
+            self.assertEqual(
+                harness.retried_mpv_errors,
+                [player_module.MPV_UNEXPECTED_IDLE_MESSAGE],
+            )
+            self.assertEqual(harness.shown_mpv_errors, [])
 
     def test_fetch_mode_prefetches_next_playlist_video(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

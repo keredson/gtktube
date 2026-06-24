@@ -142,7 +142,7 @@ class SponsorBlockMixin:
             return
         if not self.service.repository.sponsorblock_enabled():
             return
-        if bool(getattr(self.player, "pause", False)):
+        if bool(self.mpv_observed_properties.get("pause", False)):
             return
         for segment in self.sponsorblock_segments:
             if not segment.start_seconds <= current < segment.end_seconds:
