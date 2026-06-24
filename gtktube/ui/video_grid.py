@@ -305,8 +305,8 @@ class VideoGridMixin:
         left_click.set_button(1)
         left_click.connect(
             "released",
-            lambda _gesture, _n_press, _x, _y: (
-                on_clicked(tile) if on_clicked else self.play_video(video)
+            lambda gesture, _n_press, _x, _y: (
+                self.activate_video_tile_click(tile, video, on_clicked, gesture)
             ),
         )
         tile.add_controller(left_click)
@@ -485,6 +485,22 @@ class VideoGridMixin:
         else:
             self.play_video(video)
         return True
+
+    def activate_video_tile_click(
+        self,
+        tile: Gtk.Widget,
+        video: Video,
+        on_clicked: Callable[[Gtk.Widget], None] | None,
+        gesture: Gtk.GestureClick,
+    ) -> None:
+        state = gesture.get_current_event_state()
+        if state & Gdk.ModifierType.CONTROL_MASK:
+            self.add_to_queue(video)
+            return
+        if on_clicked is not None:
+            on_clicked(tile)
+        else:
+            self.play_video(video)
 
     def draw_video_progress(
         self,
