@@ -184,6 +184,7 @@ class MainWindow(
         self.watch_progress_views_dirty = False
         self.playback_file_loaded = False
         self.playback_end_handled = False
+        self.playback_user_pause_requested = False
         self.mpv_event_callbacks: dict[object, object] = {}
         self.selected_caption_id = "off"
         self.active_caption_url: str | None = None
