@@ -102,6 +102,38 @@ Fullscreen is video-only. Activating fullscreen should move or render only the
 video surface into a fullscreen presentation and should not fullscreen the
 entire application chrome, navigation, metadata, or controls.
 
+### MPV Threading and Property Safety
+
+MPV property access from the GTK main thread can block indefinitely when mpv is
+loading, idling, shutting down, or transitioning between files. Treat all
+ctypes-backed mpv property reads and writes as potentially blocking calls, even
+simple attributes such as `pause`, `speed`, `sid`, and duration/cache
+properties.
+
+Do not add polling loops, GLib timeout callbacks, idle callbacks, property
+observers, or UI refresh paths that repeatedly call mpv getters or setters to
+"confirm" state. This has caused UI hangs with stacks blocked inside
+`mpv_get_property` and `mpv_set_property_string`.
+
+The safe pattern is:
+
+- Write mpv properties only at explicit command boundaries, such as initial
+  `loadfile`, user play/pause, user seek, selected speed change, or caption
+  selection.
+- Keep UI state from observed property callbacks and cached values in
+  `mpv_observed_properties`; do not query mpv synchronously just to update UI.
+- Ignore stale callbacks by checking the current player/request before acting.
+- Never respond to an mpv property callback by immediately writing another mpv
+  property as a state correction.
+- Never add delayed "confirmation" timers that re-set mpv properties after
+  startup. If startup ordering is wrong, fix the startup sequence or saved
+  resume state instead.
+
+When debugging autoplay or transition bugs, prefer logs and request/player
+guards over extra mpv property calls. A video that resumes at or past its
+duration should be handled by sanitizing the saved resume position before
+`loadfile`, not by repeatedly forcing `pause = False`.
+
 ### YouTube Extraction
 
 Use `yt-dlp` as a Python library, not as a shell command.

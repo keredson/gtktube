@@ -271,7 +271,6 @@ class _PlayerHarness(PlayerMixin, SponsorBlockMixin):
         self.waited_for_buffer = False
         self.cleaned_up = False
         self.playback_end_handled = False
-        self.playback_user_pause_requested = False
         self.current_playable: PlayableVideo | None = None
         self.pending_playback_video: Video | None = None
         self.pending_playback_playlist_url: str | None = None
@@ -597,65 +596,6 @@ class PlayerMixinTests(unittest.TestCase):
                 (str(Path(temp) / "video.mp4"), {"start": 120}),
             )
             self.assertEqual(harness.range_start_seconds, 120)
-
-    def test_autoplay_confirmation_reasserts_playing(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            harness = _PlayerHarness(Path(temp))
-            harness.player = harness.fake_player
-            harness.current_playable = PlayableVideo(
-                video=Video(
-                    id="video1",
-                    title="Video One",
-                    url="https://example.test/watch?v=video1",
-                ),
-                stream_url=str(Path(temp) / "video.mp4"),
-                quality="1080p",
-                resolved_quality="cached 1080p",
-            )
-            harness.playback_file_loaded = True
-            harness.fake_player.pause = True
-
-            result = harness.confirm_autoplay_playing(
-                harness.fake_player,
-                "video1",
-                harness.playback_request_id,
-            )
-
-            self.assertFalse(result)
-            self.assertFalse(harness.fake_player.pause)
-            self.assertFalse(harness.mpv_observed_properties["pause"])
-            self.assertEqual(harness.play_pause_updates, 1)
-            self.assertEqual(harness.playback_inhibition_updates, 1)
-
-    def test_user_pause_cancels_autoplay_confirmation(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            harness = _PlayerHarness(Path(temp))
-            harness.player = harness.fake_player
-            harness.current_playable = PlayableVideo(
-                video=Video(
-                    id="video1",
-                    title="Video One",
-                    url="https://example.test/watch?v=video1",
-                ),
-                stream_url=str(Path(temp) / "video.mp4"),
-                quality="1080p",
-                resolved_quality="cached 1080p",
-            )
-            harness.playback_file_loaded = True
-            harness.playback_user_pause_requested = True
-            harness.fake_player.pause = True
-
-            result = harness.confirm_autoplay_playing(
-                harness.fake_player,
-                "video1",
-                harness.playback_request_id,
-            )
-
-            self.assertFalse(result)
-            self.assertTrue(harness.fake_player.pause)
-            self.assertNotIn("pause", harness.mpv_observed_properties)
-            self.assertEqual(harness.play_pause_updates, 0)
-            self.assertEqual(harness.playback_inhibition_updates, 0)
 
     def test_streaming_playback_shows_stream_opening_message(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

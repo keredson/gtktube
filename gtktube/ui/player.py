@@ -43,7 +43,6 @@ MPV_DECODER_THREADS = 2
 PLAYBACK_DIAG_INTERVAL_SECONDS = 30
 PLAYBACK_DIAG_THRESHOLD_MIB = 1024
 RESUME_FROM_START_REMAINING_SECONDS = 10
-AUTOPLAY_CONFIRM_DELAYS_MS = (250, 1000, 2500)
 
 
 class PlayerMixin:
@@ -409,7 +408,6 @@ class PlayerMixin:
         self.playback_file_loaded = False
         self.mpv_stream_error_message = None
         self.playback_end_handled = False
-        self.playback_user_pause_requested = False
         local_file_playback = self.is_local_file_playable(playable)
         if local_file_playback:
             self.show_player_buffering("Opening cached video...")
@@ -505,8 +503,6 @@ class PlayerMixin:
         self.last_playback_diagnostics_values = {}
         self.last_playback_diagnostics_paused = False
         self.playback_file_loaded = True
-        self.playback_user_pause_requested = False
-        self.schedule_autoplay_confirmation(player, video_id)
         self.update_playback_inhibition()
         self.update_play_pause_button()
         self.set_player_loading(False)
@@ -588,8 +584,6 @@ class PlayerMixin:
         self.last_playback_diagnostics_values = {}
         self.last_playback_diagnostics_paused = False
         self.playback_file_loaded = True
-        self.playback_user_pause_requested = False
-        self.schedule_autoplay_confirmation(player, video_id)
         self.update_playback_inhibition()
         self.update_play_pause_button()
         self.set_player_loading(False)
@@ -600,44 +594,6 @@ class PlayerMixin:
             f"target={target:g}s elapsed={elapsed:.3f}s "
             f"underrun={underrun} reason={'target' if ready else 'timeout'}"
         )
-        return False
-
-    def schedule_autoplay_confirmation(self, player: Any, video_id: str) -> None:
-        request_id = self.playback_request_id
-        for delay_ms in AUTOPLAY_CONFIRM_DELAYS_MS:
-            GLib.timeout_add(
-                delay_ms,
-                self.confirm_autoplay_playing,
-                player,
-                video_id,
-                request_id,
-            )
-
-    def confirm_autoplay_playing(
-        self,
-        player: Any,
-        video_id: str,
-        request_id: int,
-    ) -> bool:
-        if request_id != self.playback_request_id:
-            return False
-        if player is not self.player:
-            return False
-        if self.playback_user_pause_requested:
-            return False
-        if not self.playback_file_loaded:
-            return False
-        try:
-            player.pause = False
-            player.speed = self.playback_rate
-            self.mpv_observed_properties["pause"] = False
-            self.mpv_observed_properties["speed"] = self.playback_rate
-        except Exception as exc:
-            self.log(f"mpv autoplay confirmation failed video={video_id}: {exc}")
-            return False
-        self.verbose_log(f"mpv autoplay confirmed video={video_id}")
-        self.update_play_pause_button()
-        self.update_playback_inhibition()
         return False
 
     def playback_buffer_message(self, cache_duration: float, target: float) -> str:
@@ -1941,7 +1897,6 @@ class PlayerMixin:
         self.playback_file_loaded = False
         self.mpv_stream_error_message = None
         self.playback_end_handled = False
-        self.playback_user_pause_requested = False
         self.update_play_pause_button()
         self.update_transport_navigation_buttons()
         self.verbose_log(f"mpv player stopped rss={self.process_rss_label()}")
@@ -2047,7 +2002,6 @@ class PlayerMixin:
             return
         try:
             paused = bool(self.mpv_observed_properties.get("pause", False))
-            self.playback_user_pause_requested = not paused
             self.player.pause = not paused
             self.mpv_observed_properties["pause"] = not paused
         except Exception as exc:
