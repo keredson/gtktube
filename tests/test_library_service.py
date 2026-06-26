@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from gtktube.db.connection import connect
@@ -105,6 +107,36 @@ class DownloadExtractor:
         filename = filename.replace("%(id)s", "video1")
         filename = filename.replace("%(ext)s", "mp4")
         Path(target_dir, filename).write_bytes(b"video")
+
+
+class BlockingDownloadExtractor(DownloadExtractor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def download_video(
+        self,
+        url: str,
+        target_dir: Path,
+        cookies_mode: str = "never",
+        cookies_browser: str = "firefox",
+        progress=None,
+        quality: str = "best",
+        output_template: str = "%(title).200B [%(id)s].%(ext)s",
+    ) -> None:
+        self.started.set()
+        if not self.release.wait(timeout=5):
+            raise TimeoutError("download was not released")
+        super().download_video(
+            url,
+            target_dir,
+            cookies_mode=cookies_mode,
+            cookies_browser=cookies_browser,
+            progress=progress,
+            quality=quality,
+            output_template=output_template,
+        )
 
 
 class SearchExtractor:
@@ -294,6 +326,59 @@ class LibraryServiceTests(unittest.TestCase):
         self.assertEqual(extractor.quality, "1080p")
         self.assertIn("[video1] [1080p]", path.name)
         self.assertEqual(cached.name, path.name)
+
+    def test_fetch_playback_video_serializes_duplicate_cache_writes(self) -> None:
+        extractor = BlockingDownloadExtractor()
+        service = LibraryService(self.repository, extractor)  # type: ignore[arg-type]
+        video = Video(
+            id="video1",
+            title="Video One",
+            url="https://example.test/watch?v=video1",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(
+                    service.fetch_playback_video,
+                    video,
+                    "720p",
+                    cache_dir,
+                )
+                self.assertTrue(extractor.started.wait(timeout=5))
+                second = executor.submit(
+                    service.fetch_playback_video,
+                    video,
+                    "720p",
+                    cache_dir,
+                )
+                extractor.release.set()
+                first_path = first.result(timeout=5)
+                second_path = second.result(timeout=5)
+
+        self.assertEqual(extractor.calls, 1)
+        self.assertEqual(first_path.name, second_path.name)
+        self.assertEqual(service._playback_fetch_locks, {})
+
+    def test_playback_fetch_lock_keeps_waiter_registered(self) -> None:
+        service = LibraryService(self.repository, DownloadExtractor())  # type: ignore[arg-type]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir)
+            key, first = service.playback_fetch_lock(cache_dir, "video1", "720p")
+            _, second = service.playback_fetch_lock(cache_dir, "video1", "720p")
+
+        self.assertIs(first, second)
+        self.assertEqual(first.users, 2)
+
+        service.release_playback_fetch_lock(key, first)
+
+        self.assertIn(key, service._playback_fetch_locks)
+        self.assertEqual(first.users, 1)
+
+        service.release_playback_fetch_lock(key, second)
+
+        self.assertEqual(service._playback_fetch_locks, {})
 
     def test_play_cached_video_preserves_captions_and_available_qualities(self) -> None:
         service = LibraryService(self.repository, DownloadExtractor())  # type: ignore[arg-type]

@@ -4,10 +4,11 @@ import random
 import re
 import shutil
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import as_completed
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from gtktube.db.repositories import LibraryRepository
@@ -26,10 +27,20 @@ PLAYBACK_CACHE_PART_MAX_AGE_SECONDS = 6 * 60 * 60
 PLAYBACK_CACHE_MAX_BYTES = 10 * 1024 * 1024 * 1024
 
 
+@dataclass
+class _PlaybackFetchLock:
+    lock: threading.Lock
+    users: int = 0
+
+
 class LibraryService:
     def __init__(self, repository: LibraryRepository, extractor: YoutubeExtractor):
         self.repository = repository
         self.extractor = extractor
+        self._playback_fetch_locks: dict[
+            tuple[str, str, str], _PlaybackFetchLock
+        ] = {}
+        self._playback_fetch_locks_guard = threading.Lock()
 
     def play_url(
         self, url: str, quality: str = "720p", record_play: bool = True
@@ -402,8 +413,58 @@ class LibraryService:
     ) -> Path:
         self._store_video_and_channel(video)
         target_dir.mkdir(parents=True, exist_ok=True)
-        self.prune_playback_cache(target_dir)
         selected_quality = quality if quality in QUALITY_FORMATS else "720p"
+        lock_key, fetch_lock_entry = self.playback_fetch_lock(
+            target_dir,
+            video.id,
+            selected_quality,
+        )
+        with fetch_lock_entry.lock:
+            try:
+                return self.fetch_playback_video_locked(
+                    video,
+                    selected_quality,
+                    target_dir,
+                    progress=progress,
+                )
+            finally:
+                self.release_playback_fetch_lock(lock_key, fetch_lock_entry)
+
+    def playback_fetch_lock(
+        self,
+        target_dir: Path,
+        video_id: str,
+        quality: str,
+    ) -> tuple[tuple[str, str, str], _PlaybackFetchLock]:
+        key = (str(target_dir.resolve()), video_id, quality)
+        with self._playback_fetch_locks_guard:
+            lock_entry = self._playback_fetch_locks.get(key)
+            if lock_entry is None:
+                lock_entry = _PlaybackFetchLock(threading.Lock())
+                self._playback_fetch_locks[key] = lock_entry
+            lock_entry.users += 1
+            return key, lock_entry
+
+    def release_playback_fetch_lock(
+        self,
+        key: tuple[str, str, str],
+        lock_entry: _PlaybackFetchLock,
+    ) -> None:
+        with self._playback_fetch_locks_guard:
+            if self._playback_fetch_locks.get(key) is not lock_entry:
+                return
+            lock_entry.users -= 1
+            if lock_entry.users <= 0:
+                del self._playback_fetch_locks[key]
+
+    def fetch_playback_video_locked(
+        self,
+        video: Video,
+        selected_quality: str,
+        target_dir: Path,
+        progress: Callable[[dict[str, object]], None] | None = None,
+    ) -> Path:
+        self.prune_playback_cache(target_dir)
         existing = self.playback_cache_file_for_video(
             target_dir,
             video.id,
